@@ -2,33 +2,49 @@ name: Python Bot Test
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
-  test:
+  test-bot:
+
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Check Python files
+      - name: Compile Python files
         run: |
           python -m py_compile telemetry_engine.py
-          python -m py_compile State_manager.py
+          python -m py_compile state_manager.py
           python -m py_compile main_orchestrator.py
           python -m py_compile config.py
           python -m py_compile broker_interface.py
           python -m py_compile risk_manager.py
           python -m py_compile paper_broker.py
+          python -m py_compile test_bot.py
+
+      - name: Run paper trading tests
+        run: |
+          python -m unittest test_bot.py -v
 
       - name: Test completed
-        run: echo "Paper trading bot code syntax check completed."
+        run: |
+          echo "======================================"
+          echo "AI TRADING BOT TESTS PASSED"
+          echo "PAPER TRADING ONLY"
+          echo "NO REAL ORDERS SENT"
+          echo "======================================"
