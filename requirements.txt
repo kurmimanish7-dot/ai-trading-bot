@@ -4,3 +4,5 @@ numpy
 pyotp
 smartapi-python
 requests
+logzero
+websocket-client
