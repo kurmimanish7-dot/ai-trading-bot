@@ -1,4 +1,3 @@
-import os
 import time
 import json
 import datetime
@@ -10,43 +9,40 @@ from state_manager import StateManager
 from risk_manager import RiskManager
 from broker_interface import BrokerInterface
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-SMARTAPI_API_KEY = os.getenv("SMARTAPI_API_KEY")
-SMARTAPI_CLIENT_CODE = os.getenv("SMARTAPI_CLIENT_CODE")
-SMARTAPI_PIN = os.getenv("SMARTAPI_PIN")
-SMARTAPI_TOTP_SECRET = os.getenv("SMARTAPI_TOTP_SECRET")
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-
-# ============================================================
-# PAPER TRADING CONFIG
-# ============================================================
-
-PAPER_TRADING = True
-
-SYMBOL = "NIFTY26SEPFUT"
-TOKEN = "35000"
-QTY = 50
-EXCHANGE = "NSE"
+from config import (
+    SMARTAPI_API_KEY,
+    SMARTAPI_CLIENT_CODE,
+    SMARTAPI_PIN,
+    SMARTAPI_TOTP_SECRET,
+    GEMINI_API_KEY,
+    PAPER_TRADING,
+    EXCHANGE,
+    SYMBOL,
+    TOKEN,
+    QUANTITY,
+    MAX_DAILY_LOSS,
+    MAX_TRADES_PER_DAY,
+    MAX_POSITION_QUANTITY,
+    MIN_AI_CONFIDENCE,
+    MARKET_OPEN,
+    MARKET_CLOSE,
+    AI_MODEL,
+    CYCLE_INTERVAL_SECONDS,
+)
 
 
 # ============================================================
-# RISK CONFIG
+# SAFETY CHECK
 # ============================================================
 
-MAX_DAILY_LOSS = 2000.0
-MAX_TRADES_PER_DAY = 5
-MAX_POSITION_QUANTITY = 50
-MIN_AI_CONFIDENCE = 75.0
+if not PAPER_TRADING:
+    raise RuntimeError(
+        "SAFETY LOCK: Live trading is disabled in this build."
+    )
 
 
 # ============================================================
-# BASIC VALIDATION
+# API CREDENTIAL VALIDATION
 # ============================================================
 
 required_keys = {
@@ -58,7 +54,8 @@ required_keys = {
 }
 
 missing_keys = [
-    key for key, value in required_keys.items()
+    key
+    for key, value in required_keys.items()
     if not value
 ]
 
@@ -81,7 +78,7 @@ telemetry = TelemetryEngine(
     SMARTAPI_API_KEY,
     SMARTAPI_CLIENT_CODE,
     SMARTAPI_PIN,
-    SMARTAPI_TOTP_SECRET
+    SMARTAPI_TOTP_SECRET,
 )
 
 state = StateManager()
@@ -118,11 +115,13 @@ Rules:
 4. If telemetry is insufficient, return NO_TRADE.
 5. Avoid overtrading.
 6. Risk management has priority over trade frequency.
-7. Do not enter a trade without a logical stop loss.
-8. Do not enter a trade if the risk/reward structure is poor.
-9. For an existing position, consider HOLD, TRAIL_SL,
-   TAKE_PARTIAL or EXIT_NOW.
+7. Do not enter without a logical stop loss.
+8. Do not enter if the risk/reward structure is poor.
+9. For an existing position, consider HOLD,
+   TRAIL_SL, TAKE_PARTIAL or EXIT_NOW.
 10. Confidence must be between 0 and 100.
+11. Do not manufacture live news, VIX, OI, PCR,
+    or other market information.
 
 Return ONLY valid JSON.
 
@@ -165,7 +164,7 @@ Schema:
 def call_ai_decision(payload: str) -> dict:
 
     response = ai_client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=AI_MODEL,
         contents=payload,
         config={
             "system_instruction": SYSTEM_PROMPT,
@@ -197,14 +196,91 @@ def is_market_open():
 
     now = datetime.datetime.now().time()
 
-    market_open = datetime.time(9, 15)
-    market_close = datetime.time(15, 15)
+    market_open = datetime.datetime.strptime(
+        MARKET_OPEN,
+        "%H:%M"
+    ).time()
 
-    return market_open <= now <= market_close
+    market_close = datetime.datetime.strptime(
+        MARKET_CLOSE,
+        "%H:%M"
+    ).time()
+
+    return (
+        market_open <= now <= market_close
+    )
 
 
 # ============================================================
-# PAPER ORDER
+# AI DECISION VALIDATION
+# ============================================================
+
+def validate_ai_decision(
+    decision: dict
+) -> dict:
+
+    if not isinstance(decision, dict):
+
+        return {
+            "action": "NO_TRADE",
+            "execution_details": {},
+            "algorithmic_confidence": {
+                "overall_score": 0
+            },
+            "rationale": (
+                "Invalid AI response."
+            ),
+        }
+
+    action = decision.get(
+        "action",
+        "NO_TRADE"
+    )
+
+    confidence = float(
+        decision
+        .get(
+            "algorithmic_confidence",
+            {}
+        )
+        .get(
+            "overall_score",
+            0
+        )
+    )
+
+    execution = decision.get(
+        "execution_details",
+        {}
+    )
+
+    if not isinstance(
+        execution,
+        dict
+    ):
+        execution = {}
+
+    confidence = max(
+        0.0,
+        min(
+            100.0,
+            confidence
+        )
+    )
+
+    decision["action"] = action
+
+    decision["execution_details"] = execution
+
+    decision["algorithmic_confidence"] = {
+        "overall_score": confidence
+    }
+
+    return decision
+
+
+# ============================================================
+# PAPER ORDER EXECUTION
 # ============================================================
 
 def execute_paper_order(
@@ -215,6 +291,7 @@ def execute_paper_order(
 ):
 
     if not PAPER_TRADING:
+
         raise RuntimeError(
             "Safety lock: live trading is disabled."
         )
@@ -236,7 +313,10 @@ def execute_paper_order(
     print(f"Quantity    : {quantity}")
     print(f"Order Type  : {order_type}")
     print(f"Price       : ₹{price}")
-    print(f"Order ID    : {result.get('order_id')}")
+    print(
+        f"Order ID    : "
+        f"{result.get('order_id')}"
+    )
     print("Mode        : PAPER TRADING")
     print("NO REAL ORDER SENT")
     print("=================================")
@@ -246,56 +326,76 @@ def execute_paper_order(
 
 
 # ============================================================
-# DECISION VALIDATION
+# ENTRY VALIDATION
 # ============================================================
 
-def validate_ai_decision(decision: dict) -> dict:
+def validate_entry(
+    action: str,
+    execution: dict
+) -> bool:
 
-    if not isinstance(decision, dict):
-        return {
-            "action": "NO_TRADE",
-            "execution_details": {},
-            "algorithmic_confidence": {
-                "overall_score": 0
-            },
-            "rationale": "AI response is not a valid object.",
-        }
-
-    action = decision.get(
-        "action",
-        "NO_TRADE"
-    )
-
-    confidence = float(
-        decision.get(
-            "algorithmic_confidence",
-            {}
-        ).get(
-            "overall_score",
+    suggested_price = float(
+        execution.get(
+            "suggested_price",
             0
         )
     )
 
-    execution = decision.get(
-        "execution_details",
-        {}
+    stop_loss = float(
+        execution.get(
+            "revised_stop_loss",
+            0
+        )
     )
 
-    if not isinstance(execution, dict):
-        execution = {}
-
-    confidence = max(
-        0.0,
-        min(100.0, confidence)
+    target_1 = float(
+        execution.get(
+            "target_1",
+            0
+        )
     )
 
-    decision["action"] = action
-    decision["execution_details"] = execution
-    decision["algorithmic_confidence"] = {
-        "overall_score": confidence
-    }
+    quantity_fraction = float(
+        execution.get(
+            "quantity_fraction",
+            1.0
+        )
+    )
 
-    return decision
+    if suggested_price <= 0:
+        return False
+
+    if stop_loss <= 0:
+        return False
+
+    if target_1 <= 0:
+        return False
+
+    if (
+        quantity_fraction <= 0
+        or quantity_fraction > 1
+    ):
+        return False
+
+    # LONG: SL should be below entry
+    if action == "ENTER_LONG":
+
+        if stop_loss >= suggested_price:
+            return False
+
+        if target_1 <= suggested_price:
+            return False
+
+    # SHORT: SL should be above entry
+    if action == "ENTER_SHORT":
+
+        if stop_loss <= suggested_price:
+            return False
+
+        if target_1 >= suggested_price:
+            return False
+
+    return True
 
 
 # ============================================================
@@ -305,6 +405,10 @@ def validate_ai_decision(decision: dict) -> dict:
 def run_trading_cycle():
 
     now = datetime.datetime.now()
+
+    # --------------------------------------------------------
+    # MARKET HOURS
+    # --------------------------------------------------------
 
     if not is_market_open():
 
@@ -316,37 +420,50 @@ def run_trading_cycle():
         return
 
     # --------------------------------------------------------
-    # 1. CURRENT POSITION
+    # CURRENT POSITION
     # --------------------------------------------------------
 
-    position = state.get_position(SYMBOL)
+    position = state.get_position(
+        SYMBOL
+    )
 
     # --------------------------------------------------------
-    # 2. DAILY RISK STATISTICS
+    # DAILY STATISTICS
     # --------------------------------------------------------
 
     daily_stats = state.get_daily_stats()
 
-    daily_pnl = daily_stats.get(
-        "daily_pnl",
-        0.0
+    daily_pnl = float(
+        daily_stats.get(
+            "daily_pnl",
+            0.0
+        )
     )
 
-    trades_today = daily_stats.get(
-        "trades_today",
-        0
+    trades_today = int(
+        daily_stats.get(
+            "trades_today",
+            0
+        )
     )
 
     print("")
     print("========== DAILY STATUS ==========")
-    print(f"Daily P&L    : ₹{daily_pnl:.2f}")
-    print(f"Trades Today : {trades_today}")
-    print(f"Position     : {position.get('has_position')}")
+    print(
+        f"Daily P&L    : ₹{daily_pnl:.2f}"
+    )
+    print(
+        f"Trades Today : {trades_today}"
+    )
+    print(
+        f"Position     : "
+        f"{position.get('has_position', False)}"
+    )
     print("==================================")
     print("")
 
     # --------------------------------------------------------
-    # 3. MARKET TELEMETRY
+    # MARKET TELEMETRY
     # --------------------------------------------------------
 
     payload = telemetry.build_payload(
@@ -356,10 +473,12 @@ def run_trading_cycle():
     )
 
     # --------------------------------------------------------
-    # 4. GEMINI ANALYSIS
+    # AI ANALYSIS
     # --------------------------------------------------------
 
-    decision = call_ai_decision(payload)
+    decision = call_ai_decision(
+        payload
+    )
 
     decision = validate_ai_decision(
         decision
@@ -389,21 +508,32 @@ def run_trading_cycle():
     )
 
     # --------------------------------------------------------
-    # 5. DISPLAY AI DECISION
+    # DISPLAY AI DECISION
     # --------------------------------------------------------
 
     print("")
     print("========================================")
-    print(f"Time       : {now.strftime('%H:%M:%S')}")
-    print(f"Symbol     : {SYMBOL}")
-    print(f"AI Action  : {action}")
-    print(f"Confidence : {confidence}%")
-    print(f"Rationale  : {rationale}")
+    print(
+        f"Time       : "
+        f"{now.strftime('%H:%M:%S')}"
+    )
+    print(
+        f"Symbol     : {SYMBOL}"
+    )
+    print(
+        f"AI Action  : {action}"
+    )
+    print(
+        f"Confidence : {confidence}%"
+    )
+    print(
+        f"Rationale  : {rationale}"
+    )
     print("========================================")
     print("")
 
     # --------------------------------------------------------
-    # 6. RISK MANAGER
+    # RISK VALIDATION
     # --------------------------------------------------------
 
     risk_result = risk_manager.validate_decision(
@@ -413,23 +543,41 @@ def run_trading_cycle():
         trades_today=trades_today,
     )
 
-    if not risk_result.get("allowed", False):
+    if not risk_result.get(
+        "allowed",
+        False
+    ):
 
         print(
             "RISK BLOCKED:",
-            risk_result.get("reason")
+            risk_result.get(
+                "reason",
+                "Unknown risk reason."
+            )
         )
 
         return
 
     # --------------------------------------------------------
-    # 7. ENTRY
+    # ENTRY
     # --------------------------------------------------------
 
     if action in {
         "ENTER_LONG",
         "ENTER_SHORT"
     }:
+
+        if not validate_entry(
+            action,
+            execution
+        ):
+
+            print(
+                "ENTRY BLOCKED: "
+                "Invalid entry/SL/target structure."
+            )
+
+            return
 
         suggested_price = float(
             execution.get(
@@ -467,7 +615,7 @@ def run_trading_cycle():
         )
 
         quantity = int(
-            QTY * quantity_fraction
+            QUANTITY * quantity_fraction
         )
 
         quantity = min(
@@ -475,15 +623,11 @@ def run_trading_cycle():
             MAX_POSITION_QUANTITY
         )
 
-        if (
-            suggested_price <= 0
-            or stop_loss <= 0
-            or target_1 <= 0
-            or quantity <= 0
-        ):
+        if quantity <= 0:
+
             print(
                 "ENTRY BLOCKED: "
-                "Invalid price, SL, target or quantity."
+                "Invalid quantity."
             )
 
             return
@@ -500,14 +644,28 @@ def run_trading_cycle():
             else "SHORT"
         )
 
+        order_type = execution.get(
+            "order_type",
+            "MARKET"
+        )
+
+        if order_type not in {
+            "MARKET",
+            "LIMIT"
+        }:
+
+            print(
+                "ENTRY BLOCKED: "
+                "Invalid order type."
+            )
+
+            return
+
         order_result = execute_paper_order(
             transaction_type=transaction_type,
             quantity=quantity,
             price=suggested_price,
-            order_type=execution.get(
-                "order_type",
-                "MARKET"
-            ),
+            order_type=order_type,
         )
 
         state.open_position(
@@ -525,18 +683,22 @@ def run_trading_cycle():
         )
 
         print(
-            f"Paper {direction} position created."
+            f"Paper {direction} "
+            f"position created."
         )
 
         return
 
     # --------------------------------------------------------
-    # 8. TRAILING STOP LOSS
+    # TRAILING STOP LOSS
     # --------------------------------------------------------
 
     if (
         action == "TRAIL_SL"
-        and position.get("has_position", False)
+        and position.get(
+            "has_position",
+            False
+        )
     ):
 
         new_sl = float(
@@ -561,18 +723,22 @@ def run_trading_cycle():
         )
 
         print(
-            f"Paper SL updated to ₹{new_sl}"
+            f"Paper SL updated "
+            f"to ₹{new_sl}"
         )
 
         return
 
     # --------------------------------------------------------
-    # 9. PARTIAL EXIT
+    # PARTIAL EXIT
     # --------------------------------------------------------
 
     if (
         action == "TAKE_PARTIAL"
-        and position.get("has_position", False)
+        and position.get(
+            "has_position",
+            False
+        )
     ):
 
         fraction = float(
@@ -584,7 +750,10 @@ def run_trading_cycle():
 
         fraction = max(
             0.1,
-            min(1.0, fraction)
+            min(
+                1.0,
+                fraction
+            )
         )
 
         current_quantity = int(
@@ -619,7 +788,9 @@ def run_trading_cycle():
 
         exit_transaction = (
             "SELL"
-            if position.get("direction") == "LONG"
+            if position.get(
+                "direction"
+            ) == "LONG"
             else "BUY"
         )
 
@@ -641,10 +812,13 @@ def run_trading_cycle():
         )
 
         if direction == "LONG":
+
             pnl = (
                 exit_price - entry_price
             ) * partial_quantity
+
         else:
+
             pnl = (
                 entry_price - exit_price
             ) * partial_quantity
@@ -673,7 +847,6 @@ def run_trading_cycle():
 
         else:
 
-            # Re-create remaining position.
             state.open_position(
                 symbol=SYMBOL,
                 direction=direction,
@@ -704,19 +877,21 @@ def run_trading_cycle():
             )
 
         print(
-            f"Partial exit executed. "
-            f"Quantity: {partial_quantity}"
+            "Partial exit executed."
         )
 
         return
 
     # --------------------------------------------------------
-    # 10. FULL EXIT
+    # FULL EXIT
     # --------------------------------------------------------
 
     if (
         action == "EXIT_NOW"
-        and position.get("has_position", False)
+        and position.get(
+            "has_position",
+            False
+        )
     ):
 
         exit_price = float(
@@ -729,14 +904,17 @@ def run_trading_cycle():
         if exit_price <= 0:
 
             print(
-                "Exit rejected: invalid exit price."
+                "Exit rejected: "
+                "Invalid exit price."
             )
 
             return
 
         exit_transaction = (
             "SELL"
-            if position.get("direction") == "LONG"
+            if position.get(
+                "direction"
+            ) == "LONG"
             else "BUY"
         )
 
@@ -767,10 +945,13 @@ def run_trading_cycle():
         return
 
     # --------------------------------------------------------
-    # 11. HOLD / NO TRADE
+    # HOLD / NO TRADE
     # --------------------------------------------------------
 
-    if position.get("has_position", False):
+    if position.get(
+        "has_position",
+        False
+    ):
 
         state.increment_bars(
             SYMBOL
@@ -813,4 +994,6 @@ if __name__ == "__main__":
                 f"Trading cycle error: {error}"
             )
 
-        time.sleep(300)
+        time.sleep(
+            CYCLE_INTERVAL_SECONDS
+        )
