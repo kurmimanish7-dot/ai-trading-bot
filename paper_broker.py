@@ -7,6 +7,7 @@ class PaperBroker:
     Simple paper-trading broker.
 
     No real Angel One order is sent.
+    All orders are simulated locally.
     """
 
     def __init__(self):
@@ -37,7 +38,7 @@ class PaperBroker:
             "price": price,
             "order_type": order_type,
             "status": "FILLED",
-            "timestamp": datetime.datetime.now().isoformat()
+            "timestamp": datetime.datetime.now().isoformat(),
         }
 
         self.orders[order_id] = order
@@ -53,7 +54,7 @@ class PaperBroker:
             order_id,
             {
                 "order_id": order_id,
-                "status": "NOT_FOUND"
+                "status": "NOT_FOUND",
             }
         )
 
@@ -65,7 +66,12 @@ class PaperBroker:
         if order_id not in self.orders:
             return {
                 "order_id": order_id,
-                "status": "NOT_FOUND"
+                "status": "NOT_FOUND",
             }
 
-        self.orders[order_id]["status"] = "C
+        self.orders[order_id]["status"] = "CANCELLED"
+
+        return {
+            "order_id": order_id,
+            "status": "CANCELLED",
+        }
