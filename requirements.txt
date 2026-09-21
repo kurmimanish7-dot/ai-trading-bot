@@ -1,5 +1,6 @@
-smartapi-python
-pyotp
+google-genai
 pandas
 numpy
-google-genai
+pyotp
+smartapi-python
+requests
