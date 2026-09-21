@@ -4,7 +4,7 @@ import unittest
 
 from paper_broker import PaperBroker
 from risk_manager import RiskManager
-from state_manager import StateManager
+from State_manager import StateManager
 
 
 class TestPaperBroker(unittest.TestCase):
