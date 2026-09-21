@@ -36,10 +36,12 @@ jobs:
           python -m py_compile risk_manager.py
           python -m py_compile paper_broker.py
           python -m py_compile test_bot.py
+          python -m py_compile test_orchestrator.py
 
       - name: Run paper trading tests
         run: |
           python -m unittest test_bot.py -v
+          python -m unittest test_orchestrator.py -v
 
       - name: Test completed
         run: |
