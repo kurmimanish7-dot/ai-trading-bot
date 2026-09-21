@@ -29,7 +29,7 @@ jobs:
       - name: Compile Python files
         run: |
           python -m py_compile telemetry_engine.py
-          python -m py_compile state_manager.py
+          python -m py_compile State_manager.py
           python -m py_compile main_orchestrator.py
           python -m py_compile config.py
           python -m py_compile broker_interface.py
