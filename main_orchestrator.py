@@ -5,7 +5,7 @@ import datetime
 from google import genai
 
 from telemetry_engine import TelemetryEngine
-from State_manager import StateManager
+from State_Manager import StateManager
 from risk_manager import RiskManager
 from broker_interface import BrokerInterface
 
@@ -27,12 +27,14 @@ from config import (
     MARKET_OPEN,
     MARKET_CLOSE,
     AI_MODEL,
+    CANDLE_INTERVAL,
+    HISTORICAL_DAYS,
     CYCLE_INTERVAL_SECONDS,
 )
 
 
 # ============================================================
-# SAFETY CHECK
+# SAFETY LOCK
 # ============================================================
 
 if not PAPER_TRADING:
@@ -42,44 +44,8 @@ if not PAPER_TRADING:
 
 
 # ============================================================
-# API CREDENTIAL VALIDATION
+# COMPONENTS
 # ============================================================
-
-required_keys = {
-    "SMARTAPI_API_KEY": SMARTAPI_API_KEY,
-    "SMARTAPI_CLIENT_CODE": SMARTAPI_CLIENT_CODE,
-    "SMARTAPI_PIN": SMARTAPI_PIN,
-    "SMARTAPI_TOTP_SECRET": SMARTAPI_TOTP_SECRET,
-    "GEMINI_API_KEY": GEMINI_API_KEY,
-}
-
-missing_keys = [
-    key
-    for key, value in required_keys.items()
-    if not value
-]
-
-if missing_keys:
-    print("Missing environment variables:")
-
-    for key in missing_keys:
-        print(f"- {key}")
-
-    raise RuntimeError(
-        "Required API credentials are not configured."
-    )
-
-
-# ============================================================
-# INITIALIZE COMPONENTS
-# ============================================================
-
-telemetry = TelemetryEngine(
-    SMARTAPI_API_KEY,
-    SMARTAPI_CLIENT_CODE,
-    SMARTAPI_PIN,
-    SMARTAPI_TOTP_SECRET,
-)
 
 state = StateManager()
 
@@ -92,9 +58,8 @@ risk_manager = RiskManager(
 
 broker = BrokerInterface()
 
-ai_client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
+telemetry = None
+ai_client = None
 
 
 # ============================================================
@@ -120,8 +85,8 @@ Rules:
 9. For an existing position, consider HOLD,
    TRAIL_SL, TAKE_PARTIAL or EXIT_NOW.
 10. Confidence must be between 0 and 100.
-11. Do not manufacture live news, VIX, OI, PCR,
-    or other market information.
+11. Never manufacture VIX, OI, PCR, news or
+    any other unavailable market information.
 
 Return ONLY valid JSON.
 
@@ -158,10 +123,93 @@ Schema:
 
 
 # ============================================================
+# CREDENTIAL VALIDATION
+# ============================================================
+
+def validate_credentials():
+    """
+    Validate external API credentials only when the
+    actual trading application is started.
+
+    Unit tests can import this module without credentials.
+    """
+
+    required_keys = {
+        "SMARTAPI_API_KEY": SMARTAPI_API_KEY,
+        "SMARTAPI_CLIENT_CODE": SMARTAPI_CLIENT_CODE,
+        "SMARTAPI_PIN": SMARTAPI_PIN,
+        "SMARTAPI_TOTP_SECRET": SMARTAPI_TOTP_SECRET,
+        "GEMINI_API_KEY": GEMINI_API_KEY,
+    }
+
+    missing_keys = [
+        key
+        for key, value in required_keys.items()
+        if not value
+    ]
+
+    if missing_keys:
+
+        print(
+            "Missing environment variables:"
+        )
+
+        for key in missing_keys:
+            print(
+                f"- {key}"
+            )
+
+        raise RuntimeError(
+            "Required API credentials are not configured."
+        )
+
+
+# ============================================================
+# INITIALIZE LIVE DATA COMPONENTS
+# ============================================================
+
+def initialize_runtime():
+
+    global telemetry
+    global ai_client
+
+    validate_credentials()
+
+    telemetry = TelemetryEngine(
+        SMARTAPI_API_KEY,
+        SMARTAPI_CLIENT_CODE,
+        SMARTAPI_PIN,
+        SMARTAPI_TOTP_SECRET,
+    )
+
+    ai_client = genai.Client(
+        api_key=GEMINI_API_KEY
+    )
+
+    print("")
+    print("========================================")
+    print(" Runtime components initialized")
+    print(" Angel One telemetry : READY")
+    print(" Gemini AI           : READY")
+    print(" Paper trading       : ENABLED")
+    print(" Real orders         : DISABLED")
+    print("========================================")
+    print("")
+
+
+# ============================================================
 # AI DECISION
 # ============================================================
 
-def call_ai_decision(payload: str) -> dict:
+def call_ai_decision(
+    payload: str
+) -> dict:
+
+    if ai_client is None:
+
+        raise RuntimeError(
+            "AI client is not initialized."
+        )
 
     response = ai_client.models.generate_content(
         model=AI_MODEL,
@@ -172,15 +220,23 @@ def call_ai_decision(payload: str) -> dict:
         },
     )
 
-    if not response or not response.text:
+    if (
+        not response
+        or not response.text
+    ):
+
         raise RuntimeError(
             "AI returned an empty response."
         )
 
     try:
-        decision = json.loads(response.text)
+
+        decision = json.loads(
+            response.text
+        )
 
     except json.JSONDecodeError as error:
+
         raise RuntimeError(
             f"Invalid AI JSON response: {error}"
         )
@@ -207,7 +263,9 @@ def is_market_open():
     ).time()
 
     return (
-        market_open <= now <= market_close
+        market_open
+        <= now
+        <= market_close
     )
 
 
@@ -219,7 +277,10 @@ def validate_ai_decision(
     decision: dict
 ) -> dict:
 
-    if not isinstance(decision, dict):
+    if not isinstance(
+        decision,
+        dict
+    ):
 
         return {
             "action": "NO_TRADE",
@@ -258,6 +319,7 @@ def validate_ai_decision(
         execution,
         dict
     ):
+
         execution = {}
 
     confidence = max(
@@ -309,10 +371,22 @@ def execute_paper_order(
     print("")
     print("========== PAPER ORDER ==========")
     print(f"Symbol      : {SYMBOL}")
-    print(f"Transaction : {transaction_type}")
-    print(f"Quantity    : {quantity}")
-    print(f"Order Type  : {order_type}")
-    print(f"Price       : ₹{price}")
+    print(
+        f"Transaction : "
+        f"{transaction_type}"
+    )
+    print(
+        f"Quantity    : "
+        f"{quantity}"
+    )
+    print(
+        f"Order Type  : "
+        f"{order_type}"
+    )
+    print(
+        f"Price       : "
+        f"₹{price}"
+    )
     print(
         f"Order ID    : "
         f"{result.get('order_id')}"
@@ -377,7 +451,6 @@ def validate_entry(
     ):
         return False
 
-    # LONG: SL should be below entry
     if action == "ENTER_LONG":
 
         if stop_loss >= suggested_price:
@@ -386,14 +459,17 @@ def validate_entry(
         if target_1 <= suggested_price:
             return False
 
-    # SHORT: SL should be above entry
-    if action == "ENTER_SHORT":
+    elif action == "ENTER_SHORT":
 
         if stop_loss <= suggested_price:
             return False
 
         if target_1 >= suggested_price:
             return False
+
+    else:
+
+        return False
 
     return True
 
@@ -403,6 +479,11 @@ def validate_entry(
 # ============================================================
 
 def run_trading_cycle():
+
+    if telemetry is None:
+        raise RuntimeError(
+            "Telemetry is not initialized."
+        )
 
     now = datetime.datetime.now()
 
@@ -450,10 +531,12 @@ def run_trading_cycle():
     print("")
     print("========== DAILY STATUS ==========")
     print(
-        f"Daily P&L    : ₹{daily_pnl:.2f}"
+        f"Daily P&L    : "
+        f"₹{daily_pnl:.2f}"
     )
     print(
-        f"Trades Today : {trades_today}"
+        f"Trades Today : "
+        f"{trades_today}"
     )
     print(
         f"Position     : "
@@ -469,7 +552,10 @@ def run_trading_cycle():
     payload = telemetry.build_payload(
         SYMBOL,
         TOKEN,
-        position
+        position,
+        exchange=EXCHANGE,
+        interval=CANDLE_INTERVAL,
+        days=HISTORICAL_DAYS,
     )
 
     # --------------------------------------------------------
@@ -518,16 +604,20 @@ def run_trading_cycle():
         f"{now.strftime('%H:%M:%S')}"
     )
     print(
-        f"Symbol     : {SYMBOL}"
+        f"Symbol     : "
+        f"{SYMBOL}"
     )
     print(
-        f"AI Action  : {action}"
+        f"AI Action  : "
+        f"{action}"
     )
     print(
-        f"Confidence : {confidence}%"
+        f"Confidence : "
+        f"{confidence}%"
     )
     print(
-        f"Rationale  : {rationale}"
+        f"Rationale  : "
+        f"{rationale}"
     )
     print("========================================")
     print("")
@@ -615,7 +705,8 @@ def run_trading_cycle():
         )
 
         quantity = int(
-            QUANTITY * quantity_fraction
+            QUANTITY
+            * quantity_fraction
         )
 
         quantity = min(
@@ -764,7 +855,8 @@ def run_trading_cycle():
         )
 
         partial_quantity = int(
-            current_quantity * fraction
+            current_quantity
+            * fraction
         )
 
         exit_price = float(
@@ -814,13 +906,15 @@ def run_trading_cycle():
         if direction == "LONG":
 
             pnl = (
-                exit_price - entry_price
+                exit_price
+                - entry_price
             ) * partial_quantity
 
         else:
 
             pnl = (
-                entry_price - exit_price
+                entry_price
+                - exit_price
             ) * partial_quantity
 
         state.record_trade(
@@ -981,6 +1075,8 @@ if __name__ == "__main__":
     print(" REAL ORDERS DISABLED")
     print("========================================")
     print("")
+
+    initialize_runtime()
 
     while True:
 
