@@ -66,3 +66,16 @@ class RiskManager:
         }
 
         if action not in allowed_actions:
+            return {
+                "allowed": False,
+                "action": "NO_TRADE",
+                "reason": f"Invalid action: {action}",
+            }
+
+        return {
+            "allowed": True,
+            "action": action,
+            "confidence": confidence,
+            "quantity_fraction": quantity_fraction,
+            "reason": "Decision passed basic validation.",
+        }
