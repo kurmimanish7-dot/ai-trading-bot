@@ -20,6 +20,18 @@ class RiskManager:
         "NO_TRADE",
     }
 
+    ENTRY_ACTIONS = {
+        "ENTER_LONG",
+        "ENTER_SHORT",
+    }
+
+    POSITION_MANAGEMENT_ACTIONS = {
+        "HOLD",
+        "TRAIL_SL",
+        "TAKE_PARTIAL",
+        "EXIT_NOW",
+    }
+
     def __init__(
         self,
         max_daily_loss: float = 2000.0,
@@ -40,27 +52,22 @@ class RiskManager:
         trades_today: int = 0,
     ) -> Dict[str, Any]:
 
-        action = decision.get("action", "NO_TRADE")
+        if not isinstance(decision, dict):
+            return {
+                "allowed": False,
+                "action": "NO_TRADE",
+                "reason": "Invalid decision format.",
+            }
 
-        confidence = float(
-            decision
-            .get("algorithmic_confidence", {})
-            .get("overall_score", 0)
+        action = decision.get(
+            "action",
+            "NO_TRADE"
         )
 
-        execution = decision.get(
-            "execution_details",
-            {}
-        )
-
-        quantity_fraction = float(
-            execution.get(
-                "quantity_fraction",
-                1.0
-            )
-        )
-
+        # --------------------------------------------------
         # 1. Validate action
+        # --------------------------------------------------
+
         if action not in self.ALLOWED_ACTIONS:
             return {
                 "allowed": False,
@@ -68,28 +75,126 @@ class RiskManager:
                 "reason": f"Invalid action: {action}",
             }
 
-        # 2. Daily loss protection
-        if daily_pnl <= -abs(self.max_daily_loss):
+        # --------------------------------------------------
+        # 2. Safely read confidence
+        # --------------------------------------------------
+
+        confidence_data = decision.get(
+            "algorithmic_confidence",
+            {}
+        )
+
+        if not isinstance(
+            confidence_data,
+            dict
+        ):
+            confidence_data = {}
+
+        try:
+            confidence = float(
+                confidence_data.get(
+                    "overall_score",
+                    0
+                )
+            )
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        confidence = max(
+            0.0,
+            min(
+                100.0,
+                confidence
+            )
+        )
+
+        # --------------------------------------------------
+        # 3. Safely read execution details
+        # --------------------------------------------------
+
+        execution = decision.get(
+            "execution_details",
+            {}
+        )
+
+        if not isinstance(
+            execution,
+            dict
+        ):
+            execution = {}
+
+        try:
+            quantity_fraction = float(
+                execution.get(
+                    "quantity_fraction",
+                    1.0
+                )
+            )
+        except (TypeError, ValueError):
+            quantity_fraction = 0.0
+
+        # --------------------------------------------------
+        # 4. Quantity fraction validation
+        # --------------------------------------------------
+
+        if (
+            quantity_fraction <= 0
+            or quantity_fraction > 1
+        ):
             return {
                 "allowed": False,
                 "action": "NO_TRADE",
-                "reason": "Maximum daily loss limit reached.",
+                "reason": "Invalid quantity fraction.",
             }
 
-        # 3. Maximum trades per day
+        # --------------------------------------------------
+        # 5. DAILY LOSS PROTECTION
+        #
+        # Daily loss limit blocks NEW entries only.
+        # Existing positions must remain manageable.
+        # --------------------------------------------------
+
         if (
-            action in {"ENTER_LONG", "ENTER_SHORT"}
+            action in self.ENTRY_ACTIONS
+            and daily_pnl <= -abs(
+                self.max_daily_loss
+            )
+        ):
+            return {
+                "allowed": False,
+                "action": "NO_TRADE",
+                "reason": (
+                    "Maximum daily loss limit reached."
+                ),
+            }
+
+        # --------------------------------------------------
+        # 6. MAXIMUM TRADES PER DAY
+        #
+        # Only new entries count toward this limit.
+        # --------------------------------------------------
+
+        if (
+            action in self.ENTRY_ACTIONS
             and trades_today >= self.max_trades_per_day
         ):
             return {
                 "allowed": False,
                 "action": "NO_TRADE",
-                "reason": "Maximum trades per day reached.",
+                "reason": (
+                    "Maximum trades per day reached."
+                ),
             }
 
-        # 4. Minimum AI confidence
+        # --------------------------------------------------
+        # 7. MINIMUM AI CONFIDENCE
+        #
+        # Confidence is required for new entries.
+        # Position-management actions can still execute.
+        # --------------------------------------------------
+
         if (
-            action in {"ENTER_LONG", "ENTER_SHORT"}
+            action in self.ENTRY_ACTIONS
             and confidence < self.min_confidence
         ):
             return {
@@ -102,24 +207,52 @@ class RiskManager:
                 ),
             }
 
-        # 5. Quantity fraction validation
-        if quantity_fraction <= 0 or quantity_fraction > 1:
-            return {
-                "allowed": False,
-                "action": "NO_TRADE",
-                "reason": "Invalid quantity fraction.",
-            }
+        # --------------------------------------------------
+        # 8. EXISTING POSITION PROTECTION
+        #
+        # Do not allow a second entry while a position
+        # is already active.
+        # --------------------------------------------------
 
-        # 6. Existing position protection
         if (
-            action in {"ENTER_LONG", "ENTER_SHORT"}
-            and position.get("has_position", False)
+            action in self.ENTRY_ACTIONS
+            and position.get(
+                "has_position",
+                False
+            )
         ):
             return {
                 "allowed": False,
                 "action": "NO_TRADE",
-                "reason": "Existing position already active.",
+                "reason": (
+                    "Existing position already active."
+                ),
             }
+
+        # --------------------------------------------------
+        # 9. POSITION MANAGEMENT VALIDATION
+        #
+        # Management actions require an active position.
+        # --------------------------------------------------
+
+        if (
+            action in self.POSITION_MANAGEMENT_ACTIONS
+            and not position.get(
+                "has_position",
+                False
+            )
+        ):
+            return {
+                "allowed": False,
+                "action": "NO_TRADE",
+                "reason": (
+                    "No active position to manage."
+                ),
+            }
+
+        # --------------------------------------------------
+        # 10. SUCCESS
+        # --------------------------------------------------
 
         return {
             "allowed": True,
