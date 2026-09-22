@@ -150,6 +150,62 @@ class TestRiskManager(unittest.TestCase):
             result["allowed"]
         )
 
+    def test_exit_allowed_after_daily_loss_limit(self):
+
+        decision = {
+            "action": "EXIT_NOW",
+
+            "execution_details": {
+                "quantity_fraction": 1.0
+            },
+
+            "algorithmic_confidence": {
+                "overall_score": 50
+            }
+        }
+
+        result = self.risk.validate_decision(
+            decision=decision,
+            position={
+                "has_position": True,
+                "direction": "LONG"
+            },
+            daily_pnl=-2000,
+            trades_today=5,
+        )
+
+        self.assertTrue(
+            result["allowed"]
+        )
+
+    def test_trailing_stop_allowed_after_daily_loss_limit(self):
+
+        decision = {
+            "action": "TRAIL_SL",
+
+            "execution_details": {
+                "quantity_fraction": 1.0
+            },
+
+            "algorithmic_confidence": {
+                "overall_score": 50
+            }
+        }
+
+        result = self.risk.validate_decision(
+            decision=decision,
+            position={
+                "has_position": True,
+                "direction": "LONG"
+            },
+            daily_pnl=-2000,
+            trades_today=5,
+        )
+
+        self.assertTrue(
+            result["allowed"]
+        )
+
 
 class TestStateManager(unittest.TestCase):
 
