@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import main_orchestrator as bot
 from State_manager import StateManager
@@ -12,18 +13,12 @@ class FakeTelemetry:
         self,
         symbol,
         token,
-        position
+        position,
+        exchange=None,
+        interval=None,
+        days=None,
     ):
         return "TEST MARKET TELEMETRY"
-
-
-class FakeAI:
-
-    def __init__(self, decision):
-        self.decision = decision
-
-    def get_decision(self, payload):
-        return self.decision
 
 
 class FakeBroker:
@@ -59,7 +54,7 @@ class FakeBroker:
         return order
 
 
-class TestOrchestratorSafety(unittest.TestCase):
+class TestOrchestratorIntegration(unittest.TestCase):
 
     def setUp(self):
 
@@ -74,8 +69,18 @@ class TestOrchestratorSafety(unittest.TestCase):
             self.temp_file.name
         )
 
-        bot.PAPER_TRADING = True
+        bot.risk_manager = bot.RiskManager(
+            max_daily_loss=2000.0,
+            max_trades_per_day=5,
+            max_position_quantity=50,
+            min_confidence=75.0,
+        )
 
+        bot.broker = FakeBroker()
+
+        bot.telemetry = FakeTelemetry()
+
+        bot.PAPER_TRADING = True
         bot.EXCHANGE = "NSE"
         bot.SYMBOL = "TEST"
         bot.TOKEN = "TESTTOKEN"
@@ -91,128 +96,118 @@ class TestOrchestratorSafety(unittest.TestCase):
         except FileNotFoundError:
             pass
 
-    def test_paper_mode_is_enabled(self):
-
-        self.assertTrue(
-            bot.PAPER_TRADING
-        )
-
-    def test_paper_order_does_not_use_live_api(self):
-
-        fake_broker = FakeBroker()
-
-        bot.broker = fake_broker
-
-        result = bot.execute_paper_order(
-            transaction_type="BUY",
-            quantity=50,
-            price=100.0,
-        )
-
-        self.assertEqual(
-            result["status"],
-            "PAPER"
-        )
-
-        self.assertEqual(
-            len(fake_broker.orders),
-            1
-        )
-
-        self.assertEqual(
-            fake_broker.orders[0][
-                "transaction_type"
-            ],
-            "BUY"
-        )
-
-    def test_valid_long_entry_structure(self):
+    def test_long_entry_creates_position(self):
 
         decision = {
             "action": "ENTER_LONG",
-
             "execution_details": {
+                "order_type": "MARKET",
                 "suggested_price": 100.0,
                 "revised_stop_loss": 95.0,
                 "target_1": 110.0,
                 "target_2": 115.0,
                 "quantity_fraction": 1.0,
             },
-
             "algorithmic_confidence": {
-                "overall_score": 85
-            }
+                "overall_score": 90
+            },
+            "rationale": "Test long entry",
         }
+
+        with patch.object(
+            bot,
+            "call_ai_decision",
+            return_value=decision
+        ), patch.object(
+            bot,
+            "is_market_open",
+            return_value=True
+        ):
+
+            bot.run_trading_cycle()
+
+        position = bot.state.get_position(
+            "TEST"
+        )
 
         self.assertTrue(
-            bot.validate_entry(
-                "ENTER_LONG",
-                decision["execution_details"]
-            )
+            position["has_position"]
         )
 
-    def test_invalid_long_stop_loss(self):
-
-        decision = {
-            "suggested_price": 100.0,
-            "revised_stop_loss": 105.0,
-            "target_1": 110.0,
-            "target_2": 115.0,
-            "quantity_fraction": 1.0,
-        }
-
-        self.assertFalse(
-            bot.validate_entry(
-                "ENTER_LONG",
-                decision
-            )
+        self.assertEqual(
+            position["direction"],
+            "LONG"
         )
 
-    def test_valid_short_entry_structure(self):
+        self.assertEqual(
+            position["quantity"],
+            50
+        )
+
+        self.assertEqual(
+            len(bot.broker.orders),
+            1
+        )
+
+        self.assertEqual(
+            bot.broker.orders[0]["transaction_type"],
+            "BUY"
+        )
+
+    def test_short_entry_creates_position(self):
 
         decision = {
-            "suggested_price": 100.0,
-            "revised_stop_loss": 105.0,
-            "target_1": 90.0,
-            "target_2": 85.0,
-            "quantity_fraction": 1.0,
+            "action": "ENTER_SHORT",
+            "execution_details": {
+                "order_type": "MARKET",
+                "suggested_price": 100.0,
+                "revised_stop_loss": 105.0,
+                "target_1": 90.0,
+                "target_2": 85.0,
+                "quantity_fraction": 1.0,
+            },
+            "algorithmic_confidence": {
+                "overall_score": 90
+            },
+            "rationale": "Test short entry",
         }
+
+        with patch.object(
+            bot,
+            "call_ai_decision",
+            return_value=decision
+        ), patch.object(
+            bot,
+            "is_market_open",
+            return_value=True
+        ):
+
+            bot.run_trading_cycle()
+
+        position = bot.state.get_position(
+            "TEST"
+        )
 
         self.assertTrue(
-            bot.validate_entry(
-                "ENTER_SHORT",
-                decision
-            )
+            position["has_position"]
         )
 
-    def test_invalid_short_stop_loss(self):
-
-        decision = {
-            "suggested_price": 100.0,
-            "revised_stop_loss": 95.0,
-            "target_1": 90.0,
-            "target_2": 85.0,
-            "quantity_fraction": 1.0,
-        }
-
-        self.assertFalse(
-            bot.validate_entry(
-                "ENTER_SHORT",
-                decision
-            )
+        self.assertEqual(
+            position["direction"],
+            "SHORT"
         )
 
-    def test_full_long_trade_lifecycle(self):
-
-        fake_broker = FakeBroker()
-
-        bot.broker = fake_broker
-
-        entry = bot.execute_paper_order(
-            transaction_type="BUY",
-            quantity=50,
-            price=100.0,
+        self.assertEqual(
+            position["quantity"],
+            50
         )
+
+        self.assertEqual(
+            bot.broker.orders[0]["transaction_type"],
+            "SELL"
+        )
+
+    def test_existing_position_blocks_new_entry(self):
 
         bot.state.open_position(
             symbol="TEST",
@@ -222,7 +217,39 @@ class TestOrchestratorSafety(unittest.TestCase):
             stop_loss=95.0,
             t1=110.0,
             t2=115.0,
-            sl_order_id=entry["order_id"],
+            sl_order_id="TEST-SL"
+        )
+
+        decision = {
+            "action": "ENTER_LONG",
+            "execution_details": {
+                "order_type": "MARKET",
+                "suggested_price": 101.0,
+                "revised_stop_loss": 96.0,
+                "target_1": 111.0,
+                "target_2": 116.0,
+                "quantity_fraction": 1.0,
+            },
+            "algorithmic_confidence": {
+                "overall_score": 95
+            },
+        }
+
+        with patch.object(
+            bot,
+            "call_ai_decision",
+            return_value=decision
+        ), patch.object(
+            bot,
+            "is_market_open",
+            return_value=True
+        ):
+
+            bot.run_trading_cycle()
+
+        self.assertEqual(
+            len(bot.broker.orders),
+            0
         )
 
         position = bot.state.get_position(
@@ -233,22 +260,42 @@ class TestOrchestratorSafety(unittest.TestCase):
             position["has_position"]
         )
 
-        exit_order = bot.execute_paper_order(
-            transaction_type="SELL",
-            quantity=50,
-            price=110.0,
-        )
+    def test_exit_now_closes_position_and_records_pnl(self):
 
-        self.assertEqual(
-            exit_order["transaction_type"],
-            "SELL"
-        )
-
-        bot.state.close_position(
+        bot.state.open_position(
             symbol="TEST",
-            exit_price=110.0,
-            reason="TEST TARGET"
+            direction="LONG",
+            entry_price=100.0,
+            qty=50,
+            stop_loss=95.0,
+            t1=110.0,
+            t2=115.0,
+            sl_order_id="TEST-SL"
         )
+
+        decision = {
+            "action": "EXIT_NOW",
+            "execution_details": {
+                "suggested_price": 110.0,
+                "quantity_fraction": 1.0,
+            },
+            "algorithmic_confidence": {
+                "overall_score": 85
+            },
+            "exit_trigger_condition": "Test target hit",
+        }
+
+        with patch.object(
+            bot,
+            "call_ai_decision",
+            return_value=decision
+        ), patch.object(
+            bot,
+            "is_market_open",
+            return_value=True
+        ):
+
+            bot.run_trading_cycle()
 
         position = bot.state.get_position(
             "TEST"
@@ -256,6 +303,16 @@ class TestOrchestratorSafety(unittest.TestCase):
 
         self.assertFalse(
             position["has_position"]
+        )
+
+        self.assertEqual(
+            len(bot.broker.orders),
+            1
+        )
+
+        self.assertEqual(
+            bot.broker.orders[0]["transaction_type"],
+            "SELL"
         )
 
         stats = bot.state.get_daily_stats()
@@ -265,17 +322,52 @@ class TestOrchestratorSafety(unittest.TestCase):
             500.0
         )
 
-    def test_long_trade_loss(self):
+    def test_daily_loss_blocks_new_entry(self):
 
-        fake_broker = FakeBroker()
-
-        bot.broker = fake_broker
-
-        entry = bot.execute_paper_order(
-            transaction_type="BUY",
+        bot.state.record_trade(
+            symbol="TEST",
+            direction="LONG",
+            transaction_type="EXIT",
+            entry_price=100.0,
+            exit_price=60.0,
             quantity=50,
-            price=100.0,
+            pnl=-2000.0,
+            reason="Daily loss test",
         )
+
+        decision = {
+            "action": "ENTER_LONG",
+            "execution_details": {
+                "order_type": "MARKET",
+                "suggested_price": 100.0,
+                "revised_stop_loss": 95.0,
+                "target_1": 110.0,
+                "target_2": 115.0,
+                "quantity_fraction": 1.0,
+            },
+            "algorithmic_confidence": {
+                "overall_score": 95
+            },
+        }
+
+        with patch.object(
+            bot,
+            "call_ai_decision",
+            return_value=decision
+        ), patch.object(
+            bot,
+            "is_market_open",
+            return_value=True
+        ):
+
+            bot.run_trading_cycle()
+
+        self.assertEqual(
+            len(bot.broker.orders),
+            0
+        )
+
+    def test_trailing_stop_updates_position(self):
 
         bot.state.open_position(
             symbol="TEST",
@@ -285,26 +377,48 @@ class TestOrchestratorSafety(unittest.TestCase):
             stop_loss=95.0,
             t1=110.0,
             t2=115.0,
-            sl_order_id=entry["order_id"],
+            sl_order_id="TEST-SL"
         )
 
-        bot.execute_paper_order(
-            transaction_type="SELL",
-            quantity=50,
-            price=95.0,
+        decision = {
+            "action": "TRAIL_SL",
+            "execution_details": {
+                "revised_stop_loss": 103.0,
+                "quantity_fraction": 1.0,
+            },
+            "algorithmic_confidence": {
+                "overall_score": 80
+            },
+        }
+
+        with patch.object(
+            bot,
+            "call_ai_decision",
+            return_value=decision
+        ), patch.object(
+            bot,
+            "is_market_open",
+            return_value=True
+        ):
+
+            bot.run_trading_cycle()
+
+        position = bot.state.get_position(
+            "TEST"
         )
 
-        bot.state.close_position(
-            symbol="TEST",
-            exit_price=95.0,
-            reason="TEST STOP LOSS"
+        self.assertTrue(
+            position["has_position"]
         )
-
-        stats = bot.state.get_daily_stats()
 
         self.assertEqual(
-            stats["daily_pnl"],
-            -250.0
+            position["stop_loss"],
+            103.0
+        )
+
+        self.assertEqual(
+            len(bot.broker.orders),
+            0
         )
 
 
