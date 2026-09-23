@@ -37,11 +37,26 @@ jobs:
           python -m py_compile paper_broker.py
           python -m py_compile test_bot.py
           python -m py_compile test_orchestrator.py
+          python -m py_compile offline_market_simulator.py
+          python -m py_compile offline_ai_decision_test.py
+          python -m py_compile offline_end_to_end_test.py
 
       - name: Run paper trading tests
         run: |
           python -m unittest test_bot.py -v
           python -m unittest test_orchestrator.py -v
+
+      - name: Run offline market simulation
+        run: |
+          python offline_market_simulator.py
+
+      - name: Run offline AI decision test
+        run: |
+          python offline_ai_decision_test.py
+
+      - name: Run offline end-to-end test
+        run: |
+          python offline_end_to_end_test.py
 
       - name: Test completed
         run: |
