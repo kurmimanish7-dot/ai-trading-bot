@@ -7,6 +7,10 @@ import main_orchestrator as bot
 from State_manager import StateManager
 
 
+# ============================================================
+# FAKE TELEMETRY
+# ============================================================
+
 class FakeTelemetry:
 
     def build_payload(
@@ -20,6 +24,10 @@ class FakeTelemetry:
     ):
         return "TEST MARKET TELEMETRY"
 
+
+# ============================================================
+# FAKE BROKER
+# ============================================================
 
 class FakeBroker:
 
@@ -53,6 +61,10 @@ class FakeBroker:
 
         return order
 
+
+# ============================================================
+# ORCHESTRATOR INTEGRATION TESTS
+# ============================================================
 
 class TestOrchestratorIntegration(unittest.TestCase):
 
@@ -96,10 +108,15 @@ class TestOrchestratorIntegration(unittest.TestCase):
         except FileNotFoundError:
             pass
 
+    # ========================================================
+    # TEST 1: LONG ENTRY
+    # ========================================================
+
     def test_long_entry_creates_position(self):
 
         decision = {
             "action": "ENTER_LONG",
+
             "execution_details": {
                 "order_type": "MARKET",
                 "suggested_price": 100.0,
@@ -108,9 +125,11 @@ class TestOrchestratorIntegration(unittest.TestCase):
                 "target_2": 115.0,
                 "quantity_fraction": 1.0,
             },
+
             "algorithmic_confidence": {
                 "overall_score": 90
             },
+
             "rationale": "Test long entry",
         }
 
@@ -154,10 +173,15 @@ class TestOrchestratorIntegration(unittest.TestCase):
             "BUY"
         )
 
+    # ========================================================
+    # TEST 2: SHORT ENTRY
+    # ========================================================
+
     def test_short_entry_creates_position(self):
 
         decision = {
             "action": "ENTER_SHORT",
+
             "execution_details": {
                 "order_type": "MARKET",
                 "suggested_price": 100.0,
@@ -166,9 +190,11 @@ class TestOrchestratorIntegration(unittest.TestCase):
                 "target_2": 85.0,
                 "quantity_fraction": 1.0,
             },
+
             "algorithmic_confidence": {
                 "overall_score": 90
             },
+
             "rationale": "Test short entry",
         }
 
@@ -207,6 +233,10 @@ class TestOrchestratorIntegration(unittest.TestCase):
             "SELL"
         )
 
+    # ========================================================
+    # TEST 3: EXISTING POSITION BLOCKS NEW ENTRY
+    # ========================================================
+
     def test_existing_position_blocks_new_entry(self):
 
         bot.state.open_position(
@@ -222,6 +252,7 @@ class TestOrchestratorIntegration(unittest.TestCase):
 
         decision = {
             "action": "ENTER_LONG",
+
             "execution_details": {
                 "order_type": "MARKET",
                 "suggested_price": 101.0,
@@ -230,6 +261,7 @@ class TestOrchestratorIntegration(unittest.TestCase):
                 "target_2": 116.0,
                 "quantity_fraction": 1.0,
             },
+
             "algorithmic_confidence": {
                 "overall_score": 95
             },
@@ -260,6 +292,10 @@ class TestOrchestratorIntegration(unittest.TestCase):
             position["has_position"]
         )
 
+    # ========================================================
+    # TEST 4: EXIT NOW
+    # ========================================================
+
     def test_exit_now_closes_position_and_records_pnl(self):
 
         bot.state.open_position(
@@ -275,13 +311,16 @@ class TestOrchestratorIntegration(unittest.TestCase):
 
         decision = {
             "action": "EXIT_NOW",
+
             "execution_details": {
                 "suggested_price": 110.0,
                 "quantity_fraction": 1.0,
             },
+
             "algorithmic_confidence": {
                 "overall_score": 85
             },
+
             "exit_trigger_condition": "Test target hit",
         }
 
@@ -322,6 +361,10 @@ class TestOrchestratorIntegration(unittest.TestCase):
             500.0
         )
 
+    # ========================================================
+    # TEST 5: DAILY LOSS BLOCK
+    # ========================================================
+
     def test_daily_loss_blocks_new_entry(self):
 
         bot.state.record_trade(
@@ -337,6 +380,7 @@ class TestOrchestratorIntegration(unittest.TestCase):
 
         decision = {
             "action": "ENTER_LONG",
+
             "execution_details": {
                 "order_type": "MARKET",
                 "suggested_price": 100.0,
@@ -345,6 +389,7 @@ class TestOrchestratorIntegration(unittest.TestCase):
                 "target_2": 115.0,
                 "quantity_fraction": 1.0,
             },
+
             "algorithmic_confidence": {
                 "overall_score": 95
             },
@@ -367,6 +412,10 @@ class TestOrchestratorIntegration(unittest.TestCase):
             0
         )
 
+    # ========================================================
+    # TEST 6: TRAILING STOP LOSS
+    # ========================================================
+
     def test_trailing_stop_updates_position(self):
 
         bot.state.open_position(
@@ -382,10 +431,12 @@ class TestOrchestratorIntegration(unittest.TestCase):
 
         decision = {
             "action": "TRAIL_SL",
+
             "execution_details": {
                 "revised_stop_loss": 103.0,
                 "quantity_fraction": 1.0,
             },
+
             "algorithmic_confidence": {
                 "overall_score": 80
             },
@@ -421,6 +472,53 @@ class TestOrchestratorIntegration(unittest.TestCase):
             0
         )
 
+    # ========================================================
+    # TEST 7: NO TRADE MUST NOT PLACE ORDER
+    # ========================================================
+
+    def test_no_trade_does_not_place_order(self):
+
+        decision = {
+            "action": "NO_TRADE",
+
+            "execution_details": {},
+
+            "algorithmic_confidence": {
+                "overall_score": 40
+            },
+
+            "rationale": "Insufficient market confirmation",
+        }
+
+        with patch.object(
+            bot,
+            "call_ai_decision",
+            return_value=decision
+        ), patch.object(
+            bot,
+            "is_market_open",
+            return_value=True
+        ):
+
+            bot.run_trading_cycle()
+
+        self.assertEqual(
+            len(bot.broker.orders),
+            0
+        )
+
+        position = bot.state.get_position(
+            "TEST"
+        )
+
+        self.assertFalse(
+            position["has_position"]
+        )
+
+
+# ============================================================
+# RUN TESTS
+# ============================================================
 
 if __name__ == "__main__":
 
