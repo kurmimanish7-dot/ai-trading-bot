@@ -40,6 +40,7 @@ jobs:
           python -m py_compile offline_market_simulator.py
           python -m py_compile offline_ai_decision_test.py
           python -m py_compile offline_end_to_end_test.py
+          python -m py_compile test_gemini_api.py
 
       - name: Run paper trading tests
         run: |
@@ -57,6 +58,12 @@ jobs:
       - name: Run offline end-to-end test
         run: |
           python offline_end_to_end_test.py
+
+      - name: Test Gemini API
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python test_gemini_api.py
 
       - name: Test completed
         run: |
