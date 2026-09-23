@@ -6,3 +6,4 @@ smartapi-python
 requests
 logzero
 websocket-client
+streamlit
