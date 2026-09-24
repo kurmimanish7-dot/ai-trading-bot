@@ -372,19 +372,26 @@ angel_connected = all(
 )
 
 if gemini_key:
+
     st.success(
         "🟢 Gemini API Key: Connected"
     )
+
 else:
+
     st.error(
         "🔴 Gemini API Key: Not Connected"
     )
 
+
 if angel_connected:
+
     st.success(
         "🟢 Angel One Credentials: Connected"
     )
+
 else:
+
     st.warning(
         "🟡 Angel One Credentials: Incomplete"
     )
@@ -440,6 +447,7 @@ if angel_connected:
             interval
         )
 
+
 if df is None:
 
     data_source = "OFFLINE TEST DATA"
@@ -475,12 +483,14 @@ st.subheader("Market Snapshot")
 
 col1, col2, col3, col4 = st.columns(4)
 
+
 with col1:
 
     st.metric(
         "LTP",
-        f"₹{indicators['ltp']}",
+        f"{indicators['ltp']:.2f} pts",
     )
+
 
 with col2:
 
@@ -489,12 +499,14 @@ with col2:
         indicators["rsi"],
     )
 
+
 with col3:
 
     st.metric(
         "VWAP",
-        f"₹{indicators['vwap']}",
+        f"{indicators['vwap']:.2f} pts",
     )
+
 
 with col4:
 
@@ -512,6 +524,7 @@ st.subheader("Market Analysis")
 
 col1, col2, col3, col4 = st.columns(4)
 
+
 with col1:
 
     st.write("**EMA Trend**")
@@ -519,6 +532,7 @@ with col1:
     st.info(
         indicators["ema_trend"]
     )
+
 
 with col2:
 
@@ -528,6 +542,7 @@ with col2:
         indicators["supertrend"]
     )
 
+
 with col3:
 
     st.write("**VWAP Position**")
@@ -535,6 +550,7 @@ with col3:
     st.info(
         indicators["price_vs_vwap"]
     )
+
 
 with col4:
 
@@ -549,7 +565,7 @@ with col4:
 # PRICE CHART
 # ============================================================
 
-st.subheader("📊 Price Chart")
+st.subheader("📊 NIFTY 50 Price Chart")
 
 chart_data = df.set_index(
     "timestamp"
@@ -676,12 +692,14 @@ if analysis_mode == "Technical + AI":
 
     col1, col2 = st.columns(2)
 
+
     with col1:
 
         st.metric(
             "AI Signal",
             ai_result["signal"],
         )
+
 
     with col2:
 
@@ -690,13 +708,14 @@ if analysis_mode == "Technical + AI":
             f"{ai_result['confidence']:.1f}%",
         )
 
+
     st.info(
         ai_result["reason"]
     )
 
 
 # ============================================================
-# TRADE PLAN
+# PAPER TRADE PLAN
 # ============================================================
 
 st.subheader("🎯 Paper Trade Plan")
@@ -726,31 +745,34 @@ else:
 
 col1, col2, col3 = st.columns(3)
 
+
 with col1:
 
     st.metric(
         "Entry",
-        f"₹{ltp}",
+        f"{ltp:.2f} pts",
     )
+
 
 with col2:
 
     st.metric(
         "Stop Loss",
-        f"₹{stop_loss:.2f}",
+        f"{stop_loss:.2f} pts",
     )
+
 
 with col3:
 
     st.metric(
         "Target 1",
-        f"₹{target_1:.2f}",
+        f"{target_1:.2f} pts",
     )
 
 
 st.metric(
     "Target 2",
-    f"₹{target_2:.2f}",
+    f"{target_2:.2f} pts",
 )
 
 
@@ -759,7 +781,7 @@ st.metric(
 # ============================================================
 
 with st.expander(
-    "🕯️ Recent Candles"
+    "🕯️ Recent NIFTY 50 Candles"
 ):
 
     st.dataframe(
