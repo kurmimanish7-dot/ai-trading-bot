@@ -27,7 +27,42 @@ st.set_page_config(
 
 
 # ============================================================
-# SAMPLE MARKET DATA
+# CREDENTIAL HELPERS
+# ============================================================
+
+def get_secret(name):
+    value = os.getenv(name)
+
+    if value:
+        return value
+
+    try:
+        value = st.secrets.get(name)
+
+        if value:
+            return value
+
+    except Exception:
+        pass
+
+    return None
+
+
+def get_gemini_api_key():
+    return get_secret("GEMINI_API_KEY")
+
+
+def get_angel_credentials():
+    return {
+        "api_key": get_secret("ANGEL_API_KEY"),
+        "client_code": get_secret("ANGEL_CLIENT_CODE"),
+        "pin": get_secret("ANGEL_PIN"),
+        "totp_secret": get_secret("ANGEL_TOTP_SECRET"),
+    }
+
+
+# ============================================================
+# SAMPLE MARKET DATA - FALLBACK ONLY
 # ============================================================
 
 def create_sample_candles(rows=150):
@@ -68,28 +103,108 @@ def create_sample_candles(rows=150):
 
 
 # ============================================================
-# GEMINI API KEY
+# ANGEL ONE MARKET DATA
 # ============================================================
 
-def get_gemini_api_key():
+def fetch_real_market_data(interval):
 
-    # First try environment variable
-    key = os.getenv("GEMINI_API_KEY")
+    credentials = get_angel_credentials()
 
-    if key:
-        return key
+    missing = [
+        key
+        for key, value in credentials.items()
+        if not value
+    ]
 
-    # Then try Streamlit Secrets
+    if missing:
+        return None, (
+            "Missing Angel One credentials: "
+            + ", ".join(missing)
+        )
+
+    interval_map = {
+        "ONE_MINUTE": "ONE_MINUTE",
+        "FIVE_MINUTE": "FIVE_MINUTE",
+        "FIFTEEN_MINUTE": "FIFTEEN_MINUTE",
+    }
+
+    api_interval = interval_map.get(
+        interval,
+        "FIVE_MINUTE"
+    )
+
     try:
-        key = st.secrets.get("GEMINI_API_KEY")
 
-        if key:
-            return key
+        engine = TelemetryEngine(
+            api_key=credentials["api_key"],
+            client_code=credentials["client_code"],
+            pin=credentials["pin"],
+            totp_secret=credentials["totp_secret"],
+        )
 
-    except Exception:
-        pass
+        df = engine.fetch_ohlcv(
+            exchange="NSE",
+            token="99926000",
+            interval=api_interval,
+            days=5,
+        )
 
-    return None
+        if df is None or df.empty:
+            return None, "Angel One returned no candle data."
+
+        required_columns = [
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]
+
+        for column in required_columns:
+            if column not in df.columns:
+                return None, (
+                    f"Missing candle column: {column}"
+                )
+
+        df = df.copy()
+
+        df["timestamp"] = pd.to_datetime(
+            df["timestamp"]
+        )
+
+        for column in [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]:
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce",
+            )
+
+        df = df.dropna(
+            subset=[
+                "open",
+                "high",
+                "low",
+                "close",
+            ]
+        )
+
+        if df.empty:
+            return None, "No valid candle data after cleaning."
+
+        return df, None
+
+    except Exception as e:
+
+        return None, (
+            "Angel One connection error: "
+            + str(e)
+        )
 
 
 # ============================================================
@@ -119,7 +234,7 @@ You are an AI market-analysis assistant for a PAPER TRADING system.
 
 IMPORTANT:
 - This is NOT real trading.
-- Do NOT place or recommend an actual broker order.
+- Do NOT place an actual broker order.
 - Analyze only the supplied technical data.
 - Do not invent news, price, VIX, OI, PCR or market data.
 - If the data is insufficient, return NO_TRADE.
@@ -140,7 +255,7 @@ Supertrend: {indicators.get("supertrend")}
 VWAP Position: {indicators.get("price_vs_vwap")}
 Market Regime: {indicators.get("market_regime")}
 
-Return ONLY valid JSON in this format:
+Return ONLY valid JSON:
 
 {{
     "signal": "ENTER_LONG",
@@ -156,7 +271,7 @@ NO_TRADE
 
 Confidence must be between 0 and 100.
 
-If the setup is not sufficiently clear, return:
+If the setup is unclear:
 
 {{
     "signal": "NO_TRADE",
@@ -172,7 +287,6 @@ If the setup is not sufficiently clear, return:
 
         text = response.text.strip()
 
-        # Remove markdown code fences if Gemini returns them
         if text.startswith("```"):
             text = text.replace("```json", "")
             text = text.replace("```", "")
@@ -181,11 +295,17 @@ If the setup is not sufficiently clear, return:
         result = json.loads(text)
 
         signal = str(
-            result.get("signal", "NO_TRADE")
+            result.get(
+                "signal",
+                "NO_TRADE"
+            )
         ).upper()
 
         confidence = float(
-            result.get("confidence", 0)
+            result.get(
+                "confidence",
+                0
+            )
         )
 
         reason = str(
@@ -218,7 +338,9 @@ If the setup is not sufficiently clear, return:
         return {
             "signal": "NO_TRADE",
             "confidence": 0.0,
-            "reason": f"AI analysis error: {str(e)}",
+            "reason": (
+                f"AI analysis error: {str(e)}"
+            ),
         }
 
 
@@ -238,21 +360,33 @@ st.warning(
 
 
 # ============================================================
-# GEMINI STATUS
+# API STATUS
 # ============================================================
 
 gemini_key = get_gemini_api_key()
 
-if gemini_key:
+angel_credentials = get_angel_credentials()
 
+angel_connected = all(
+    angel_credentials.values()
+)
+
+if gemini_key:
     st.success(
         "🟢 Gemini API Key: Connected"
     )
-
 else:
-
     st.error(
         "🔴 Gemini API Key: Not Connected"
+    )
+
+if angel_connected:
+    st.success(
+        "🟢 Angel One Credentials: Connected"
+    )
+else:
+    st.warning(
+        "🟡 Angel One Credentials: Incomplete"
     )
 
 
@@ -265,8 +399,7 @@ st.sidebar.header("⚙️ Trading Settings")
 symbol = st.sidebar.selectbox(
     "Instrument",
     [
-        "NIFTY26SEPFUT",
-        "BANKNIFTY",
+        "NIFTY 50",
     ],
 )
 
@@ -290,10 +423,44 @@ analysis_mode = st.sidebar.selectbox(
 
 
 # ============================================================
-# OFFLINE MARKET DATA
+# MARKET DATA
 # ============================================================
 
-df = create_sample_candles()
+df = None
+data_error = None
+data_source = "ANGEL ONE LIVE/HISTORICAL DATA"
+
+if angel_connected:
+
+    with st.spinner(
+        "📡 Fetching NIFTY 50 data from Angel One..."
+    ):
+
+        df, data_error = fetch_real_market_data(
+            interval
+        )
+
+if df is None:
+
+    data_source = "OFFLINE TEST DATA"
+
+    df = create_sample_candles()
+
+    if data_error:
+
+        st.warning(
+            "⚠️ Angel One data could not be loaded. "
+            "Using simulated test candles instead."
+        )
+
+        st.caption(
+            f"Reason: {data_error}"
+        )
+
+
+# ============================================================
+# TECHNICAL INDICATORS
+# ============================================================
 
 indicators = (
     TelemetryEngine.calculate_indicators(df)
@@ -431,7 +598,9 @@ ai_result = {
 
 if analysis_mode == "Technical + AI":
 
-    with st.spinner("🤖 Gemini is analyzing the technical setup..."):
+    with st.spinner(
+        "🤖 Gemini is analyzing the technical setup..."
+    ):
 
         ai_result = get_ai_analysis(
             indicators,
@@ -449,12 +618,10 @@ if analysis_mode == "Technical + AI":
     ai_signal = ai_result["signal"]
     ai_confidence = ai_result["confidence"]
 
-    # AI must meet minimum confidence
     if ai_confidence < MIN_AI_CONFIDENCE:
 
         signal = "NO_TRADE"
 
-    # AI and technical setup must agree
     elif (
         ai_signal == technical_signal
         and ai_signal in [
@@ -613,6 +780,12 @@ ai_status = (
     else "NOT CONNECTED"
 )
 
+market_status = (
+    "ANGEL ONE DATA"
+    if data_source != "OFFLINE TEST DATA"
+    else "OFFLINE TEST DATA"
+)
+
 status_data = {
     "Component": [
         "Market Data",
@@ -623,7 +796,7 @@ status_data = {
         "Real Orders",
     ],
     "Status": [
-        "OFFLINE TEST DATA",
+        market_status,
         "READY",
         "READY",
         "READY",
@@ -641,8 +814,19 @@ st.table(
 # SAFETY MESSAGE
 # ============================================================
 
-st.caption(
-    "This dashboard currently uses simulated test candles. "
-    "Gemini provides analysis only. "
-    "No real market order is sent."
-)
+if data_source == "OFFLINE TEST DATA":
+
+    st.caption(
+        "Angel One market data is not currently available. "
+        "The dashboard is showing simulated test candles. "
+        "Gemini provides analysis only. "
+        "No real market order is sent."
+    )
+
+else:
+
+    st.caption(
+        "Market data is being read from Angel One. "
+        "Gemini provides analysis only. "
+        "Paper trading is enabled and real orders are disabled."
+    )
