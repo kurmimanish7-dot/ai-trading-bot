@@ -1,4 +1,5 @@
 import streamlit as st
+import os
 import pandas as pd
 import numpy as np
 
@@ -68,7 +69,12 @@ st.caption(
 st.warning(
     "PAPER TRADING ONLY — NO REAL ORDERS"
 )
+gemini_key = os.getenv("GEMINI_API_KEY")
 
+if gemini_key:
+    st.success("🟢 Gemini API Key: Connected")
+else:
+    st.error("🔴 Gemini API Key: Not Connected")
 
 # ============================================================
 # SIDEBAR
