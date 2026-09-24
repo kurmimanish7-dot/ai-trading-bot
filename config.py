@@ -68,7 +68,7 @@ MARKET_CLOSE = "15:15"
 # AI / ANALYSIS
 # ============================================================
 
-AI_MODEL = "gemini-2.5-flash"
+AI_MODEL = "gemini-3.6-flash"
 
 CANDLE_INTERVAL = "FIVE_MINUTE"
 
