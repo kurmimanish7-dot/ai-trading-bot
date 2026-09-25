@@ -7,8 +7,7 @@ import pandas as pd
 import numpy as np
 
 import threading
-from SmartApi.smartWebSocketV2 
-import SmartWebSocketV2
+from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 
 from google import genai
 
