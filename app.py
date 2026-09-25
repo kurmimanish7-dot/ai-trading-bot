@@ -12,6 +12,7 @@ from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 from google import genai
 
 from telemetry_engine import TelemetryEngine
+from advanced_analysis import build_advanced_analysis
 from config import (
     AI_MODEL,
     PAPER_TRADING,
