@@ -680,6 +680,52 @@ If the setup is unclear:
             )
         ).upper()
 
-        confidence = float(
+                confidence = float(
             result.get(
+                "confidence",
+                0,
+            )
+        )
+
+        reason = str(
+            result.get(
+                "reason",
+                "No reason provided",
+            )
+        )
+
+        if confidence < 0:
+            confidence = 0
+
+        if confidence > 100:
+            confidence = 100
+
+        allowed_signals = {
+            "ENTER_LONG",
+            "ENTER_SHORT",
+            "NO_TRADE",
+        }
+
+        if signal not in allowed_signals:
+            signal = "NO_TRADE"
+
+        if confidence < MIN_AI_CONFIDENCE:
+            signal = "NO_TRADE"
+
+        return {
+            "signal": signal,
+            "confidence": confidence,
+            "reason": reason,
+        }
+
+    except Exception as e:
+
+        return {
+            "signal": "NO_TRADE",
+            "confidence": 0.0,
+            "reason": (
+                "Gemini analysis error: "
+                + str(e)
+            ),
+        }
                
