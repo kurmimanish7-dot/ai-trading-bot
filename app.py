@@ -523,6 +523,15 @@ def fetch_real_market_data(
 # GEMINI ANALYSIS
 # ============================================================
 
+def get_advanced_analysis(df):
+    try:
+        return build_advanced_analysis(df)
+    except Exception as e:
+        return {
+            "status": "ERROR",
+            "error": str(e)
+        }
+        
 def get_ai_analysis(
     indicators,
     symbol,
