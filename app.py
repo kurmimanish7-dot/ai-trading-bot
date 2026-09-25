@@ -13,6 +13,7 @@ from google import genai
 
 from telemetry_engine import TelemetryEngine
 from advanced_analysis import build_advanced_analysis
+
 from config import (
     AI_MODEL,
     PAPER_TRADING,
@@ -520,20 +521,30 @@ def fetch_real_market_data(
 
 
 # ============================================================
-# GEMINI ANALYSIS
+# ADVANCED ANALYSIS
 # ============================================================
 
 def get_advanced_analysis(df):
+
     try:
+
         return build_advanced_analysis(df)
+
     except Exception as e:
+
         return {
             "status": "ERROR",
-            "error": str(e)
+            "error": str(e),
         }
-        
+
+
+# ============================================================
+# GEMINI ANALYSIS
+# ============================================================
+
 def get_ai_analysis(
     indicators,
+    advanced_analysis,
     symbol,
     interval,
 ):
@@ -565,8 +576,8 @@ IMPORTANT:
 - This is NOT real trading.
 - Do NOT place any actual broker order.
 - Analyze only the supplied technical data.
-- Do not invent news, price, VIX, OI, PCR
-  or any other market data.
+- Do not invent news, price, VIX, OI, PCR,
+  Greeks or any other unavailable data.
 - If data is insufficient, return NO_TRADE.
 - Be conservative.
 
@@ -576,7 +587,7 @@ Instrument:
 Candle interval:
 {interval}
 
-Technical indicators:
+BASE TECHNICAL DATA:
 
 LTP: {indicators.get("ltp")}
 RSI: {indicators.get("rsi")}
@@ -587,6 +598,30 @@ EMA Trend: {indicators.get("ema_trend")}
 Supertrend: {indicators.get("supertrend")}
 VWAP Position: {indicators.get("price_vs_vwap")}
 Market Regime: {indicators.get("market_regime")}
+
+ADVANCED ANALYSIS:
+
+Candlestick:
+{advanced_analysis.get("candlestick_patterns")}
+
+MACD:
+{advanced_analysis.get("macd")}
+
+EMA 200:
+{advanced_analysis.get("ema_200")}
+
+Support / Resistance:
+{advanced_analysis.get("support_resistance")}
+
+Volume:
+{advanced_analysis.get("volume")}
+
+Market Structure:
+{advanced_analysis.get("market_structure")}
+
+Use the available confirmations together.
+
+Do NOT assume that one indicator alone is enough.
 
 Return ONLY valid JSON:
 
@@ -618,23 +653,25 @@ If the setup is unclear:
             contents=prompt,
         )
 
-        text = response.text.strip()
+        response_text = response.text.strip()
 
-        if text.startswith("```"):
+        if response_text.startswith("```"):
 
-            text = text.replace(
+            response_text = response_text.replace(
                 "```json",
                 "",
             )
 
-            text = text.replace(
+            response_text = response_text.replace(
                 "```",
                 "",
             )
 
-            text = text.strip()
+            response_text = response_text.strip()
 
-        result = json.loads(text)
+        result = json.loads(
+            response_text
+        )
 
         signal = str(
             result.get(
@@ -645,739 +682,4 @@ If the setup is unclear:
 
         confidence = float(
             result.get(
-                "confidence",
-                0,
-            )
-        )
-
-        reason = str(
-            result.get(
-                "reason",
-                "No explanation provided.",
-            )
-        )
-
-        if signal not in [
-            "ENTER_LONG",
-            "ENTER_SHORT",
-            "NO_TRADE",
-        ]:
-
-            signal = "NO_TRADE"
-
-        confidence = max(
-            0.0,
-            min(100.0, confidence),
-        )
-
-        return {
-            "signal": signal,
-            "confidence": confidence,
-            "reason": reason,
-        }
-
-    except Exception as e:
-
-        return {
-            "signal": "NO_TRADE",
-            "confidence": 0.0,
-            "reason": (
-                f"AI analysis error: {str(e)}"
-            ),
-        }
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-st.title(
-    "📈 Personal AI Trading App"
-)
-
-st.caption(
-    "AI-assisted market research and "
-    "paper-trading dashboard"
-)
-
-st.warning(
-    "PAPER TRADING ONLY — NO REAL ORDERS"
-)
-
-st.sidebar.header(
-    "⚙️ Trading Settings"
-)
-
-symbol = st.sidebar.selectbox(
-    "Instrument",
-    [
-        "NIFTY 50",
-        "BANK NIFTY",
-        "SENSEX",
-    ],
-)
-
-interval = st.sidebar.selectbox(
-    "Candle Interval",
-    [
-        "FIVE_MINUTE",
-        "ONE_MINUTE",
-        "FIFTEEN_MINUTE",
-    ],
-)
-
-analysis_mode = st.sidebar.selectbox(
-    "Analysis Mode",
-    [
-        "Technical",
-        "Technical + AI",
-        "Strategy Research",
-    ],
-)
-
-
-# ============================================================
-# CREDENTIAL STATUS
-# ============================================================
-
-gemini_key = get_gemini_api_key()
-
-angel_credentials = get_angel_credentials()
-
-angel_connected = all(
-    angel_credentials.values()
-)
-
-if gemini_key:
-
-    st.success(
-        "🟢 Gemini API Key: Connected"
-    )
-
-else:
-
-    st.error(
-        "🔴 Gemini API Key: Not Connected"
-    )
-
-if angel_connected:
-
-    st.success(
-        "🟢 Angel One Credentials: Connected"
-    )
-
-else:
-
-    st.warning(
-        "🟡 Angel One Credentials: Incomplete"
-    )
-
-
-# ============================================================
-# START WEBSOCKET
-# ============================================================
-
-if angel_connected:
-
-    start_websocket(symbol)
-
-
-# ============================================================
-# LIVE MARKET PRICE
-# ============================================================
-
-st.write(
-    "### 🔴 Live Market Price"
-)
-
-token = get_instrument_token(symbol)
-
-websocket_ltp = None
-
-if token:
-
-    with LIVE_LTP_LOCK:
-
-        websocket_ltp = LIVE_LTP.get(
-            str(token)
-        )
-
-if websocket_ltp is not None:
-
-    st.metric(
-        label=f"{symbol} LIVE LTP",
-        value=f"₹{websocket_ltp:,.2f}",
-    )
-
-    st.success(
-        "🟢 Angel One WebSocket LIVE"
-    )
-
-else:
-
-    live_data, live_error = (
-        fetch_live_ltp(symbol)
-    )
-
-    if live_data:
-
-        st.metric(
-            label=f"{symbol} LTP",
-            value=f"₹{live_data['ltp']:,.2f}",
-        )
-
-        st.info(
-            "🔵 REST LTP fallback active"
-        )
-
-    else:
-
-        st.warning(
-            "🟡 Live LTP unavailable: "
-            + str(live_error)
-        )
-
-
-# ============================================================
-# SELECTED INSTRUMENT INFO
-# ============================================================
-
-selected_instrument = INSTRUMENTS[
-    symbol
-]
-
-st.sidebar.markdown("---")
-
-st.sidebar.write(
-    f"**Exchange:** "
-    f"{selected_instrument['exchange']}"
-)
-
-st.sidebar.write(
-    f"**Instrument:** "
-    f"{selected_instrument['description']}"
-)
-
-selected_token = get_instrument_token(
-    symbol
-)
-
-if selected_token:
-
-    st.sidebar.success(
-        "Instrument Token: Available"
-    )
-
-else:
-
-    st.sidebar.warning(
-        "Instrument Token: Not configured"
-    )
-
-
-# ============================================================
-# MARKET DATA
-# ============================================================
-
-df = None
-
-data_error = None
-
-data_source = (
-    "ANGEL ONE LIVE/HISTORICAL DATA"
-)
-
-if angel_connected:
-
-    with st.spinner(
-        f"📡 Fetching {symbol} data "
-        f"from Angel One..."
-    ):
-
-        df, data_error = (
-            fetch_real_market_data(
-                symbol,
-                interval,
-            )
-        )
-
-
-# ============================================================
-# FALLBACK DATA
-# ============================================================
-
-if df is None:
-
-    data_source = (
-        "OFFLINE TEST DATA"
-    )
-
-    base_prices = {
-        "NIFTY 50": 25000.0,
-        "BANK NIFTY": 55000.0,
-        "SENSEX": 82000.0,
-    }
-
-    df = create_sample_candles(
-        base_price=base_prices[symbol]
-    )
-
-    if data_error:
-
-        st.warning(
-            f"⚠️ {symbol} live data "
-            f"could not be loaded."
-        )
-
-        st.caption(
-            f"Reason: {data_error}"
-        )
-
-        st.info(
-            "Dashboard is using simulated "
-            "test candles. No real order "
-            "is being sent."
-        )
-
-
-# ============================================================
-# DATA SOURCE DISPLAY
-# ============================================================
-
-if data_source == "OFFLINE TEST DATA":
-
-    st.warning(
-        f"📊 Data Source: OFFLINE TEST DATA — "
-        f"{symbol}"
-    )
-
-else:
-
-    st.success(
-        f"📡 Data Source: ANGEL ONE — "
-        f"{symbol}"
-    )
-
-
-# ============================================================
-# TECHNICAL INDICATORS
-# ============================================================
-
-indicators = (
-    TelemetryEngine.calculate_indicators(
-        df
-    )
-)
-
-
-# ============================================================
-# MARKET SNAPSHOT
-# ============================================================
-
-st.subheader(
-    f"📊 {symbol} Market Snapshot"
-)
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-
-    st.metric(
-        "LTP",
-        f"{indicators['ltp']:.2f}",
-    )
-
-with col2:
-
-    st.metric(
-        "RSI",
-        indicators["rsi"],
-    )
-
-with col3:
-
-    st.metric(
-        "VWAP",
-        f"{indicators['vwap']:.2f}",
-    )
-
-with col4:
-
-    st.metric(
-        "ADX",
-        indicators["adx"],
-    )
-
-
-# ============================================================
-# MARKET ANALYSIS
-# ============================================================
-
-st.subheader(
-    "🔎 Market Analysis"
-)
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-
-    st.write("**EMA Trend**")
-
-    st.info(
-        indicators["ema_trend"]
-    )
-
-with col2:
-
-    st.write("**Supertrend**")
-
-    st.info(
-        indicators["supertrend"]
-    )
-
-with col3:
-
-    st.write("**VWAP Position**")
-
-    st.info(
-        indicators["price_vs_vwap"]
-    )
-
-with col4:
-
-    st.write("**Market Regime**")
-
-    st.info(
-        indicators["market_regime"]
-    )
-
-
-# ============================================================
-# PRICE CHART
-# ============================================================
-
-st.subheader(
-    f"📈 {symbol} Price Chart"
-)
-
-chart_data = (
-    df.set_index("timestamp")[["close"]]
-)
-
-st.line_chart(
-    chart_data
-)
-
-
-# ============================================================
-# TECHNICAL SIGNAL
-# ============================================================
-
-if (
-    indicators["ema_trend"] == "BULLISH"
-    and indicators["supertrend"] == "BULLISH"
-    and indicators["price_vs_vwap"] == "ABOVE"
-):
-
-    technical_signal = "ENTER_LONG"
-
-elif (
-    indicators["ema_trend"] == "BEARISH"
-    and indicators["supertrend"] == "BEARISH"
-    and indicators["price_vs_vwap"] == "BELOW"
-):
-
-    technical_signal = "ENTER_SHORT"
-
-else:
-
-    technical_signal = "NO_TRADE"
-
-
-# ============================================================
-# AI ANALYSIS
-# ============================================================
-
-ai_result = {
-    "signal": "NO_TRADE",
-    "confidence": 0.0,
-    "reason": (
-        "AI analysis not requested."
-    ),
-}
-
-if analysis_mode == "Technical + AI":
-
-    with st.spinner(
-        "🤖 Gemini is analyzing "
-        "the technical setup..."
-    ):
-
-        ai_result = get_ai_analysis(
-            indicators,
-            symbol,
-            interval,
-        )
-
-
-# ============================================================
-# FINAL PAPER SIGNAL
-# ============================================================
-
-if analysis_mode == "Technical + AI":
-
-    ai_signal = ai_result["signal"]
-
-    ai_confidence = (
-        ai_result["confidence"]
-    )
-
-    if (
-        ai_confidence
-        < MIN_AI_CONFIDENCE
-    ):
-
-        signal = "NO_TRADE"
-
-    elif (
-        ai_signal == technical_signal
-        and ai_signal in [
-            "ENTER_LONG",
-            "ENTER_SHORT",
-        ]
-    ):
-
-        signal = ai_signal
-
-    else:
-
-        signal = "NO_TRADE"
-
-else:
-
-    signal = technical_signal
-
-
-# ============================================================
-# PAPER TRADING SIGNAL
-# ============================================================
-
-st.subheader(
-    "🤖 Paper Trading Signal"
-)
-
-if signal == "ENTER_LONG":
-
-    st.success(
-        "🟢 ENTER LONG — PAPER ONLY"
-    )
-
-elif signal == "ENTER_SHORT":
-
-    st.error(
-        "🔴 ENTER SHORT — PAPER ONLY"
-    )
-
-else:
-
-    st.warning(
-        "🟡 NO TRADE"
-    )
-
-
-# ============================================================
-# AI ANALYSIS DISPLAY
-# ============================================================
-
-if analysis_mode == "Technical + AI":
-
-    st.subheader(
-        "🧠 Gemini AI Analysis"
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.metric(
-            "AI Signal",
-            ai_result["signal"],
-        )
-
-    with col2:
-
-        st.metric(
-            "AI Confidence",
-            f"{ai_result['confidence']:.1f}%",
-        )
-
-    st.info(
-        ai_result["reason"]
-    )
-
-
-# ============================================================
-# PAPER TRADE PLAN
-# ============================================================
-
-st.subheader(
-    "🎯 Paper Trade Plan"
-)
-
-ltp = indicators["ltp"]
-
-atr = indicators["atr"]
-
-if signal == "ENTER_LONG":
-
-    stop_loss = (
-        ltp - (1.0 * atr)
-    )
-
-    target_1 = (
-        ltp + (1.5 * atr)
-    )
-
-    target_2 = (
-        ltp + (2.5 * atr)
-    )
-
-elif signal == "ENTER_SHORT":
-
-    stop_loss = (
-        ltp + (1.0 * atr)
-    )
-
-    target_1 = (
-        ltp - (1.5 * atr)
-    )
-
-    target_2 = (
-        ltp - (2.5 * atr)
-    )
-
-else:
-
-    stop_loss = 0
-
-    target_1 = 0
-
-    target_2 = 0
-
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-
-    st.metric(
-        "Entry",
-        f"{ltp:.2f}",
-    )
-
-with col2:
-
-    st.metric(
-        "Stop Loss",
-        f"{stop_loss:.2f}",
-    )
-
-with col3:
-
-    st.metric(
-        "Target 1",
-        f"{target_1:.2f}",
-    )
-
-st.metric(
-    "Target 2",
-    f"{target_2:.2f}",
-)
-
-
-# ============================================================
-# RECENT CANDLES
-# ============================================================
-
-with st.expander(
-    f"🕯️ Recent {symbol} Candles"
-):
-
-    st.dataframe(
-        df.tail(10),
-        use_container_width=True,
-    )
-
-
-# ============================================================
-# SYSTEM STATUS
-# ============================================================
-
-st.subheader(
-    "🛡️ System Status"
-)
-
-ai_status = (
-    "CONNECTED"
-    if gemini_key
-    else "NOT CONNECTED"
-)
-
-market_status = (
-    "ANGEL ONE DATA"
-    if data_source != "OFFLINE TEST DATA"
-    else "OFFLINE TEST DATA"
-)
-
-paper_status = (
-    "ENABLED"
-    if PAPER_TRADING
-    else "DISABLED"
-)
-
-websocket_status = (
-    "CONNECTED"
-    if websocket_ltp is not None
-    else "WAITING"
-)
-
-status_data = {
-
-    "Component": [
-        "Selected Instrument",
-        "Market Data",
-        "WebSocket",
-        "Technical Engine",
-        "Risk Manager",
-        "Paper Broker",
-        "AI Layer",
-        "Paper Trading",
-        "Real Orders",
-    ],
-
-    "Status": [
-        symbol,
-        market_status,
-        websocket_status,
-        "READY",
-        "READY",
-        "READY",
-        ai_status,
-        paper_status,
-        "DISABLED",
-    ],
-}
-
-st.table(
-    pd.DataFrame(status_data)
-)
-
-
-# ============================================================
-# SAFETY MESSAGE
-# ============================================================
-
-st.caption(
-    "🔒 Safety Lock: Real broker orders are disabled. "
-    "This dashboard is for paper trading and "
-    "market research only."
-)
+               
