@@ -52,7 +52,60 @@ class TelemetryEngine:
     # ========================================================
     # FETCH OHLCV
     # ========================================================
+    
+    def get_live_ltp(self, exchange: str, tradingsymbol: str, symboltoken: str):
+        """
+        Fetch the latest live traded price (LTP) from Angel One SmartAPI.
+        """
 
+        try:
+            response = self.smart_api.ltpData(
+                exchange,
+                tradingsymbol,
+                str(symboltoken)
+            )
+
+            if not response:
+                raise RuntimeError("Empty response from Angel One")
+
+            if not response.get("status"):
+                raise RuntimeError(
+                    f"LTP API error: {response.get('message', 'Unknown error')}"
+                )
+
+            data = response.get("data")
+
+            if not data:
+                raise RuntimeError("LTP data is empty")
+
+            ltp = data.get("ltp")
+
+            if ltp is None:
+                raise RuntimeError("LTP value missing in response")
+
+            return {
+                "status": True,
+                "exchange": data.get("exchange", exchange),
+                "tradingsymbol": data.get(
+                    "tradingsymbol",
+                    tradingsymbol
+                ),
+                "symboltoken": data.get(
+                    "symboltoken",
+                    str(symboltoken)
+                ),
+                "ltp": float(ltp),
+                "open": float(data["open"]) if data.get("open") is not None else None,
+                "high": float(data["high"]) if data.get("high") is not None else None,
+                "low": float(data["low"]) if data.get("low") is not None else None,
+                "close": float(data["close"]) if data.get("close") is not None else None,
+            }
+
+        except Exception as e:
+            return {
+                "status": False,
+                "error": str(e),
+            }
     def fetch_ohlcv(
         self,
         exchange: str,
