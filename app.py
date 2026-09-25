@@ -83,7 +83,7 @@ INSTRUMENTS = {
     "SENSEX": {
         "exchange": "BSE",
         "token_secret": "SENSEX_TOKEN",
-        "default_token": None,
+        "default_token": "99926009",
         "description": "BSE SENSEX Index",
     },
 }
