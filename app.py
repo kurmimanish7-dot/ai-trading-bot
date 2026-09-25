@@ -1,14 +1,14 @@
 import time
 import os
 import json
+import threading
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 
-import threading
+from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
-
 from google import genai
 
 from telemetry_engine import TelemetryEngine
@@ -72,6 +72,7 @@ def get_angel_credentials():
 INSTRUMENTS = {
     "NIFTY 50": {
         "exchange": "NSE",
+        "exchange_type": 1,
         "token_secret": "NIFTY_TOKEN",
         "default_token": "99926000",
         "description": "NIFTY 50 Index",
@@ -79,6 +80,7 @@ INSTRUMENTS = {
 
     "BANK NIFTY": {
         "exchange": "NSE",
+        "exchange_type": 1,
         "token_secret": "BANKNIFTY_TOKEN",
         "default_token": None,
         "description": "NIFTY Bank Index",
@@ -86,6 +88,7 @@ INSTRUMENTS = {
 
     "SENSEX": {
         "exchange": "BSE",
+        "exchange_type": 3,
         "token_secret": "SENSEX_TOKEN",
         "default_token": "99926009",
         "description": "BSE SENSEX Index",
@@ -104,6 +107,175 @@ def get_instrument_token(symbol):
         return str(secret_token)
 
     return instrument["default_token"]
+
+
+# ============================================================
+# LIVE WEBSOCKET STATE
+# ============================================================
+
+LIVE_LTP = {}
+LIVE_TICKS = {}
+LIVE_LTP_LOCK = threading.Lock()
+
+LIVE_WS = None
+LIVE_WS_THREAD = None
+LIVE_WS_STARTED = False
+
+
+# ============================================================
+# WEBSOCKET CALLBACKS
+# ============================================================
+
+def websocket_on_data(wsapp, message):
+    global LIVE_LTP
+
+    try:
+        if not isinstance(message, dict):
+            return
+
+        token = str(
+            message.get("token", "")
+        )
+
+        raw_ltp = message.get(
+            "last_traded_price"
+        )
+
+        if raw_ltp is None:
+            return
+
+        ltp = float(raw_ltp)
+
+        # Angel One WebSocket V2 sends
+        # price values in paise.
+        ltp = ltp / 100.0
+
+        with LIVE_LTP_LOCK:
+            LIVE_LTP[token] = ltp
+            LIVE_TICKS[token] = message
+
+    except Exception:
+        pass
+
+
+def websocket_on_error(wsapp, error):
+    pass
+
+
+def websocket_on_close(wsapp):
+    pass
+
+
+def websocket_on_open(wsapp):
+    pass
+
+
+# ============================================================
+# START ANGEL ONE WEBSOCKET
+# ============================================================
+
+def start_websocket(symbol):
+    global LIVE_WS
+    global LIVE_WS_THREAD
+    global LIVE_WS_STARTED
+
+    if LIVE_WS_STARTED:
+        return
+
+    credentials = get_angel_credentials()
+
+    if not all(credentials.values()):
+        return
+
+    token = get_instrument_token(symbol)
+
+    if not token:
+        return
+
+    try:
+        import pyotp
+
+        smart_api = SmartConnect(
+            api_key=credentials["api_key"]
+        )
+
+        totp = pyotp.TOTP(
+            credentials["totp_secret"]
+        ).now()
+
+        session = smart_api.generateSession(
+            credentials["client_code"],
+            credentials["pin"],
+            totp,
+        )
+
+        if not session:
+            return
+
+        if not session.get("status"):
+            return
+
+        auth_token = session["data"]["jwtToken"]
+
+        feed_token = smart_api.getfeedToken()
+
+        if not feed_token:
+            return
+
+        LIVE_WS = SmartWebSocketV2(
+            auth_token,
+            credentials["api_key"],
+            credentials["client_code"],
+            feed_token,
+        )
+
+        correlation_id = "ai_trading_live"
+
+        mode = 1
+
+        exchange_type = INSTRUMENTS[
+            symbol
+        ]["exchange_type"]
+
+        token_list = [
+            {
+                "exchangeType": exchange_type,
+                "tokens": [str(token)],
+            }
+        ]
+
+        def on_open(wsapp):
+            try:
+                LIVE_WS.subscribe(
+                    correlation_id,
+                    mode,
+                    token_list,
+                )
+            except Exception:
+                pass
+
+        LIVE_WS.on_open = on_open
+        LIVE_WS.on_data = websocket_on_data
+        LIVE_WS.on_error = websocket_on_error
+        LIVE_WS.on_close = websocket_on_close
+
+        def run_socket():
+            try:
+                LIVE_WS.connect()
+            except Exception:
+                pass
+
+        LIVE_WS_THREAD = threading.Thread(
+            target=run_socket,
+            daemon=True,
+        )
+
+        LIVE_WS_THREAD.start()
+
+        LIVE_WS_STARTED = True
+
+    except Exception:
+        LIVE_WS_STARTED = False
 
 
 # ============================================================
@@ -149,97 +321,72 @@ def create_sample_candles(
 
 
 # ============================================================
-# ANGEL ONE MARKET DATA
-# ============================================================
-# ============================================================
-# ANGEL ONE WEBSOCKET LIVE LTP
+# ANGEL ONE REST LTP FALLBACK
 # ============================================================
 
-LIVE_LTP = {}
-LIVE_LTP_LOCK = threading.Lock()
-LIVE_WS = None
-LIVE_WS_THREAD = None
-
-
-def websocket_on_data(wsapp, message):
-    global LIVE_LTP
-
-    try:
-        if isinstance(message, dict):
-            token = str(
-                message.get("token")
-                or message.get("symboltoken")
-                or ""
-            )
-
-            ltp = message.get("last_traded_price")
-
-            if ltp is not None:
-                ltp = float(ltp)
-
-                # Angel One WebSocket prices are generally
-                # received in paise.
-                if ltp > 100000:
-                    ltp = ltp / 100.0
-
-                with LIVE_LTP_LOCK:
-                    LIVE_LTP[token] = ltp
-
-    except Exception:
-        pass
-
-
-def websocket_on_error(wsapp, error):
-    pass
-
-
-def websocket_on_close(wsapp):
-    pass
-
-
-def websocket_on_open(wsapp):
-    pass
 def fetch_live_ltp(instrument):
+
     try:
+
         credentials = get_angel_credentials()
 
-        if not credentials:
-            return None, "Angel One credentials incomplete"
+        if not all(credentials.values()):
+            return None, (
+                "Angel One credentials incomplete"
+            )
 
         telemetry = TelemetryEngine(
             api_key=credentials["api_key"],
             client_code=credentials["client_code"],
             pin=credentials["pin"],
-            totp_secret=credentials["totp_secret"]
+            totp_secret=credentials["totp_secret"],
         )
 
-        token = get_instrument_token(instrument)
+        token = get_instrument_token(
+            instrument
+        )
 
         if not token:
-            return None, f"{instrument} token not configured"
+            return None, (
+                f"{instrument} token not configured"
+            )
 
-        exchange = INSTRUMENTS[instrument]["exchange"]
+        exchange = INSTRUMENTS[
+            instrument
+        ]["exchange"]
 
-        # Angel One tradingsymbol for index LTP
         tradingsymbol = {
             "NIFTY 50": "NIFTY",
             "BANK NIFTY": "BANKNIFTY",
-            "SENSEX": "SENSEX"
-        }.get(instrument, instrument)
+            "SENSEX": "SENSEX",
+        }.get(
+            instrument,
+            instrument,
+        )
 
         result = telemetry.get_live_ltp(
             exchange=exchange,
             tradingsymbol=tradingsymbol,
-            symboltoken=str(token)
+            symboltoken=str(token),
         )
 
         if not result.get("status"):
-            return None, result.get("error", "LTP fetch failed")
+            return None, result.get(
+                "error",
+                "LTP fetch failed",
+            )
 
         return result, None
 
     except Exception as e:
+
         return None, str(e)
+
+
+# ============================================================
+# REAL MARKET DATA
+# ============================================================
+
 def fetch_real_market_data(
     symbol,
     interval,
@@ -254,6 +401,7 @@ def fetch_real_market_data(
     ]
 
     if missing:
+
         return None, (
             "Missing Angel One credentials: "
             + ", ".join(missing)
@@ -266,9 +414,7 @@ def fetch_real_market_data(
     if not instrument_token:
 
         return None, (
-            f"{symbol} token is not configured yet. "
-            f"Add {INSTRUMENTS[symbol]['token_secret']} "
-            f"to Streamlit Secrets when available."
+            f"{symbol} token is not configured."
         )
 
     interval_map = {
@@ -282,7 +428,9 @@ def fetch_real_market_data(
         "FIVE_MINUTE",
     )
 
-    exchange = INSTRUMENTS[symbol]["exchange"]
+    exchange = INSTRUMENTS[
+        symbol
+    ]["exchange"]
 
     try:
 
@@ -301,9 +449,10 @@ def fetch_real_market_data(
         )
 
         if df is None or df.empty:
+
             return None, (
-                f"Angel One returned no candle data "
-                f"for {symbol}."
+                f"Angel One returned no candle "
+                f"data for {symbol}."
             )
 
         required_columns = [
@@ -320,7 +469,8 @@ def fetch_real_market_data(
             if column not in df.columns:
 
                 return None, (
-                    f"Missing candle column: {column}"
+                    f"Missing candle column: "
+                    f"{column}"
                 )
 
         df = df.copy()
@@ -352,8 +502,10 @@ def fetch_real_market_data(
         )
 
         if df.empty:
+
             return None, (
-                "No valid candle data after cleaning."
+                "No valid candle data "
+                "after cleaning."
             )
 
         return df, None
@@ -526,41 +678,13 @@ If the setup is unclear:
 
 
 # ============================================================
-# APP HEADER
+# SIDEBAR
 # ============================================================
 
-st.title("📈 Personal AI Trading App")
-# ============================================================
-# LIVE MARKET PRICE
-# ============================================================
-
-st.write("### 🔴 Live Market Price")
-
-selected_instrument = st.sidebar.selectbox(
-    "Live Instrument",
-    list(INSTRUMENTS.keys())
+st.title(
+    "📈 Personal AI Trading App"
 )
 
-live_data, live_error = fetch_live_ltp(selected_instrument)
-
-if live_data:
-    st.metric(
-        label=f"{selected_instrument} LTP",
-        value=f"₹{live_data['ltp']:,.2f}"
-    )
-
-    if live_data.get("open") is not None:
-        st.write(
-            f"Open: ₹{live_data['open']:,.2f} | "
-            f"High: ₹{live_data['high']:,.2f} | "
-            f"Low: ₹{live_data['low']:,.2f} | "
-            f"Previous Close: ₹{live_data['close']:,.2f}"
-        )
-
-    st.success("🟢 Live Angel One LTP Connected")
-
-else:
-    st.warning(f"🟡 Live LTP unavailable: {live_error}")
 st.caption(
     "AI-assisted market research and "
     "paper-trading dashboard"
@@ -569,50 +693,6 @@ st.caption(
 st.warning(
     "PAPER TRADING ONLY — NO REAL ORDERS"
 )
-
-
-# ============================================================
-# API STATUS
-# ============================================================
-
-gemini_key = get_gemini_api_key()
-
-angel_credentials = get_angel_credentials()
-
-angel_connected = all(
-    angel_credentials.values()
-)
-
-
-if gemini_key:
-
-    st.success(
-        "🟢 Gemini API Key: Connected"
-    )
-
-else:
-
-    st.error(
-        "🔴 Gemini API Key: Not Connected"
-    )
-
-
-if angel_connected:
-
-    st.success(
-        "🟢 Angel One Credentials: Connected"
-    )
-
-else:
-
-    st.warning(
-        "🟡 Angel One Credentials: Incomplete"
-    )
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
 
 st.sidebar.header(
     "⚙️ Trading Settings"
@@ -647,10 +727,114 @@ analysis_mode = st.sidebar.selectbox(
 
 
 # ============================================================
+# CREDENTIAL STATUS
+# ============================================================
+
+gemini_key = get_gemini_api_key()
+
+angel_credentials = get_angel_credentials()
+
+angel_connected = all(
+    angel_credentials.values()
+)
+
+if gemini_key:
+
+    st.success(
+        "🟢 Gemini API Key: Connected"
+    )
+
+else:
+
+    st.error(
+        "🔴 Gemini API Key: Not Connected"
+    )
+
+if angel_connected:
+
+    st.success(
+        "🟢 Angel One Credentials: Connected"
+    )
+
+else:
+
+    st.warning(
+        "🟡 Angel One Credentials: Incomplete"
+    )
+
+
+# ============================================================
+# START WEBSOCKET
+# ============================================================
+
+if angel_connected:
+
+    start_websocket(symbol)
+
+
+# ============================================================
+# LIVE MARKET PRICE
+# ============================================================
+
+st.write(
+    "### 🔴 Live Market Price"
+)
+
+token = get_instrument_token(symbol)
+
+websocket_ltp = None
+
+if token:
+
+    with LIVE_LTP_LOCK:
+
+        websocket_ltp = LIVE_LTP.get(
+            str(token)
+        )
+
+if websocket_ltp is not None:
+
+    st.metric(
+        label=f"{symbol} LIVE LTP",
+        value=f"₹{websocket_ltp:,.2f}",
+    )
+
+    st.success(
+        "🟢 Angel One WebSocket LIVE"
+    )
+
+else:
+
+    live_data, live_error = (
+        fetch_live_ltp(symbol)
+    )
+
+    if live_data:
+
+        st.metric(
+            label=f"{symbol} LTP",
+            value=f"₹{live_data['ltp']:,.2f}",
+        )
+
+        st.info(
+            "🔵 REST LTP fallback active"
+        )
+
+    else:
+
+        st.warning(
+            "🟡 Live LTP unavailable: "
+            + str(live_error)
+        )
+
+
+# ============================================================
 # SELECTED INSTRUMENT INFO
 # ============================================================
 
-selected_instrument = INSTRUMENTS[symbol]
+selected_instrument = INSTRUMENTS[
+    symbol
+]
 
 st.sidebar.markdown("---")
 
@@ -693,7 +877,6 @@ data_source = (
     "ANGEL ONE LIVE/HISTORICAL DATA"
 )
 
-
 if angel_connected:
 
     with st.spinner(
@@ -732,8 +915,8 @@ if df is None:
     if data_error:
 
         st.warning(
-            f"⚠️ {symbol} live data could "
-            f"not be loaded."
+            f"⚠️ {symbol} live data "
+            f"could not be loaded."
         )
 
         st.caption(
@@ -787,14 +970,12 @@ st.subheader(
 
 col1, col2, col3, col4 = st.columns(4)
 
-
 with col1:
 
     st.metric(
         "LTP",
         f"{indicators['ltp']:.2f}",
     )
-
 
 with col2:
 
@@ -803,14 +984,12 @@ with col2:
         indicators["rsi"],
     )
 
-
 with col3:
 
     st.metric(
         "VWAP",
         f"{indicators['vwap']:.2f}",
     )
-
 
 with col4:
 
@@ -830,7 +1009,6 @@ st.subheader(
 
 col1, col2, col3, col4 = st.columns(4)
 
-
 with col1:
 
     st.write("**EMA Trend**")
@@ -838,7 +1016,6 @@ with col1:
     st.info(
         indicators["ema_trend"]
     )
-
 
 with col2:
 
@@ -848,7 +1025,6 @@ with col2:
         indicators["supertrend"]
     )
 
-
 with col3:
 
     st.write("**VWAP Position**")
@@ -856,7 +1032,6 @@ with col3:
     st.info(
         indicators["price_vs_vwap"]
     )
-
 
 with col4:
 
@@ -920,7 +1095,6 @@ ai_result = {
         "AI analysis not requested."
     ),
 }
-
 
 if analysis_mode == "Technical + AI":
 
@@ -1044,7 +1218,6 @@ ltp = indicators["ltp"]
 
 atr = indicators["atr"]
 
-
 if signal == "ENTER_LONG":
 
     stop_loss = (
@@ -1084,14 +1257,12 @@ else:
 
 col1, col2, col3 = st.columns(3)
 
-
 with col1:
 
     st.metric(
         "Entry",
         f"{ltp:.2f}",
     )
-
 
 with col2:
 
@@ -1100,14 +1271,12 @@ with col2:
         f"{stop_loss:.2f}",
     )
 
-
 with col3:
 
     st.metric(
         "Target 1",
         f"{target_1:.2f}",
     )
-
 
 st.metric(
     "Target 2",
@@ -1155,10 +1324,18 @@ paper_status = (
     else "DISABLED"
 )
 
+websocket_status = (
+    "CONNECTED"
+    if websocket_ltp is not None
+    else "WAITING"
+)
+
 status_data = {
+
     "Component": [
         "Selected Instrument",
         "Market Data",
+        "WebSocket",
         "Technical Engine",
         "Risk Manager",
         "Paper Broker",
@@ -1170,6 +1347,7 @@ status_data = {
     "Status": [
         symbol,
         market_status,
+        websocket_status,
         "READY",
         "READY",
         "READY",
