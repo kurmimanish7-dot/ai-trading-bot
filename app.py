@@ -147,7 +147,47 @@ def create_sample_candles(
 # ============================================================
 # ANGEL ONE MARKET DATA
 # ============================================================
+def fetch_live_ltp(instrument):
+    try:
+        credentials = get_angel_credentials()
 
+        if not credentials:
+            return None, "Angel One credentials incomplete"
+
+        telemetry = TelemetryEngine(
+            api_key=credentials["api_key"],
+            client_code=credentials["client_code"],
+            pin=credentials["pin"],
+            totp_secret=credentials["totp_secret"]
+        )
+
+        token = get_instrument_token(instrument)
+
+        if not token:
+            return None, f"{instrument} token not configured"
+
+        exchange = INSTRUMENTS[instrument]["exchange"]
+
+        # Angel One tradingsymbol for index LTP
+        tradingsymbol = {
+            "NIFTY 50": "NIFTY",
+            "BANK NIFTY": "BANKNIFTY",
+            "SENSEX": "SENSEX"
+        }.get(instrument, instrument)
+
+        result = telemetry.get_live_ltp(
+            exchange=exchange,
+            tradingsymbol=tradingsymbol,
+            symboltoken=str(token)
+        )
+
+        if not result.get("status"):
+            return None, result.get("error", "LTP fetch failed")
+
+        return result, None
+
+    except Exception as e:
+        return None, str(e)
 def fetch_real_market_data(
     symbol,
     interval,
