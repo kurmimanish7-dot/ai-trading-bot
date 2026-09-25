@@ -478,7 +478,37 @@ If the setup is unclear:
 # ============================================================
 
 st.title("📈 Personal AI Trading App")
+# ============================================================
+# LIVE MARKET PRICE
+# ============================================================
 
+st.write("### 🔴 Live Market Price")
+
+selected_instrument = st.sidebar.selectbox(
+    "Live Instrument",
+    list(INSTRUMENTS.keys())
+)
+
+live_data, live_error = fetch_live_ltp(selected_instrument)
+
+if live_data:
+    st.metric(
+        label=f"{selected_instrument} LTP",
+        value=f"₹{live_data['ltp']:,.2f}"
+    )
+
+    if live_data.get("open") is not None:
+        st.write(
+            f"Open: ₹{live_data['open']:,.2f} | "
+            f"High: ₹{live_data['high']:,.2f} | "
+            f"Low: ₹{live_data['low']:,.2f} | "
+            f"Previous Close: ₹{live_data['close']:,.2f}"
+        )
+
+    st.success("🟢 Live Angel One LTP Connected")
+
+else:
+    st.warning(f"🟡 Live LTP unavailable: {live_error}")
 st.caption(
     "AI-assisted market research and "
     "paper-trading dashboard"
