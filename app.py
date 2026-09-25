@@ -151,6 +151,54 @@ def create_sample_candles(
 # ============================================================
 # ANGEL ONE MARKET DATA
 # ============================================================
+# ============================================================
+# ANGEL ONE WEBSOCKET LIVE LTP
+# ============================================================
+
+LIVE_LTP = {}
+LIVE_LTP_LOCK = threading.Lock()
+LIVE_WS = None
+LIVE_WS_THREAD = None
+
+
+def websocket_on_data(wsapp, message):
+    global LIVE_LTP
+
+    try:
+        if isinstance(message, dict):
+            token = str(
+                message.get("token")
+                or message.get("symboltoken")
+                or ""
+            )
+
+            ltp = message.get("last_traded_price")
+
+            if ltp is not None:
+                ltp = float(ltp)
+
+                # Angel One WebSocket prices are generally
+                # received in paise.
+                if ltp > 100000:
+                    ltp = ltp / 100.0
+
+                with LIVE_LTP_LOCK:
+                    LIVE_LTP[token] = ltp
+
+    except Exception:
+        pass
+
+
+def websocket_on_error(wsapp, error):
+    pass
+
+
+def websocket_on_close(wsapp):
+    pass
+
+
+def websocket_on_open(wsapp):
+    pass
 def fetch_live_ltp(instrument):
     try:
         credentials = get_angel_credentials()
