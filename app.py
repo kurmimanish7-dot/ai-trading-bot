@@ -62,18 +62,60 @@ def get_angel_credentials():
 
 
 # ============================================================
+# INSTRUMENT CONFIGURATION
+# ============================================================
+
+INSTRUMENTS = {
+    "NIFTY 50": {
+        "exchange": "NSE",
+        "token_secret": "NIFTY_TOKEN",
+        "default_token": "99926000",
+        "description": "NIFTY 50 Index",
+    },
+
+    "BANK NIFTY": {
+        "exchange": "NSE",
+        "token_secret": "BANKNIFTY_TOKEN",
+        "default_token": None,
+        "description": "NIFTY Bank Index",
+    },
+
+    "SENSEX": {
+        "exchange": "BSE",
+        "token_secret": "SENSEX_TOKEN",
+        "default_token": None,
+        "description": "BSE SENSEX Index",
+    },
+}
+
+
+def get_instrument_token(symbol):
+    instrument = INSTRUMENTS[symbol]
+
+    secret_token = get_secret(
+        instrument["token_secret"]
+    )
+
+    if secret_token:
+        return str(secret_token)
+
+    return instrument["default_token"]
+
+
+# ============================================================
 # SAMPLE MARKET DATA - FALLBACK ONLY
 # ============================================================
 
-def create_sample_candles(rows=150):
+def create_sample_candles(
+    rows=150,
+    base_price=25000.0,
+):
 
     timestamps = pd.date_range(
         end=pd.Timestamp.now(),
         periods=rows,
         freq="5min",
     )
-
-    base_price = 25000.0
 
     prices = (
         base_price
@@ -106,7 +148,10 @@ def create_sample_candles(rows=150):
 # ANGEL ONE MARKET DATA
 # ============================================================
 
-def fetch_real_market_data(interval):
+def fetch_real_market_data(
+    symbol,
+    interval,
+):
 
     credentials = get_angel_credentials()
 
@@ -122,6 +167,18 @@ def fetch_real_market_data(interval):
             + ", ".join(missing)
         )
 
+    instrument_token = get_instrument_token(
+        symbol
+    )
+
+    if not instrument_token:
+
+        return None, (
+            f"{symbol} token is not configured yet. "
+            f"Add {INSTRUMENTS[symbol]['token_secret']} "
+            f"to Streamlit Secrets when available."
+        )
+
     interval_map = {
         "ONE_MINUTE": "ONE_MINUTE",
         "FIVE_MINUTE": "FIVE_MINUTE",
@@ -130,8 +187,10 @@ def fetch_real_market_data(interval):
 
     api_interval = interval_map.get(
         interval,
-        "FIVE_MINUTE"
+        "FIVE_MINUTE",
     )
+
+    exchange = INSTRUMENTS[symbol]["exchange"]
 
     try:
 
@@ -143,14 +202,17 @@ def fetch_real_market_data(interval):
         )
 
         df = engine.fetch_ohlcv(
-            exchange="NSE",
-            token="99926000",
+            exchange=exchange,
+            token=instrument_token,
             interval=api_interval,
             days=5,
         )
 
         if df is None or df.empty:
-            return None, "Angel One returned no candle data."
+            return None, (
+                f"Angel One returned no candle data "
+                f"for {symbol}."
+            )
 
         required_columns = [
             "timestamp",
@@ -162,7 +224,9 @@ def fetch_real_market_data(interval):
         ]
 
         for column in required_columns:
+
             if column not in df.columns:
+
                 return None, (
                     f"Missing candle column: {column}"
                 )
@@ -180,6 +244,7 @@ def fetch_real_market_data(interval):
             "close",
             "volume",
         ]:
+
             df[column] = pd.to_numeric(
                 df[column],
                 errors="coerce",
@@ -195,7 +260,9 @@ def fetch_real_market_data(interval):
         )
 
         if df.empty:
-            return None, "No valid candle data after cleaning."
+            return None, (
+                "No valid candle data after cleaning."
+            )
 
         return df, None
 
@@ -211,7 +278,11 @@ def fetch_real_market_data(interval):
 # GEMINI ANALYSIS
 # ============================================================
 
-def get_ai_analysis(indicators, symbol, interval):
+def get_ai_analysis(
+    indicators,
+    symbol,
+    interval,
+):
 
     api_key = get_gemini_api_key()
 
@@ -220,7 +291,9 @@ def get_ai_analysis(indicators, symbol, interval):
         return {
             "signal": "NO_TRADE",
             "confidence": 0.0,
-            "reason": "Gemini API key is not available.",
+            "reason": (
+                "Gemini API key is not available."
+            ),
         }
 
     try:
@@ -230,18 +303,24 @@ def get_ai_analysis(indicators, symbol, interval):
         )
 
         prompt = f"""
-You are an AI market-analysis assistant for a PAPER TRADING system.
+You are an AI market-analysis assistant
+for a PAPER TRADING system.
 
 IMPORTANT:
+
 - This is NOT real trading.
-- Do NOT place an actual broker order.
+- Do NOT place any actual broker order.
 - Analyze only the supplied technical data.
-- Do not invent news, price, VIX, OI, PCR or market data.
-- If the data is insufficient, return NO_TRADE.
+- Do not invent news, price, VIX, OI, PCR
+  or any other market data.
+- If data is insufficient, return NO_TRADE.
 - Be conservative.
 
-Instrument: {symbol}
-Candle interval: {interval}
+Instrument:
+{symbol}
+
+Candle interval:
+{interval}
 
 Technical indicators:
 
@@ -288,8 +367,17 @@ If the setup is unclear:
         text = response.text.strip()
 
         if text.startswith("```"):
-            text = text.replace("```json", "")
-            text = text.replace("```", "")
+
+            text = text.replace(
+                "```json",
+                "",
+            )
+
+            text = text.replace(
+                "```",
+                "",
+            )
+
             text = text.strip()
 
         result = json.loads(text)
@@ -297,21 +385,21 @@ If the setup is unclear:
         signal = str(
             result.get(
                 "signal",
-                "NO_TRADE"
+                "NO_TRADE",
             )
         ).upper()
 
         confidence = float(
             result.get(
                 "confidence",
-                0
+                0,
             )
         )
 
         reason = str(
             result.get(
                 "reason",
-                "No explanation provided."
+                "No explanation provided.",
             )
         )
 
@@ -320,11 +408,12 @@ If the setup is unclear:
             "ENTER_SHORT",
             "NO_TRADE",
         ]:
+
             signal = "NO_TRADE"
 
         confidence = max(
             0.0,
-            min(100.0, confidence)
+            min(100.0, confidence),
         )
 
         return {
@@ -351,7 +440,8 @@ If the setup is unclear:
 st.title("📈 Personal AI Trading App")
 
 st.caption(
-    "AI-assisted market research and paper-trading dashboard"
+    "AI-assisted market research and "
+    "paper-trading dashboard"
 )
 
 st.warning(
@@ -370,6 +460,7 @@ angel_credentials = get_angel_credentials()
 angel_connected = all(
     angel_credentials.values()
 )
+
 
 if gemini_key:
 
@@ -401,12 +492,16 @@ else:
 # SIDEBAR
 # ============================================================
 
-st.sidebar.header("⚙️ Trading Settings")
+st.sidebar.header(
+    "⚙️ Trading Settings"
+)
 
 symbol = st.sidebar.selectbox(
     "Instrument",
     [
         "NIFTY 50",
+        "BANK NIFTY",
+        "SENSEX",
     ],
 )
 
@@ -430,40 +525,123 @@ analysis_mode = st.sidebar.selectbox(
 
 
 # ============================================================
+# SELECTED INSTRUMENT INFO
+# ============================================================
+
+selected_instrument = INSTRUMENTS[symbol]
+
+st.sidebar.markdown("---")
+
+st.sidebar.write(
+    f"**Exchange:** "
+    f"{selected_instrument['exchange']}"
+)
+
+st.sidebar.write(
+    f"**Instrument:** "
+    f"{selected_instrument['description']}"
+)
+
+selected_token = get_instrument_token(
+    symbol
+)
+
+if selected_token:
+
+    st.sidebar.success(
+        "Instrument Token: Available"
+    )
+
+else:
+
+    st.sidebar.warning(
+        "Instrument Token: Not configured"
+    )
+
+
+# ============================================================
 # MARKET DATA
 # ============================================================
 
 df = None
+
 data_error = None
-data_source = "ANGEL ONE LIVE/HISTORICAL DATA"
+
+data_source = (
+    "ANGEL ONE LIVE/HISTORICAL DATA"
+)
+
 
 if angel_connected:
 
     with st.spinner(
-        "📡 Fetching NIFTY 50 data from Angel One..."
+        f"📡 Fetching {symbol} data "
+        f"from Angel One..."
     ):
 
-        df, data_error = fetch_real_market_data(
-            interval
+        df, data_error = (
+            fetch_real_market_data(
+                symbol,
+                interval,
+            )
         )
 
 
+# ============================================================
+# FALLBACK DATA
+# ============================================================
+
 if df is None:
 
-    data_source = "OFFLINE TEST DATA"
+    data_source = (
+        "OFFLINE TEST DATA"
+    )
 
-    df = create_sample_candles()
+    base_prices = {
+        "NIFTY 50": 25000.0,
+        "BANK NIFTY": 55000.0,
+        "SENSEX": 82000.0,
+    }
+
+    df = create_sample_candles(
+        base_price=base_prices[symbol]
+    )
 
     if data_error:
 
         st.warning(
-            "⚠️ Angel One data could not be loaded. "
-            "Using simulated test candles instead."
+            f"⚠️ {symbol} live data could "
+            f"not be loaded."
         )
 
         st.caption(
             f"Reason: {data_error}"
         )
+
+        st.info(
+            "Dashboard is using simulated "
+            "test candles. No real order "
+            "is being sent."
+        )
+
+
+# ============================================================
+# DATA SOURCE DISPLAY
+# ============================================================
+
+if data_source == "OFFLINE TEST DATA":
+
+    st.warning(
+        f"📊 Data Source: OFFLINE TEST DATA — "
+        f"{symbol}"
+    )
+
+else:
+
+    st.success(
+        f"📡 Data Source: ANGEL ONE — "
+        f"{symbol}"
+    )
 
 
 # ============================================================
@@ -471,7 +649,9 @@ if df is None:
 # ============================================================
 
 indicators = (
-    TelemetryEngine.calculate_indicators(df)
+    TelemetryEngine.calculate_indicators(
+        df
+    )
 )
 
 
@@ -479,7 +659,9 @@ indicators = (
 # MARKET SNAPSHOT
 # ============================================================
 
-st.subheader("Market Snapshot")
+st.subheader(
+    f"📊 {symbol} Market Snapshot"
+)
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -488,7 +670,7 @@ with col1:
 
     st.metric(
         "LTP",
-        f"{indicators['ltp']:.2f} pts",
+        f"{indicators['ltp']:.2f}",
     )
 
 
@@ -504,7 +686,7 @@ with col3:
 
     st.metric(
         "VWAP",
-        f"{indicators['vwap']:.2f} pts",
+        f"{indicators['vwap']:.2f}",
     )
 
 
@@ -520,7 +702,9 @@ with col4:
 # MARKET ANALYSIS
 # ============================================================
 
-st.subheader("Market Analysis")
+st.subheader(
+    "🔎 Market Analysis"
+)
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -565,11 +749,13 @@ with col4:
 # PRICE CHART
 # ============================================================
 
-st.subheader("📊 NIFTY 50 Price Chart")
+st.subheader(
+    f"📈 {symbol} Price Chart"
+)
 
-chart_data = df.set_index(
-    "timestamp"
-)[["close"]]
+chart_data = (
+    df.set_index("timestamp")[["close"]]
+)
 
 st.line_chart(
     chart_data
@@ -608,14 +794,17 @@ else:
 ai_result = {
     "signal": "NO_TRADE",
     "confidence": 0.0,
-    "reason": "AI analysis not requested.",
+    "reason": (
+        "AI analysis not requested."
+    ),
 }
 
 
 if analysis_mode == "Technical + AI":
 
     with st.spinner(
-        "🤖 Gemini is analyzing the technical setup..."
+        "🤖 Gemini is analyzing "
+        "the technical setup..."
     ):
 
         ai_result = get_ai_analysis(
@@ -632,9 +821,15 @@ if analysis_mode == "Technical + AI":
 if analysis_mode == "Technical + AI":
 
     ai_signal = ai_result["signal"]
-    ai_confidence = ai_result["confidence"]
 
-    if ai_confidence < MIN_AI_CONFIDENCE:
+    ai_confidence = (
+        ai_result["confidence"]
+    )
+
+    if (
+        ai_confidence
+        < MIN_AI_CONFIDENCE
+    ):
 
         signal = "NO_TRADE"
 
@@ -661,7 +856,9 @@ else:
 # PAPER TRADING SIGNAL
 # ============================================================
 
-st.subheader("🤖 Paper Trading Signal")
+st.subheader(
+    "🤖 Paper Trading Signal"
+)
 
 if signal == "ENTER_LONG":
 
@@ -688,10 +885,11 @@ else:
 
 if analysis_mode == "Technical + AI":
 
-    st.subheader("🧠 Gemini AI Analysis")
+    st.subheader(
+        "🧠 Gemini AI Analysis"
+    )
 
     col1, col2 = st.columns(2)
-
 
     with col1:
 
@@ -700,14 +898,12 @@ if analysis_mode == "Technical + AI":
             ai_result["signal"],
         )
 
-
     with col2:
 
         st.metric(
             "AI Confidence",
             f"{ai_result['confidence']:.1f}%",
         )
-
 
     st.info(
         ai_result["reason"]
@@ -718,28 +914,49 @@ if analysis_mode == "Technical + AI":
 # PAPER TRADE PLAN
 # ============================================================
 
-st.subheader("🎯 Paper Trade Plan")
+st.subheader(
+    "🎯 Paper Trade Plan"
+)
 
 ltp = indicators["ltp"]
+
 atr = indicators["atr"]
 
 
 if signal == "ENTER_LONG":
 
-    stop_loss = ltp - (1.0 * atr)
-    target_1 = ltp + (1.5 * atr)
-    target_2 = ltp + (2.5 * atr)
+    stop_loss = (
+        ltp - (1.0 * atr)
+    )
+
+    target_1 = (
+        ltp + (1.5 * atr)
+    )
+
+    target_2 = (
+        ltp + (2.5 * atr)
+    )
 
 elif signal == "ENTER_SHORT":
 
-    stop_loss = ltp + (1.0 * atr)
-    target_1 = ltp - (1.5 * atr)
-    target_2 = ltp - (2.5 * atr)
+    stop_loss = (
+        ltp + (1.0 * atr)
+    )
+
+    target_1 = (
+        ltp - (1.5 * atr)
+    )
+
+    target_2 = (
+        ltp - (2.5 * atr)
+    )
 
 else:
 
     stop_loss = 0
+
     target_1 = 0
+
     target_2 = 0
 
 
@@ -750,7 +967,7 @@ with col1:
 
     st.metric(
         "Entry",
-        f"{ltp:.2f} pts",
+        f"{ltp:.2f}",
     )
 
 
@@ -758,7 +975,7 @@ with col2:
 
     st.metric(
         "Stop Loss",
-        f"{stop_loss:.2f} pts",
+        f"{stop_loss:.2f}",
     )
 
 
@@ -766,13 +983,13 @@ with col3:
 
     st.metric(
         "Target 1",
-        f"{target_1:.2f} pts",
+        f"{target_1:.2f}",
     )
 
 
 st.metric(
     "Target 2",
-    f"{target_2:.2f} pts",
+    f"{target_2:.2f}",
 )
 
 
@@ -781,7 +998,7 @@ st.metric(
 # ============================================================
 
 with st.expander(
-    "🕯️ Recent NIFTY 50 Candles"
+    f"🕯️ Recent {symbol} Candles"
 ):
 
     st.dataframe(
@@ -794,7 +1011,9 @@ with st.expander(
 # SYSTEM STATUS
 # ============================================================
 
-st.subheader("🛡️ System Status")
+st.subheader(
+    "🛡️ System Status"
+)
 
 ai_status = (
     "CONNECTED"
@@ -808,21 +1027,32 @@ market_status = (
     else "OFFLINE TEST DATA"
 )
 
+paper_status = (
+    "ENABLED"
+    if PAPER_TRADING
+    else "DISABLED"
+)
+
 status_data = {
     "Component": [
+        "Selected Instrument",
         "Market Data",
         "Technical Engine",
         "Risk Manager",
         "Paper Broker",
         "AI Layer",
+        "Paper Trading",
         "Real Orders",
     ],
+
     "Status": [
+        symbol,
         market_status,
         "READY",
         "READY",
         "READY",
         ai_status,
+        paper_status,
         "DISABLED",
     ],
 }
@@ -836,19 +1066,8 @@ st.table(
 # SAFETY MESSAGE
 # ============================================================
 
-if data_source == "OFFLINE TEST DATA":
-
-    st.caption(
-        "Angel One market data is not currently available. "
-        "The dashboard is showing simulated test candles. "
-        "Gemini provides analysis only. "
-        "No real market order is sent."
-    )
-
-else:
-
-    st.caption(
-        "Market data is being read from Angel One. "
-        "Gemini provides analysis only. "
-        "Paper trading is enabled and real orders are disabled."
-    )
+st.caption(
+    "🔒 Safety Lock: Real broker orders are disabled. "
+    "This dashboard is for paper trading and "
+    "market research only."
+)
