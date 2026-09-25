@@ -50,7 +50,6 @@ def get_secret(name):
 
         if value:
             return value
-
     except Exception:
         pass
 
@@ -261,7 +260,6 @@ def start_websocket(symbol):
 
             try:
                 LIVE_WS.connect()
-
             except Exception:
                 pass
 
@@ -384,7 +382,7 @@ def fetch_market_data(
 
 
 # ============================================================
-# APPLY LIVE PRICE TO CURRENT CANDLE
+# LIVE CANDLE
 # ============================================================
 
 def apply_live_price(
@@ -435,7 +433,7 @@ def apply_live_price(
 
 
 # ============================================================
-# SHORT AI REASON
+# SHORT REASON
 # ============================================================
 
 def short_reason(reason):
@@ -604,6 +602,7 @@ Example:
         )
 
         if confidence < MIN_AI_CONFIDENCE:
+
             signal = "NO_TRADE"
 
         return {
@@ -644,6 +643,7 @@ def calculate_levels(
         atr = 0
 
     if atr <= 0:
+
         atr = max(
             price * 0.002,
             1,
@@ -679,35 +679,34 @@ def calculate_levels(
 # SESSION STATE
 # ============================================================
 
-defaults = {
+if "last_df" not in st.session_state:
+    st.session_state.last_df = None
 
-    "last_df": None,
+if "last_market_fetch" not in st.session_state:
+    st.session_state.last_market_fetch = 0.0
 
-    "last_market_fetch": 0.0,
+if "last_indicator_update" not in st.session_state:
+    st.session_state.last_indicator_update = 0.0
 
-    "last_indicator_update": 0.0,
+if "live_indicators" not in st.session_state:
+    st.session_state.live_indicators = {}
 
-    "live_indicators": {},
+if "advanced" not in st.session_state:
+    st.session_state.advanced = {}
 
-    "initial_advanced": {},
+if "ai_result" not in st.session_state:
 
-    "ai_result": {
+    st.session_state.ai_result = {
         "signal": "NO_TRADE",
         "confidence": 0,
         "reason": "Waiting for AI analysis.",
-    },
+    }
 
-    "last_ai_time": 0.0,
+if "last_ai_time" not in st.session_state:
+    st.session_state.last_ai_time = 0.0
 
-    "ai_blocked_until": 0.0,
-}
-
-
-for key, value in defaults.items():
-
-    if key not in st.session_state:
-
-        st.session_state[key] = value
+if "ai_blocked_until" not in st.session_state:
+    st.session_state.ai_blocked_until = 0.0
 
 
 # ============================================================
@@ -747,15 +746,15 @@ ai_interval = st.sidebar.slider(
 )
 
 st.sidebar.caption(
-    "⚡ LTP live update: 1 sec"
+    "⚡ LTP updates live"
 )
 
 st.sidebar.caption(
-    "📊 Indicators update: 5 sec"
+    "📊 Indicators update every 5 seconds"
 )
 
 st.sidebar.caption(
-    "🤖 Gemini analysis is throttled."
+    "🤖 Gemini calls are throttled"
 )
 
 
@@ -860,18 +859,16 @@ try:
         totp_secret=credentials["totp_secret"],
     )
 
-    initial_indicators = (
-        engine.calculate_indicators(
-            initial_live_df
-        )
+    indicators = engine.calculate_indicators(
+        initial_live_df
     )
 
-    initial_indicators["ltp"] = float(
+    indicators["ltp"] = float(
         initial_ltp
     )
 
     st.session_state.live_indicators = (
-        initial_indicators.copy()
+        indicators
     )
 
 except Exception as e:
@@ -887,17 +884,23 @@ except Exception as e:
 # ADVANCED ANALYSIS
 # ============================================================
 
-initial_advanced = build_advanced_analysis(
-    initial_live_df
-)
+try:
 
-st.session_state.initial_advanced = (
-    initial_advanced
-)
+    advanced = build_advanced_analysis(
+        initial_live_df
+    )
+
+    st.session_state.advanced = advanced
+
+except Exception:
+
+    advanced = {}
+
+    st.session_state.advanced = {}
 
 
 # ============================================================
-# INITIAL GEMINI
+# GEMINI
 # ============================================================
 
 if analysis_mode == "Technical + AI":
@@ -916,8 +919,8 @@ if analysis_mode == "Technical + AI":
     if ai_due and not quota_blocked:
 
         result = call_gemini(
-            initial_indicators,
-            initial_advanced,
+            indicators,
+            advanced,
             symbol,
             interval,
         )
@@ -926,7 +929,7 @@ if analysis_mode == "Technical + AI":
 
         st.session_state.last_ai_time = now
 
-        if "Gemini error: 429" in str(
+        if "429" in str(
             result.get(
                 "reason",
                 "",
@@ -947,359 +950,13 @@ else:
 
 
 # ============================================================
-# CONTAINERS
-# ============================================================
-
-st.subheader("📊 Live Market")
-
-live_market_area = st.empty()
-
-live_market_area.write(
-    "Connecting to live market feed..."
-)
-
-
-st.subheader("🤖 AI Trading Signal")
-
-signal_area = st.empty()
-
-signal_area.write(
-    "AI analysis loaded."
-)
-
-
-st.subheader("🎯 Paper Trade Levels")
-
-levels_area = st.empty()
-
-levels_area.write(
-    "Calculating paper levels..."
-)
-
-
-st.subheader(
-    "🧠 Advanced Market Analysis — Phase 1"
-)
-
-advanced_area = st.empty()
-
-
-st.subheader("📐 Technical Indicators")
-
-technical_area = st.empty()
-
-
-st.subheader("🕯️ Recent Market Candles")
-
-candles_area = st.empty()
-
-
-st.subheader("🛡️ System Status")
-
-system_area = st.empty()
-
-
-# ============================================================
-# INITIAL STATIC AI SIGNAL
-# ============================================================
-
-def render_ai_signal():
-
-    result = st.session_state.ai_result
-
-    signal = result["signal"]
-
-    if signal == "ENTER_LONG":
-
-        message = "🟢 ENTER LONG — PAPER ONLY"
-
-    elif signal == "ENTER_SHORT":
-
-        message = "🔴 ENTER SHORT — PAPER ONLY"
-
-    else:
-
-        message = "🟡 NO TRADE"
-
-    with signal_area.container():
-
-        st.write(f"**{message}**")
-
-        st.write(
-            f"**AI Confidence:** "
-            f"{result['confidence']:.1f}%"
-        )
-
-        st.write(
-            "**AI Reason:** "
-            + short_reason(
-                result["reason"]
-            )
-        )
-
-
-render_ai_signal()
-
-
-# ============================================================
-# INITIAL ADVANCED ANALYSIS
-# ============================================================
-
-def render_advanced():
-
-    advanced = (
-        st.session_state.initial_advanced
-    )
-
-    with advanced_area.container():
-
-        if advanced.get("status") != "OK":
-
-            st.write(
-                "Advanced analysis unavailable."
-            )
-
-            return
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            st.write("### 🕯️ Candlestick")
-
-            patterns = advanced.get(
-                "candlestick_patterns",
-                [],
-            )
-
-            if patterns:
-
-                for pattern in patterns:
-
-                    st.write(
-                        f"• {pattern}"
-                    )
-
-            else:
-
-                st.write(
-                    "No confirmed pattern."
-                )
-
-            macd = advanced.get(
-                "macd",
-                {},
-            )
-
-            st.write("### 📈 MACD")
-
-            st.write(
-                f"Value: "
-                f"{float(macd.get('value', 0)):.4f}"
-            )
-
-            st.write(
-                f"Signal: "
-                f"{float(macd.get('signal', 0)):.4f}"
-            )
-
-            st.write(
-                f"Bias: "
-                f"**{macd.get('bias', 'UNKNOWN')}**"
-            )
-
-            ema = advanced.get(
-                "ema_200",
-                {},
-            )
-
-            st.write("### 📊 EMA 200")
-
-            st.write(
-                f"EMA 200: "
-                f"{float(ema.get('value', 0)):.2f}"
-            )
-
-            st.write(
-                f"Position: "
-                f"**{ema.get('position', 'UNKNOWN')}**"
-            )
-
-        with c2:
-
-            sr = advanced.get(
-                "support_resistance",
-                {},
-            )
-
-            st.write(
-                "### 🧱 Support / Resistance"
-            )
-
-            st.write(
-                f"Support: "
-                f"{float(sr.get('support', 0)):.2f}"
-            )
-
-            st.write(
-                f"Resistance: "
-                f"{float(sr.get('resistance', 0)):.2f}"
-            )
-
-            volume = advanced.get(
-                "volume",
-                {},
-            )
-
-            st.write("### 📦 Volume")
-
-            st.write(
-                f"Volume Ratio: "
-                f"{float(volume.get('ratio', 0)):.2f}x"
-            )
-
-            st.write(
-                f"Signal: "
-                f"**{volume.get('signal', 'UNKNOWN')}**"
-            )
-
-            structure = advanced.get(
-                "market_structure",
-                {},
-            )
-
-            st.write(
-                "### 🧭 Market Structure"
-            )
-
-            st.write(
-                f"Structure: "
-                f"**{structure.get('structure', 'UNKNOWN')}**"
-            )
-
-            st.write(
-                f"Bias: "
-                f"**{structure.get('bias', 'UNKNOWN')}**"
-            )
-
-            st.write(
-                f"Momentum: "
-                f"**{structure.get('momentum', 'UNKNOWN')}**"
-            )
-
-
-render_advanced()
-
-
-# ============================================================
-# INITIAL TECHNICAL TABLE
-# ============================================================
-
-def render_technical():
-
-    indicators = (
-        st.session_state.live_indicators
-    )
-
-    technical = {
-
-        "LTP":
-            indicators.get("ltp"),
-
-        "RSI":
-            indicators.get("rsi"),
-
-        "VWAP":
-            indicators.get("vwap"),
-
-        "ADX":
-            indicators.get("adx"),
-
-        "ATR":
-            indicators.get("atr"),
-
-        "EMA Trend":
-            indicators.get("ema_trend"),
-
-        "Supertrend":
-            indicators.get("supertrend"),
-
-        "VWAP Position":
-            indicators.get("price_vs_vwap"),
-
-        "Market Regime":
-            indicators.get("market_regime"),
-    }
-
-    with technical_area.container():
-
-        st.dataframe(
-            pd.DataFrame(
-                [technical]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
-render_technical()
-
-
-# ============================================================
-# INITIAL CANDLES
-# ============================================================
-
-with candles_area.container():
-
-    st.dataframe(
-        initial_live_df.tail(20),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-# ============================================================
-# SYSTEM STATUS
-# ============================================================
-
-with system_area.container():
-
-    st.write(
-        "Trading Mode: **PAPER**"
-    )
-
-    st.write(
-        "Market: **"
-        + INSTRUMENTS[symbol]["exchange"]
-        + "**"
-    )
-
-    st.write(
-        "Advanced Analysis: **ACTIVE**"
-    )
-
-    st.write(
-        "Real Orders: **DISABLED**"
-    )
-
-    st.caption(
-        "🔒 Safety Lock: No real broker orders are placed."
-    )
-
-    st.caption(
-        "⚡ Live WebSocket market feed active."
-    )
-
-
-# ============================================================
-# LIVE LTP + LEVELS
+# LIVE MARKET FRAGMENT
 # ============================================================
 
 @st.fragment(
-    run_every=1,
-    key="live_market_fragment",
+    run_every=1
 )
-def live_market_fragment():
+def live_market():
 
     token_now = get_instrument_token(
         symbol
@@ -1323,13 +980,19 @@ def live_market_fragment():
             ].iloc[-1]
         )
 
-    indicators = (
+    current_ltp = float(
+        current_ltp
+    )
+
+    indicators_now = (
         st.session_state.live_indicators
     )
 
-    atr = indicators.get(
-        "atr",
-        0,
+    atr = float(
+        indicators_now.get(
+            "atr",
+            0
+        )
     )
 
     signal = (
@@ -1344,274 +1007,343 @@ def live_market_fragment():
         current_ltp,
     )
 
-    # --------------------------------------------------------
-    # LIVE MARKET
-    # --------------------------------------------------------
+    st.subheader("📊 Live Market")
 
-    with live_market_area.container():
+    st.markdown(
+        f"**LTP:** `{current_ltp:,.2f}`"
+        f"   |   "
+        f"**RSI:** `{float(indicators_now.get('rsi', 0)):.2f}`"
+        f"   |   "
+        f"**ADX:** `{float(indicators_now.get('adx', 0)):.2f}`"
+        f"   |   "
+        f"**ATR:** `{atr:.2f}`"
+    )
+
+    st.subheader("🎯 Paper Trade Levels")
+
+    if signal in {
+        "ENTER_LONG",
+        "ENTER_SHORT",
+    }:
 
         st.markdown(
-            f"**LTP:** "
-            f"`{float(current_ltp):,.2f}`"
-            f"  |  "
-            f"**RSI:** "
-            f"`{float(indicators.get('rsi', 0)):.2f}`"
-            f"  |  "
-            f"**ADX:** "
-            f"`{float(indicators.get('adx', 0)):.2f}`"
-            f"  |  "
-            f"**ATR:** "
-            f"`{float(indicators.get('atr', 0)):.2f}`"
+            f"**Entry:** `{levels['entry']:,.2f}`"
+            f"   |   "
+            f"**SL:** `{levels['sl']:,.2f}`"
+            f"   |   "
+            f"**Target 1:** `{levels['target1']:,.2f}`"
+            f"   |   "
+            f"**Target 2:** `{levels['target2']:,.2f}`"
         )
 
-    # --------------------------------------------------------
-    # PAPER LEVELS
-    # --------------------------------------------------------
+    else:
 
-    with levels_area.container():
+        st.markdown(
+            f"**Entry:** `{current_ltp:,.2f}`"
+            f"   |   "
+            f"**SL:** `—`"
+            f"   |   "
+            f"**Target 1:** `—`"
+            f"   |   "
+            f"**Target 2:** `—`"
+        )
 
-        if signal == "ENTER_LONG":
 
-            text = (
-                f"**Entry:** `{levels['entry']:,.2f}`"
-                f"  |  "
-                f"**SL:** `{levels['sl']:,.2f}`"
-                f"  |  "
-                f"**Target 1:** `{levels['target1']:,.2f}`"
-                f"  |  "
-                f"**Target 2:** `{levels['target2']:,.2f}`"
-            )
+live_market()
 
-        elif signal == "ENTER_SHORT":
 
-            text = (
-                f"**Entry:** `{levels['entry']:,.2f}`"
-                f"  |  "
-                f"**SL:** `{levels['sl']:,.2f}`"
-                f"  |  "
-                f"**Target 1:** `{levels['target1']:,.2f}`"
-                f"  |  "
-                f"**Target 2:** `{levels['target2']:,.2f}`"
-            )
+# ============================================================
+# AI SIGNAL
+# ============================================================
+
+st.subheader("🤖 AI Trading Signal")
+
+ai_result = st.session_state.ai_result
+
+signal = ai_result["signal"]
+
+if signal == "ENTER_LONG":
+
+    st.success(
+        "🟢 ENTER LONG — PAPER ONLY"
+    )
+
+elif signal == "ENTER_SHORT":
+
+    st.error(
+        "🔴 ENTER SHORT — PAPER ONLY"
+    )
+
+else:
+
+    st.warning(
+        "🟡 NO TRADE"
+    )
+
+st.write(
+    f"**AI Confidence:** "
+    f"{ai_result['confidence']:.1f}%"
+)
+
+st.write(
+    "**AI Reason:** "
+    + short_reason(
+        ai_result["reason"]
+    )
+)
+
+
+# ============================================================
+# ADVANCED ANALYSIS
+# ============================================================
+
+st.subheader(
+    "🧠 Advanced Market Analysis — Phase 1"
+)
+
+advanced = st.session_state.advanced
+
+if advanced.get("status") == "OK":
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+
+        st.write("### 🕯️ Candlestick")
+
+        patterns = advanced.get(
+            "candlestick_patterns",
+            [],
+        )
+
+        if patterns:
+
+            for pattern in patterns:
+
+                st.write(
+                    f"• {pattern}"
+                )
 
         else:
 
-            text = (
-                f"**Entry:** `{levels['entry']:,.2f}`"
-                f"  |  "
-                f"**SL:** `—`"
-                f"  |  "
-                f"**Target 1:** `—`"
-                f"  |  "
-                f"**Target 2:** `—`"
+            st.write(
+                "No confirmed pattern."
             )
 
-        st.markdown(text)
+        macd = advanced.get(
+            "macd",
+            {},
+        )
+
+        st.write("### 📈 MACD")
+
+        st.write(
+            f"Value: "
+            f"{float(macd.get('value', 0)):.4f}"
+        )
+
+        st.write(
+            f"Signal: "
+            f"{float(macd.get('signal', 0)):.4f}"
+        )
+
+        st.write(
+            f"Bias: "
+            f"**{macd.get('bias', 'UNKNOWN')}**"
+        )
+
+        ema = advanced.get(
+            "ema_200",
+            {},
+        )
+
+        st.write("### 📊 EMA 200")
+
+        st.write(
+            f"EMA 200: "
+            f"{float(ema.get('value', 0)):.2f}"
+        )
+
+        st.write(
+            f"Position: "
+            f"**{ema.get('position', 'UNKNOWN')}**"
+        )
+
+    with c2:
+
+        sr = advanced.get(
+            "support_resistance",
+            {},
+        )
+
+        st.write(
+            "### 🧱 Support / Resistance"
+        )
+
+        st.write(
+            f"Support: "
+            f"{float(sr.get('support', 0)):.2f}"
+        )
+
+        st.write(
+            f"Resistance: "
+            f"{float(sr.get('resistance', 0)):.2f}"
+        )
+
+        volume = advanced.get(
+            "volume",
+            {},
+        )
+
+        st.write("### 📦 Volume")
+
+        st.write(
+            f"Volume Ratio: "
+            f"{float(volume.get('ratio', 0)):.2f}x"
+        )
+
+        st.write(
+            f"Signal: "
+            f"**{volume.get('signal', 'UNKNOWN')}**"
+        )
+
+        structure = advanced.get(
+            "market_structure",
+            {},
+        )
+
+        st.write(
+            "### 🧭 Market Structure"
+        )
+
+        st.write(
+            f"Structure: "
+            f"**{structure.get('structure', 'UNKNOWN')}**"
+        )
+
+        st.write(
+            f"Bias: "
+            f"**{structure.get('bias', 'UNKNOWN')}**"
+        )
+
+        st.write(
+            f"Momentum: "
+            f"**{structure.get('momentum', 'UNKNOWN')}**"
+        )
 
 
 # ============================================================
-# INDICATOR / CANDLE / AI UPDATE
+# TECHNICAL INDICATORS
 # ============================================================
 
-@st.fragment(
-    run_every=5,
-    key="analysis_fragment",
+st.subheader("📐 Technical Indicators")
+
+indicators = st.session_state.live_indicators
+
+technical = {
+
+    "LTP":
+        indicators.get("ltp"),
+
+    "RSI":
+        indicators.get("rsi"),
+
+    "VWAP":
+        indicators.get("vwap"),
+
+    "ADX":
+        indicators.get("adx"),
+
+    "ATR":
+        indicators.get("atr"),
+
+    "EMA Trend":
+        indicators.get("ema_trend"),
+
+    "Supertrend":
+        indicators.get("supertrend"),
+
+    "VWAP Position":
+        indicators.get("price_vs_vwap"),
+
+    "Market Regime":
+        indicators.get("market_regime"),
+}
+
+st.dataframe(
+    pd.DataFrame(
+        [technical]
+    ),
+    use_container_width=True,
+    hide_index=True,
 )
-def analysis_fragment():
-
-    current_time = time.time()
-
-    token_now = get_instrument_token(
-        symbol
-    )
-
-    with LIVE_LOCK:
-
-        current_ltp = (
-            LIVE_LTP.get(
-                str(token_now)
-            )
-            if token_now
-            else None
-        )
-
-    if current_ltp is None:
-
-        current_ltp = float(
-            st.session_state.last_df[
-                "close"
-            ].iloc[-1]
-        )
-
-    # --------------------------------------------------------
-    # REFRESH REST CANDLES EVERY 30 SEC
-    # --------------------------------------------------------
-
-    if (
-        current_time
-        - st.session_state.last_market_fetch
-        >= 30
-    ):
-
-        new_df, error = fetch_market_data(
-            symbol,
-            interval,
-        )
-
-        if new_df is not None:
-
-            st.session_state.last_df = new_df
-
-            st.session_state.last_market_fetch = (
-                current_time
-            )
-
-    live_df = apply_live_price(
-        st.session_state.last_df,
-        current_ltp,
-    )
-
-    # --------------------------------------------------------
-    # INDICATORS
-    # --------------------------------------------------------
-
-    if (
-        current_time
-        - st.session_state.last_indicator_update
-        >= 5
-    ):
-
-        try:
-
-            credentials = (
-                get_angel_credentials()
-            )
-
-            engine = TelemetryEngine(
-                api_key=credentials["api_key"],
-                client_code=credentials["client_code"],
-                pin=credentials["pin"],
-                totp_secret=credentials["totp_secret"],
-            )
-
-            indicators = (
-                engine.calculate_indicators(
-                    live_df
-                )
-            )
-
-            indicators["ltp"] = float(
-                current_ltp
-            )
-
-            st.session_state.live_indicators = (
-                indicators
-            )
-
-            st.session_state.last_indicator_update = (
-                current_time
-            )
-
-        except Exception:
-
-            pass
-
-    # --------------------------------------------------------
-    # ADVANCED ANALYSIS
-    # --------------------------------------------------------
-
-    try:
-
-        advanced = build_advanced_analysis(
-            live_df
-        )
-
-        st.session_state.initial_advanced = (
-            advanced
-        )
-
-    except Exception:
-
-        advanced = (
-            st.session_state.initial_advanced
-        )
-
-    # --------------------------------------------------------
-    # GEMINI — THROTTLED
-    # --------------------------------------------------------
-
-    if analysis_mode == "Technical + AI":
-
-        ai_due = (
-            current_time
-            - st.session_state.last_ai_time
-            >= ai_interval
-        )
-
-        quota_blocked = (
-            current_time
-            < st.session_state.ai_blocked_until
-        )
-
-        if ai_due and not quota_blocked:
-
-            result = call_gemini(
-                st.session_state.live_indicators,
-                advanced,
-                symbol,
-                interval,
-            )
-
-            st.session_state.ai_result = (
-                result
-            )
-
-            st.session_state.last_ai_time = (
-                current_time
-            )
-
-            if "Gemini error: 429" in str(
-                result.get(
-                    "reason",
-                    "",
-                )
-            ):
-
-                st.session_state.ai_blocked_until = (
-                    current_time + 900
-                )
-
-            render_ai_signal()
-
-    # --------------------------------------------------------
-    # TECHNICAL TABLE
-    # --------------------------------------------------------
-
-    render_technical()
-
-    # --------------------------------------------------------
-    # CANDLES
-    # --------------------------------------------------------
-
-    with candles_area.container():
-
-        st.dataframe(
-            live_df.tail(20),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # --------------------------------------------------------
-    # ADVANCED
-    # --------------------------------------------------------
-
-    render_advanced()
 
 
 # ============================================================
-# RUN FRAGMENTS
+# RECENT CANDLES
 # ============================================================
 
-live_market_fragment()
+st.subheader(
+    "🕯️ Recent Market Candles"
+)
 
-analysis_fragment()
+st.dataframe(
+    initial_live_df.tail(20),
+    use_container_width=True,
+    hide_index=True,
+)
+
+
+# ============================================================
+# SYSTEM STATUS
+# ============================================================
+
+st.subheader("🛡️ System Status")
+
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+
+    st.write(
+        "**Trading Mode**"
+    )
+
+    st.write("PAPER")
+
+
+with c2:
+
+    st.write(
+        "**Market**"
+    )
+
+    st.write(
+        INSTRUMENTS[symbol]["exchange"]
+    )
+
+
+with c3:
+
+    st.write(
+        "**Advanced Analysis**"
+    )
+
+    st.write("ACTIVE")
+
+
+with c4:
+
+    st.write(
+        "**Real Orders**"
+    )
+
+    st.write("DISABLED")
+
+
+st.caption(
+    "🔒 Safety Lock: No real broker orders are placed."
+)
+
+st.caption(
+    "⚡ Angel One WebSocket live feed active."
+)
