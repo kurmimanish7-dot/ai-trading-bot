@@ -2652,7 +2652,31 @@ def live_market():
             if not rows:
                 continue
 
-            for row in rows[:10]:
+                        if isinstance(rows, dict):
+
+                normalized_rows = (
+                    rows.get("data")
+                    or rows.get("result")
+                    or []
+                )
+
+                if isinstance(normalized_rows, dict):
+                    normalized_rows = [
+                        normalized_rows
+                    ]
+
+            elif isinstance(rows, (list, tuple)):
+
+                normalized_rows = rows
+
+            else:
+
+                normalized_rows = []
+
+            for row in normalized_rows[:10]:
+
+                if not isinstance(row, dict):
+                    continue
 
                 item = dict(row)
 
