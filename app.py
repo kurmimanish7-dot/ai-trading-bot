@@ -12,6 +12,7 @@ from google import genai
 
 from telemetry_engine import TelemetryEngine
 from advanced_analysis import build_advanced_analysis
+from options_engine import OptionsEngine
 
 from config import AI_MODEL, PAPER_TRADING, MIN_AI_CONFIDENCE
 
