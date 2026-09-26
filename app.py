@@ -2639,7 +2639,7 @@ def live_market():
             "Option Greeks data unavailable or expiry not entered."
         )
 
-    # --------------------------------------------------------
+        # --------------------------------------------------------
     # OI BUILDUP
     # --------------------------------------------------------
 
@@ -2652,7 +2652,7 @@ def live_market():
             if not rows:
                 continue
 
-                        if isinstance(rows, dict):
+            if isinstance(rows, dict):
 
                 normalized_rows = (
                     rows.get("data")
