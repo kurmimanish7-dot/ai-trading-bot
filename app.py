@@ -17,7 +17,7 @@ from config import AI_MODEL, PAPER_TRADING, MIN_AI_CONFIDENCE
 
 
 # ============================================================
-# PAGE
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
@@ -29,20 +29,85 @@ st.set_page_config(
 st.title("📈 AI Trading Bot")
 st.subheader("Paper Trading Dashboard")
 
-st.info(
-    "🛡️ PAPER TRADING MODE — Real orders are disabled."
-)
-
-
-# ============================================================
-# SAFETY LOCK
-# ============================================================
+st.info("🛡️ PAPER TRADING MODE — Real orders are disabled.")
 
 if PAPER_TRADING is not True:
-    st.error(
-        "🚨 SAFETY LOCK: PAPER_TRADING must remain True."
-    )
+    st.error("🚨 SAFETY LOCK: PAPER_TRADING must remain True.")
     st.stop()
+
+
+# ============================================================
+# CSS
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    .live-box {
+        border: 1px solid rgba(128,128,128,0.30);
+        border-radius: 10px;
+        padding: 12px 14px;
+        min-height: 90px;
+        margin-bottom: 8px;
+        background: rgba(128,128,128,0.04);
+    }
+
+    .live-label {
+        font-size: 13px;
+        opacity: 0.70;
+        margin-bottom: 6px;
+    }
+
+    .live-value {
+        font-size: 25px;
+        font-weight: 700;
+        line-height: 1.1;
+    }
+
+    .live-subvalue {
+        font-size: 13px;
+        opacity: 0.70;
+        margin-top: 5px;
+    }
+
+    .signal-box {
+        border: 1px solid rgba(128,128,128,0.30);
+        border-radius: 10px;
+        padding: 14px;
+        margin-bottom: 8px;
+    }
+
+    .signal-title {
+        font-size: 13px;
+        opacity: 0.70;
+    }
+
+    .signal-value {
+        font-size: 24px;
+        font-weight: 700;
+        margin-top: 5px;
+    }
+
+    .reason-box {
+        border: 1px solid rgba(128,128,128,0.25);
+        border-radius: 10px;
+        padding: 12px;
+        margin-top: 8px;
+    }
+
+    .live-box,
+    .live-box *,
+    .signal-box,
+    .signal-box *,
+    .reason-box,
+    .reason-box * {
+        animation: none !important;
+        transition: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ============================================================
@@ -50,7 +115,6 @@ if PAPER_TRADING is not True:
 # ============================================================
 
 def get_secret(name):
-
     value = os.getenv(name)
 
     if value:
@@ -58,10 +122,8 @@ def get_secret(name):
 
     try:
         value = st.secrets.get(name)
-
         if value:
             return value
-
     except Exception:
         pass
 
@@ -69,12 +131,10 @@ def get_secret(name):
 
 
 def get_gemini_api_key():
-
     return get_secret("GEMINI_API_KEY")
 
 
 def get_angel_credentials():
-
     return {
         "api_key": get_secret("ANGEL_API_KEY"),
         "client_code": get_secret("ANGEL_CLIENT_CODE"),
@@ -88,7 +148,6 @@ def get_angel_credentials():
 # ============================================================
 
 INSTRUMENTS = {
-
     "NIFTY 50": {
         "exchange": "NSE",
         "exchange_type": 1,
@@ -116,9 +175,7 @@ def get_instrument_token(symbol):
 
     item = INSTRUMENTS[symbol]
 
-    token = get_secret(
-        item["token_secret"]
-    )
+    token = get_secret(item["token_secret"])
 
     if token:
         return str(token)
@@ -127,7 +184,7 @@ def get_instrument_token(symbol):
 
 
 # ============================================================
-# LIVE WEBSOCKET
+# LIVE WEBSOCKET STATE
 # ============================================================
 
 LIVE_LTP = {}
@@ -137,10 +194,13 @@ LIVE_LOCK = threading.Lock()
 
 LIVE_WS = None
 LIVE_WS_THREAD = None
-
 LIVE_WS_STARTED = False
 LIVE_WS_SYMBOL = None
 
+
+# ============================================================
+# WEBSOCKET CALLBACKS
+# ============================================================
 
 def websocket_on_data(wsapp, message):
 
@@ -149,16 +209,9 @@ def websocket_on_data(wsapp, message):
         if not isinstance(message, dict):
             return
 
-        token = str(
-            message.get(
-                "token",
-                ""
-            )
-        )
+        token = str(message.get("token", ""))
 
-        raw_ltp = message.get(
-            "last_traded_price"
-        )
+        raw_ltp = message.get("last_traded_price")
 
         if raw_ltp is None:
             return
@@ -182,6 +235,10 @@ def websocket_on_close(wsapp):
     pass
 
 
+# ============================================================
+# START WEBSOCKET
+# ============================================================
+
 def start_websocket(symbol):
 
     global LIVE_WS
@@ -189,10 +246,7 @@ def start_websocket(symbol):
     global LIVE_WS_STARTED
     global LIVE_WS_SYMBOL
 
-    if (
-        LIVE_WS_STARTED
-        and LIVE_WS_SYMBOL == symbol
-    ):
+    if LIVE_WS_STARTED and LIVE_WS_SYMBOL == symbol:
         return
 
     credentials = get_angel_credentials()
@@ -223,10 +277,7 @@ def start_websocket(symbol):
             totp,
         )
 
-        if (
-            not session
-            or not session.get("status")
-        ):
+        if not session or not session.get("status"):
             return
 
         auth_token = session["data"]["jwtToken"]
@@ -240,9 +291,7 @@ def start_websocket(symbol):
             feed_token,
         )
 
-        exchange_type = INSTRUMENTS[
-            symbol
-        ]["exchange_type"]
+        exchange_type = INSTRUMENTS[symbol]["exchange_type"]
 
         token_list = [
             {
@@ -272,9 +321,7 @@ def start_websocket(symbol):
         def run_socket():
 
             try:
-
                 LIVE_WS.connect()
-
             except Exception:
                 pass
 
@@ -297,28 +344,17 @@ def start_websocket(symbol):
 # MARKET DATA
 # ============================================================
 
-def fetch_market_data(
-    symbol,
-    interval,
-):
+def fetch_market_data(symbol, interval):
 
     credentials = get_angel_credentials()
 
     if not all(credentials.values()):
-
-        return (
-            None,
-            "Angel One credentials incomplete.",
-        )
+        return None, "Angel One credentials incomplete."
 
     token = get_instrument_token(symbol)
 
     if not token:
-
-        return (
-            None,
-            f"{symbol} token is not configured.",
-        )
+        return None, f"{symbol} token is not configured."
 
     try:
 
@@ -337,11 +373,7 @@ def fetch_market_data(
         )
 
         if df is None or df.empty:
-
-            return (
-                None,
-                "No candle data received.",
-            )
+            return None, "No candle data received."
 
         required = [
             "timestamp",
@@ -355,11 +387,7 @@ def fetch_market_data(
         for column in required:
 
             if column not in df.columns:
-
-                return (
-                    None,
-                    f"Missing column: {column}",
-                )
+                return None, f"Missing column: {column}"
 
         df = df.copy()
 
@@ -397,20 +425,12 @@ def fetch_market_data(
 
 
 # ============================================================
-# LIVE CANDLE
+# APPLY LIVE PRICE TO LAST CANDLE
 # ============================================================
 
-def apply_live_price(
-    df,
-    live_ltp,
-):
+def apply_live_price(df, live_ltp):
 
-    if (
-        df is None
-        or df.empty
-        or live_ltp is None
-    ):
-
+    if df is None or df.empty or live_ltp is None:
         return df
 
     live_df = df.copy()
@@ -455,7 +475,6 @@ def apply_live_price(
 def short_reason(reason):
 
     if not reason:
-
         return "Market conditions are unclear."
 
     reason = str(reason).replace(
@@ -554,9 +573,9 @@ maximum 120 characters.
 
 Example:
 {{
- "signal": "ENTER_LONG",
- "confidence": 82,
- "reason": "Bullish momentum with price above VWAP and supportive RSI."
+    "signal": "ENTER_LONG",
+    "confidence": 82,
+    "reason": "Bullish momentum with price above VWAP and supportive RSI."
 }}
 """
 
@@ -619,7 +638,6 @@ Example:
         )
 
         if confidence < MIN_AI_CONFIDENCE:
-
             signal = "NO_TRADE"
 
         return {
@@ -634,13 +652,14 @@ Example:
             "signal": "NO_TRADE",
             "confidence": 0,
             "reason": short_reason(
-                "Gemini error: " + str(e)
+                "Gemini error: "
+                + str(e)
             ),
         }
 
 
 # ============================================================
-# TRADE LEVELS
+# PAPER LEVELS
 # ============================================================
 
 def calculate_levels(
@@ -650,23 +669,16 @@ def calculate_levels(
 ):
 
     try:
-
         price = float(live_ltp)
-
     except Exception:
-
         price = 0
 
     try:
-
         atr = float(atr)
-
     except Exception:
-
         atr = 0
 
     if atr <= 0:
-
         atr = max(
             price * 0.002,
             1,
@@ -707,54 +719,34 @@ def calculate_levels(
 # ============================================================
 
 if "last_df" not in st.session_state:
-
     st.session_state.last_df = None
 
-
 if "last_market_fetch" not in st.session_state:
-
     st.session_state.last_market_fetch = 0.0
 
-
 if "last_indicator_update" not in st.session_state:
-
     st.session_state.last_indicator_update = 0.0
 
-
 if "last_advanced_update" not in st.session_state:
-
     st.session_state.last_advanced_update = 0.0
 
-
 if "live_indicators" not in st.session_state:
-
     st.session_state.live_indicators = {}
 
-
 if "advanced" not in st.session_state:
-
     st.session_state.advanced = {}
 
-
 if "ai_result" not in st.session_state:
-
     st.session_state.ai_result = {
-
         "signal": "NO_TRADE",
-
         "confidence": 0,
-
         "reason": "Waiting for AI analysis.",
     }
 
-
 if "last_ai_time" not in st.session_state:
-
     st.session_state.last_ai_time = 0.0
 
-
 if "ai_blocked_until" not in st.session_state:
-
     st.session_state.ai_blocked_until = 0.0
 
 
@@ -795,7 +787,7 @@ ai_interval = st.sidebar.slider(
 )
 
 st.sidebar.caption(
-    "⚡ LTP updates every 1 second"
+    "⚡ LTP target: near-live"
 )
 
 st.sidebar.caption(
@@ -812,14 +804,14 @@ st.sidebar.caption(
 
 
 # ============================================================
-# START WEBSOCKET
+# START LIVE FEED
 # ============================================================
 
 start_websocket(symbol)
 
 
 # ============================================================
-# INITIAL MARKET DATA
+# INITIAL MARKET FETCH
 # ============================================================
 
 now = time.time()
@@ -849,7 +841,8 @@ if should_fetch:
     elif st.session_state.last_df is None:
 
         st.error(
-            error or "Market data unavailable."
+            error
+            or "Market data unavailable."
         )
 
         st.stop()
@@ -931,7 +924,8 @@ try:
 except Exception as e:
 
     st.error(
-        "Indicator error: " + str(e)
+        "Indicator error: "
+        + str(e)
     )
 
     st.stop()
@@ -959,12 +953,279 @@ except Exception:
 
 
 # ============================================================
-# LIVE MARKET FRAGMENT
+# STATIC UI SHELL
 # ============================================================
 
-@st.fragment(
-    run_every=1
+st.subheader("📊 Live Market")
+
+
+live_columns = st.columns(4)
+
+with live_columns[0]:
+
+    st.markdown(
+        """
+        <div class="live-box">
+            <div class="live-label">LTP</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    ltp_placeholder = st.empty()
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+with live_columns[1]:
+
+    st.markdown(
+        """
+        <div class="live-box">
+            <div class="live-label">RSI</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    rsi_placeholder = st.empty()
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+with live_columns[2]:
+
+    st.markdown(
+        """
+        <div class="live-box">
+            <div class="live-label">ADX</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    adx_placeholder = st.empty()
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+with live_columns[3]:
+
+    st.markdown(
+        """
+        <div class="live-box">
+            <div class="live-label">ATR</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    atr_placeholder = st.empty()
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# PAPER LEVEL SHELL
+# ============================================================
+
+st.subheader("🎯 Paper Trade Levels")
+
+
+level_columns = st.columns(4)
+
+
+with level_columns[0]:
+
+    st.markdown(
+        """
+        <div class="live-box">
+            <div class="live-label">Entry</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    entry_placeholder = st.empty()
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+with level_columns[1]:
+
+    st.markdown(
+        """
+        <div class="live-box">
+            <div class="live-label">Stop Loss</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    sl_placeholder = st.empty()
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+with level_columns[2]:
+
+    st.markdown(
+        """
+        <div class="live-box">
+            <div class="live-label">Target 1</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    target1_placeholder = st.empty()
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+with level_columns[3]:
+
+    st.markdown(
+        """
+        <div class="live-box">
+            <div class="live-label">Target 2</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    target2_placeholder = st.empty()
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# AI SIGNAL SHELL
+# ============================================================
+
+st.subheader("🤖 AI Trading Signal")
+
+
+signal_placeholder = st.empty()
+
+
+confidence_placeholder = st.empty()
+
+
+reason_placeholder = st.empty()
+
+
+# ============================================================
+# TECHNICAL INDICATOR SHELL
+# ============================================================
+
+st.subheader("📐 Technical Indicators")
+
+
+technical_placeholder = st.empty()
+
+
+# ============================================================
+# ADVANCED ANALYSIS SHELL
+# ============================================================
+
+st.subheader(
+    "🧠 Advanced Market Analysis — Phase 1"
 )
+
+
+advanced_placeholder = st.empty()
+
+
+# ============================================================
+# INITIAL PLACEHOLDER CONTENT
+# ============================================================
+
+ltp_placeholder.markdown(
+    '<div class="live-value">—</div>',
+    unsafe_allow_html=True,
+)
+
+rsi_placeholder.markdown(
+    '<div class="live-value">—</div>',
+    unsafe_allow_html=True,
+)
+
+adx_placeholder.markdown(
+    '<div class="live-value">—</div>',
+    unsafe_allow_html=True,
+)
+
+atr_placeholder.markdown(
+    '<div class="live-value">—</div>',
+    unsafe_allow_html=True,
+)
+
+entry_placeholder.markdown(
+    '<div class="live-value">—</div>',
+    unsafe_allow_html=True,
+)
+
+sl_placeholder.markdown(
+    '<div class="live-value">—</div>',
+    unsafe_allow_html=True,
+)
+
+target1_placeholder.markdown(
+    '<div class="live-value">—</div>',
+    unsafe_allow_html=True,
+)
+
+target2_placeholder.markdown(
+    '<div class="live-value">—</div>',
+    unsafe_allow_html=True,
+)
+
+signal_placeholder.markdown(
+    """
+    <div class="signal-box">
+        <div class="signal-title">Current Signal</div>
+        <div class="signal-value">🟡 NO TRADE</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+confidence_placeholder.markdown(
+    "**AI Confidence:** —"
+)
+
+reason_placeholder.markdown(
+    """
+    <div class="reason-box">
+        <b>AI Reason:</b> Waiting for AI analysis.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# LIVE FRAGMENT
+# ============================================================
+
+@st.fragment(run_every=1)
 def live_market():
 
     current_time = time.time()
@@ -1013,7 +1274,7 @@ def live_market():
     )
 
     # --------------------------------------------------------
-    # UPDATE INDICATORS EVERY 5 SECONDS
+    # INDICATORS EVERY 5 SECONDS
     # --------------------------------------------------------
 
     if (
@@ -1052,6 +1313,7 @@ def live_market():
             )
 
         except Exception:
+
             pass
 
     else:
@@ -1061,7 +1323,7 @@ def live_market():
         ] = current_ltp
 
     # --------------------------------------------------------
-    # UPDATE ADVANCED ANALYSIS
+    # ADVANCED ANALYSIS EVERY 5 SECONDS
     # --------------------------------------------------------
 
     if (
@@ -1087,10 +1349,11 @@ def live_market():
             )
 
         except Exception:
+
             pass
 
     # --------------------------------------------------------
-    # CURRENT INDICATORS
+    # CURRENT DATA
     # --------------------------------------------------------
 
     indicators_now = (
@@ -1101,15 +1364,21 @@ def live_market():
         st.session_state.advanced
     )
 
-    atr = float(
-        indicators_now.get(
-            "atr",
-            0
+    try:
+
+        atr = float(
+            indicators_now.get(
+                "atr",
+                0,
+            )
         )
-    )
+
+    except Exception:
+
+        atr = 0
 
     # --------------------------------------------------------
-    # GEMINI THROTTLED AI
+    # GEMINI
     # --------------------------------------------------------
 
     if analysis_mode == "Technical + AI":
@@ -1134,7 +1403,9 @@ def live_market():
                 interval,
             )
 
-            st.session_state.ai_result = result
+            st.session_state.ai_result = (
+                result
+            )
 
             st.session_state.last_ai_time = (
                 current_time
@@ -1160,16 +1431,13 @@ def live_market():
     else:
 
         st.session_state.ai_result = {
-
             "signal": "NO_TRADE",
-
             "confidence": 0,
-
             "reason": "Technical Only mode.",
         }
 
     # --------------------------------------------------------
-    # SIGNAL
+    # AI RESULT
     # --------------------------------------------------------
 
     ai_result = (
@@ -1206,325 +1474,269 @@ def live_market():
     )
 
     # ========================================================
-    # LIVE MARKET UI
+    # UPDATE ONLY VALUES
     # ========================================================
 
-    st.subheader(
-        "📊 Live Market"
+    ltp_placeholder.markdown(
+        f'<div class="live-value">{current_ltp:,.2f}</div>',
+        unsafe_allow_html=True,
     )
 
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-
-        st.metric(
-            "LTP",
-            f"{current_ltp:,.2f}",
-        )
-
-    with c2:
-
-        st.metric(
-            "RSI",
-            f"{float(indicators_now.get('rsi', 0)):.2f}",
-        )
-
-    with c3:
-
-        st.metric(
-            "ADX",
-            f"{float(indicators_now.get('adx', 0)):.2f}",
-        )
-
-    with c4:
-
-        st.metric(
-            "ATR",
-            f"{atr:.2f}",
-        )
-
-    # ========================================================
-    # PAPER TRADE LEVELS
-    # ========================================================
-
-    st.subheader(
-        "🎯 Paper Trade Levels"
+    rsi_placeholder.markdown(
+        f'<div class="live-value">{float(indicators_now.get("rsi", 0)):.2f}</div>',
+        unsafe_allow_html=True,
     )
+
+    adx_placeholder.markdown(
+        f'<div class="live-value">{float(indicators_now.get("adx", 0)):.2f}</div>',
+        unsafe_allow_html=True,
+    )
+
+    atr_placeholder.markdown(
+        f'<div class="live-value">{atr:.2f}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # --------------------------------------------------------
+    # PAPER LEVELS
+    # --------------------------------------------------------
 
     if signal in {
         "ENTER_LONG",
         "ENTER_SHORT",
     }:
 
-        p1, p2, p3, p4 = st.columns(4)
+        entry_placeholder.markdown(
+            f'<div class="live-value">{levels["entry"]:,.2f}</div>',
+            unsafe_allow_html=True,
+        )
 
-        with p1:
+        sl_placeholder.markdown(
+            f'<div class="live-value">{levels["sl"]:,.2f}</div>',
+            unsafe_allow_html=True,
+        )
 
-            st.metric(
-                "Entry",
-                f"{levels['entry']:,.2f}",
-            )
+        target1_placeholder.markdown(
+            f'<div class="live-value">{levels["target1"]:,.2f}</div>',
+            unsafe_allow_html=True,
+        )
 
-        with p2:
-
-            st.metric(
-                "Stop Loss",
-                f"{levels['sl']:,.2f}",
-            )
-
-        with p3:
-
-            st.metric(
-                "Target 1",
-                f"{levels['target1']:,.2f}",
-            )
-
-        with p4:
-
-            st.metric(
-                "Target 2",
-                f"{levels['target2']:,.2f}",
-            )
+        target2_placeholder.markdown(
+            f'<div class="live-value">{levels["target2"]:,.2f}</div>',
+            unsafe_allow_html=True,
+        )
 
     else:
 
-        st.write(
-            f"**Entry:** `{current_ltp:,.2f}`"
-            "   |   "
-            "**SL:** `—`"
-            "   |   "
-            "**Target 1:** `—`"
-            "   |   "
-            "**Target 2:** `—`"
+        entry_placeholder.markdown(
+            '<div class="live-value">—</div>',
+            unsafe_allow_html=True,
         )
 
-    # ========================================================
-    # AI SIGNAL
-    # ========================================================
+        sl_placeholder.markdown(
+            '<div class="live-value">—</div>',
+            unsafe_allow_html=True,
+        )
 
-    st.subheader(
-        "🤖 AI Trading Signal"
-    )
+        target1_placeholder.markdown(
+            '<div class="live-value">—</div>',
+            unsafe_allow_html=True,
+        )
+
+        target2_placeholder.markdown(
+            '<div class="live-value">—</div>',
+            unsafe_allow_html=True,
+        )
+
+    # --------------------------------------------------------
+    # SIGNAL
+    # --------------------------------------------------------
 
     if signal == "ENTER_LONG":
 
-        st.success(
-            "🟢 ENTER LONG — PAPER ONLY"
-        )
+        signal_text = "🟢 ENTER LONG — PAPER ONLY"
 
     elif signal == "ENTER_SHORT":
 
-        st.error(
-            "🔴 ENTER SHORT — PAPER ONLY"
+        signal_text = "🔴 ENTER SHORT — PAPER ONLY"
+
+    else:
+
+        signal_text = "🟡 NO TRADE"
+
+    signal_placeholder.markdown(
+        f"""
+        <div class="signal-box">
+            <div class="signal-title">Current Signal</div>
+            <div class="signal-value">{signal_text}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    confidence_placeholder.markdown(
+        f"**AI Confidence:** {confidence:.1f}%"
+    )
+
+    reason_placeholder.markdown(
+        f"""
+        <div class="reason-box">
+            <b>AI Reason:</b> {reason}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # --------------------------------------------------------
+    # TECHNICAL DATA
+    # --------------------------------------------------------
+
+    technical = {
+        "LTP": indicators_now.get(
+            "ltp"
+        ),
+        "RSI": indicators_now.get(
+            "rsi"
+        ),
+        "VWAP": indicators_now.get(
+            "vwap"
+        ),
+        "ADX": indicators_now.get(
+            "adx"
+        ),
+        "ATR": indicators_now.get(
+            "atr"
+        ),
+        "EMA Trend": indicators_now.get(
+            "ema_trend"
+        ),
+        "Supertrend": indicators_now.get(
+            "supertrend"
+        ),
+        "VWAP Position": indicators_now.get(
+            "price_vs_vwap"
+        ),
+        "Market Regime": indicators_now.get(
+            "market_regime"
+        ),
+    }
+
+    technical_html = (
+        pd.DataFrame([technical])
+        .to_html(
+            index=False,
+            border=0,
+            justify="center",
+        )
+    )
+
+    technical_placeholder.markdown(
+        technical_html,
+        unsafe_allow_html=True,
+    )
+
+    # --------------------------------------------------------
+    # ADVANCED ANALYSIS
+    # --------------------------------------------------------
+
+    if advanced_now.get("status") == "OK":
+
+        patterns = advanced_now.get(
+            "candlestick_patterns",
+            [],
+        )
+
+        if patterns:
+
+            pattern_text = "<br>".join(
+                [
+                    "• " + str(p)
+                    for p in patterns
+                ]
+            )
+
+        else:
+
+            pattern_text = (
+                "No confirmed pattern."
+            )
+
+        macd = advanced_now.get(
+            "macd",
+            {},
+        )
+
+        ema = advanced_now.get(
+            "ema_200",
+            {},
+        )
+
+        sr = advanced_now.get(
+            "support_resistance",
+            {},
+        )
+
+        volume = advanced_now.get(
+            "volume",
+            {},
+        )
+
+        structure = advanced_now.get(
+            "market_structure",
+            {},
+        )
+
+        advanced_html = f"""
+        <div style="padding:4px 0;">
+
+        <b>🕯️ Candlestick</b><br>
+        {pattern_text}
+
+        <br><br>
+
+        <b>📈 MACD</b><br>
+        Value: {float(macd.get("value", 0)):.4f}<br>
+        Signal: {float(macd.get("signal", 0)):.4f}<br>
+        Bias: <b>{macd.get("bias", "UNKNOWN")}</b>
+
+        <br><br>
+
+        <b>📊 EMA 200</b><br>
+        EMA 200: {float(ema.get("value", 0)):.2f}<br>
+        Position: <b>{ema.get("position", "UNKNOWN")}</b>
+
+        <br><br>
+
+        <b>🧱 Support / Resistance</b><br>
+        Support: {float(sr.get("support", 0)):.2f}<br>
+        Resistance: {float(sr.get("resistance", 0)):.2f}
+
+        <br><br>
+
+        <b>📦 Volume</b><br>
+        Volume Ratio: {float(volume.get("ratio", 0)):.2f}x<br>
+        Signal: <b>{volume.get("signal", "UNKNOWN")}</b>
+
+        <br><br>
+
+        <b>🧭 Market Structure</b><br>
+        Structure: <b>{structure.get("structure", "UNKNOWN")}</b><br>
+        Bias: <b>{structure.get("bias", "UNKNOWN")}</b><br>
+        Momentum: <b>{structure.get("momentum", "UNKNOWN")}</b>
+
+        </div>
+        """
+
+        advanced_placeholder.markdown(
+            advanced_html,
+            unsafe_allow_html=True,
         )
 
     else:
 
-        st.warning(
-            "🟡 NO TRADE"
+        advanced_placeholder.info(
+            "Advanced analysis waiting for data."
         )
-
-    st.write(
-        f"**AI Confidence:** "
-        f"{confidence:.1f}%"
-    )
-
-    st.write(
-        "**AI Reason:** "
-        + reason
-    )
-
-    # ========================================================
-    # TECHNICAL INDICATORS
-    # ========================================================
-
-    st.subheader(
-        "📐 Technical Indicators"
-    )
-
-    technical = {
-
-        "LTP":
-            indicators_now.get("ltp"),
-
-        "RSI":
-            indicators_now.get("rsi"),
-
-        "VWAP":
-            indicators_now.get("vwap"),
-
-        "ADX":
-            indicators_now.get("adx"),
-
-        "ATR":
-            indicators_now.get("atr"),
-
-        "EMA Trend":
-            indicators_now.get("ema_trend"),
-
-        "Supertrend":
-            indicators_now.get("supertrend"),
-
-        "VWAP Position":
-            indicators_now.get("price_vs_vwap"),
-
-        "Market Regime":
-            indicators_now.get("market_regime"),
-    }
-
-    st.dataframe(
-        pd.DataFrame(
-            [technical]
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # ========================================================
-    # ADVANCED ANALYSIS
-    # ========================================================
-
-    st.subheader(
-        "🧠 Advanced Market Analysis — Phase 1"
-    )
-
-    if advanced_now.get(
-        "status"
-    ) == "OK":
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-
-            st.write(
-                "### 🕯️ Candlestick"
-            )
-
-            patterns = advanced_now.get(
-                "candlestick_patterns",
-                [],
-            )
-
-            if patterns:
-
-                for pattern in patterns:
-
-                    st.write(
-                        f"• {pattern}"
-                    )
-
-            else:
-
-                st.write(
-                    "No confirmed pattern."
-                )
-
-            macd = advanced_now.get(
-                "macd",
-                {},
-            )
-
-            st.write(
-                "### 📈 MACD"
-            )
-
-            st.write(
-                f"Value: "
-                f"{float(macd.get('value', 0)):.4f}"
-            )
-
-            st.write(
-                f"Signal: "
-                f"{float(macd.get('signal', 0)):.4f}"
-            )
-
-            st.write(
-                f"Bias: "
-                f"**{macd.get('bias', 'UNKNOWN')}**"
-            )
-
-            ema = advanced_now.get(
-                "ema_200",
-                {},
-            )
-
-            st.write(
-                "### 📊 EMA 200"
-            )
-
-            st.write(
-                f"EMA 200: "
-                f"{float(ema.get('value', 0)):.2f}"
-            )
-
-            st.write(
-                f"Position: "
-                f"**{ema.get('position', 'UNKNOWN')}**"
-            )
-
-        with c2:
-
-            sr = advanced_now.get(
-                "support_resistance",
-                {},
-            )
-
-            st.write(
-                "### 🧱 Support / Resistance"
-            )
-
-            st.write(
-                f"Support: "
-                f"{float(sr.get('support', 0)):.2f}"
-            )
-
-            st.write(
-                f"Resistance: "
-                f"{float(sr.get('resistance', 0)):.2f}"
-            )
-
-            volume = advanced_now.get(
-                "volume",
-                {},
-            )
-
-            st.write(
-                "### 📦 Volume"
-            )
-
-            st.write(
-                f"Volume Ratio: "
-                f"{float(volume.get('ratio', 0)):.2f}x"
-            )
-
-            st.write(
-                f"Signal: "
-                f"**{volume.get('signal', 'UNKNOWN')}**"
-            )
-
-            structure = advanced_now.get(
-                "market_structure",
-                {},
-            )
-
-            st.write(
-                "### 🧭 Market Structure"
-            )
-
-            st.write(
-                f"Structure: "
-                f"**{structure.get('structure', 'UNKNOWN')}**"
-            )
-
-            st.write(
-                f"Bias: "
-                f"**{structure.get('bias', 'UNKNOWN')}**"
-            )
-
-            st.write(
-                f"Momentum: "
-                f"**{structure.get('momentum', 'UNKNOWN')}**"
-            )
 
 
 # ============================================================
@@ -1538,9 +1750,7 @@ live_market()
 # RECENT CANDLES
 # ============================================================
 
-st.subheader(
-    "🕯️ Recent Market Candles"
-)
+st.subheader("🕯️ Recent Market Candles")
 
 st.dataframe(
     initial_live_df.tail(20),
@@ -1553,29 +1763,20 @@ st.dataframe(
 # SYSTEM STATUS
 # ============================================================
 
-st.subheader(
-    "🛡️ System Status"
-)
+st.subheader("🛡️ System Status")
 
 c1, c2, c3, c4 = st.columns(4)
 
+
 with c1:
 
-    st.write(
-        "**Trading Mode**"
-    )
-
-    st.write(
-        "PAPER"
-    )
+    st.write("**Trading Mode**")
+    st.write("PAPER")
 
 
 with c2:
 
-    st.write(
-        "**Market**"
-    )
-
+    st.write("**Market**")
     st.write(
         INSTRUMENTS[symbol]["exchange"]
     )
@@ -1583,24 +1784,14 @@ with c2:
 
 with c3:
 
-    st.write(
-        "**Advanced Analysis**"
-    )
-
-    st.write(
-        "ACTIVE"
-    )
+    st.write("**Advanced Analysis**")
+    st.write("ACTIVE")
 
 
 with c4:
 
-    st.write(
-        "**Real Orders**"
-    )
-
-    st.write(
-        "DISABLED"
-    )
+    st.write("**Real Orders**")
+    st.write("DISABLED")
 
 
 st.caption(
