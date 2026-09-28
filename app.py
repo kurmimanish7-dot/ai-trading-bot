@@ -40,46 +40,94 @@ st.set_page_config(
 
 
 # ============================================================
-# CSS
+# MOBILE FRIENDLY CSS
 # ============================================================
 
 st.markdown(
     """
     <style>
+
     .block-container {
-        padding-top: 1rem;
+        padding-top: 0.8rem;
         padding-bottom: 2rem;
-    }
-
-    .metric-card {
-        padding: 14px;
-        border: 1px solid rgba(128,128,128,.25);
-        border-radius: 12px;
-        min-height: 105px;
-    }
-
-    .status-card {
-        padding: 12px 15px;
-        border-radius: 10px;
-        border: 1px solid rgba(128,128,128,.25);
-        margin-bottom: 8px;
-    }
-
-    .big-signal {
-        font-size: 28px;
-        font-weight: 700;
-    }
-
-    .small-muted {
-        opacity: .7;
-        font-size: 13px;
+        max-width: 1200px;
     }
 
     .section-title {
-        font-size: 22px;
+        font-size: 1.15rem;
         font-weight: 700;
-        margin-top: 18px;
+        margin-top: 1.2rem;
+        margin-bottom: 0.55rem;
     }
+
+    .metric-card {
+        border: 1px solid rgba(128,128,128,.28);
+        border-radius: 12px;
+        padding: 12px 14px;
+        min-height: 88px;
+        overflow: hidden;
+    }
+
+    .metric-label {
+        font-size: 0.76rem;
+        opacity: 0.72;
+        margin-bottom: 5px;
+    }
+
+    .metric-value {
+        font-size: 1.35rem;
+        font-weight: 700;
+        line-height: 1.25;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: normal;
+    }
+
+    .metric-sub {
+        font-size: 0.76rem;
+        opacity: 0.68;
+        margin-top: 4px;
+    }
+
+    .signal-card {
+        border: 1px solid rgba(128,128,128,.28);
+        border-radius: 12px;
+        padding: 14px;
+        min-height: 115px;
+    }
+
+    .signal-value {
+        font-size: 1.45rem;
+        font-weight: 800;
+        margin-top: 7px;
+        overflow-wrap: anywhere;
+    }
+
+    .small-muted {
+        font-size: 0.8rem;
+        opacity: 0.7;
+    }
+
+    @media (max-width: 700px) {
+
+        .block-container {
+            padding-left: 0.75rem;
+            padding-right: 0.75rem;
+        }
+
+        .section-title {
+            font-size: 1.05rem;
+        }
+
+        .metric-value {
+            font-size: 1.15rem;
+        }
+
+        .signal-value {
+            font-size: 1.25rem;
+        }
+    }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -92,7 +140,7 @@ st.markdown(
 
 if PAPER_TRADING is not True:
     st.error(
-        "🚨 SAFETY LOCK ACTIVE: PAPER_TRADING must remain True."
+        "🚨 SAFETY LOCK: PAPER_TRADING must remain True."
     )
     st.stop()
 
@@ -154,8 +202,10 @@ defaults = {
     "telemetry": None,
     "options_engine": None,
     "connected": False,
+
     "jwt_token": None,
     "feed_token": None,
+
     "api_key": None,
     "client_code": None,
 
@@ -177,7 +227,6 @@ defaults = {
     "options_pcr": pd.DataFrame(),
     "options_oi": {},
 
-    "last_options_time": 0,
     "selected_underlying": "NIFTY",
     "selected_expiry": None,
 }
@@ -189,10 +238,11 @@ for key, value in defaults.items():
 
 
 # ============================================================
-# CONNECTION STATUS
+# CONNECTION
 # ============================================================
 
 def credentials_available():
+
     c = get_credentials()
 
     return all(
@@ -208,15 +258,19 @@ def credentials_available():
 def ensure_connection():
 
     if st.session_state.telemetry is not None:
+        st.session_state.connected = True
         return True
 
     credentials = get_credentials()
 
     if not all(credentials.values()):
+
         st.session_state.connected = False
+
         return False
 
     try:
+
         engine = TelemetryEngine(
             api_key=credentials["api_key"],
             client_code=credentials["client_code"],
@@ -226,6 +280,7 @@ def ensure_connection():
 
         st.session_state.telemetry = engine
         st.session_state.connected = True
+
         st.session_state.api_key = credentials["api_key"]
         st.session_state.client_code = credentials["client_code"]
 
@@ -234,13 +289,26 @@ def ensure_connection():
         except Exception:
             pass
 
+        try:
+            st.session_state.jwt_token = engine.jwt_token
+        except Exception:
+            pass
+
+        st.session_state.last_error = ""
+
         return True
 
     except Exception as e:
+
         st.session_state.connected = False
         st.session_state.last_error = str(e)
+
         return False
 
+
+# ============================================================
+# OPTIONS ENGINE
+# ============================================================
 
 def ensure_options_engine():
 
@@ -250,9 +318,26 @@ def ensure_options_engine():
     if not ensure_connection():
         return None
 
+    jwt_token = st.session_state.jwt_token
+
+    if not jwt_token:
+
+        try:
+            jwt_token = getattr(
+                st.session_state.telemetry.smart_api,
+                "access_token",
+                None,
+            )
+        except Exception:
+            jwt_token = None
+
+    if not jwt_token:
+        return None
+
     try:
+
         engine = OptionsEngine(
-            jwt_token=st.session_state.telemetry.smart_api.access_token,
+            jwt_token=jwt_token,
             api_key=st.session_state.api_key,
             client_code=st.session_state.client_code,
         )
@@ -261,28 +346,11 @@ def ensure_options_engine():
 
         return engine
 
-    except Exception:
-        try:
-            smart_api = st.session_state.telemetry.smart_api
+    except Exception as e:
 
-            jwt_token = getattr(
-                smart_api,
-                "access_token",
-                None,
-            )
-
-            if jwt_token:
-                engine = OptionsEngine(
-                    jwt_token=jwt_token,
-                    api_key=st.session_state.api_key,
-                    client_code=st.session_state.client_code,
-                )
-
-                st.session_state.options_engine = engine
-                return engine
-
-        except Exception as e:
-            st.session_state.last_error = str(e)
+        st.session_state.last_error = (
+            "Options Engine: " + str(e)
+        )
 
         return None
 
@@ -297,6 +365,7 @@ def fetch_market_data():
         return None
 
     try:
+
         df = st.session_state.telemetry.fetch_ohlcv(
             exchange=EXCHANGE,
             token=str(TOKEN),
@@ -307,10 +376,14 @@ def fetch_market_data():
         if df is None or df.empty:
             return None
 
+        st.session_state.last_error = ""
+
         return df
 
     except Exception as e:
+
         st.session_state.last_error = str(e)
+
         return None
 
 
@@ -320,6 +393,7 @@ def fetch_live_ltp():
         return None
 
     try:
+
         result = st.session_state.telemetry.get_live_ltp(
             exchange=EXCHANGE,
             tradingsymbol=SYMBOL,
@@ -327,9 +401,15 @@ def fetch_live_ltp():
         )
 
         if result and result.get("status"):
-            return float(result["ltp"])
+
+            value = float(result["ltp"])
+
+            st.session_state.last_ltp = value
+
+            return value
 
     except Exception as e:
+
         st.session_state.last_error = str(e)
 
     return None
@@ -343,6 +423,7 @@ def apply_ltp(df, ltp):
     result = df.copy()
 
     try:
+
         idx = result.index[-1]
 
         result.loc[idx, "close"] = float(ltp)
@@ -373,11 +454,29 @@ def safe_indicators(df):
         return {}
 
     try:
-        return TelemetryEngine.calculate_indicators(df)
+
+        result = TelemetryEngine.calculate_indicators(df)
+
+        # NIFTY index may not provide usable volume.
+        if "volume" in df.columns:
+
+            volume_total = pd.to_numeric(
+                df["volume"],
+                errors="coerce"
+            ).fillna(0).sum()
+
+            if volume_total <= 0:
+                result["vwap"] = None
+                result["price_vs_vwap"] = "UNAVAILABLE"
+
+        return result
+
     except Exception as e:
+
         st.session_state.last_error = (
             "Indicator error: " + str(e)
         )
+
         return {}
 
 
@@ -387,12 +486,55 @@ def safe_advanced(df):
         return {"status": "NO_DATA"}
 
     try:
+
         return build_advanced_analysis(df)
+
     except Exception as e:
+
         return {
             "status": "ERROR",
             "error": str(e),
         }
+
+
+# ============================================================
+# NUMBER FORMAT
+# ============================================================
+
+def fmt_number(value, decimals=2):
+
+    if value is None:
+        return "N/A"
+
+    try:
+        if pd.isna(value):
+            return "N/A"
+
+        return f"{float(value):,.{decimals}f}"
+
+    except Exception:
+        return str(value)
+
+
+def show_card(label, value, sub=None):
+
+    sub_html = ""
+
+    if sub:
+        sub_html = (
+            f'<div class="metric-sub">{sub}</div>'
+        )
+
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+            {sub_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ============================================================
@@ -404,6 +546,7 @@ def call_gemini(indicators, advanced, ltp):
     api_key = get_gemini_key()
 
     if not api_key:
+
         return {
             "signal": "WAITING",
             "confidence": 0,
@@ -411,6 +554,7 @@ def call_gemini(indicators, advanced, ltp):
         }
 
     if genai is None:
+
         return {
             "signal": "WAITING",
             "confidence": 0,
@@ -423,8 +567,8 @@ You are an AI market-analysis assistant.
 PAPER TRADING ONLY.
 Never place real orders.
 
-Use ONLY the supplied data.
-Never invent news, VIX, OI, PCR, IV or Greeks.
+Use ONLY supplied market data.
+Never invent unavailable VIX, OI, PCR, IV, Greeks or news.
 
 Instrument:
 {SYMBOL}
@@ -445,17 +589,18 @@ ENTER_LONG
 ENTER_SHORT
 NO_TRADE
 
-Confidence: 0-100.
+Confidence must be between 0 and 100.
 
-JSON format:
+JSON:
 {{
-  "signal": "NO_TRADE",
-  "confidence": 0,
-  "reason": "Short explanation"
+    "signal": "NO_TRADE",
+    "confidence": 0,
+    "reason": "Short explanation"
 }}
 """
 
     try:
+
         client = genai.Client(
             api_key=api_key
         )
@@ -471,13 +616,12 @@ JSON format:
             else ""
         )
 
-        raw = raw.replace(
-            "```json",
-            "",
-        ).replace(
-            "```",
-            "",
-        ).strip()
+        raw = (
+            raw
+            .replace("```json", "")
+            .replace("```", "")
+            .strip()
+        )
 
         result = json.loads(raw)
 
@@ -502,11 +646,13 @@ JSON format:
             )
         )
 
-        if signal not in {
+        allowed = {
             "ENTER_LONG",
             "ENTER_SHORT",
             "NO_TRADE",
-        }:
+        }
+
+        if signal not in allowed:
             signal = "NO_TRADE"
 
         confidence = max(
@@ -523,7 +669,7 @@ JSON format:
         return {
             "signal": signal,
             "confidence": confidence,
-            "reason": reason[:250],
+            "reason": reason[:300],
         }
 
     except Exception as e:
@@ -550,9 +696,12 @@ def calculate_levels(signal, price, atr):
         }
 
     try:
+
         price = float(price)
         atr = float(atr or 0)
+
     except Exception:
+
         return {
             "entry": None,
             "sl": None,
@@ -593,7 +742,7 @@ def calculate_levels(signal, price, atr):
 
 
 # ============================================================
-# OPTIONS
+# OPTIONS HELPERS
 # ============================================================
 
 def load_expiries(underlying):
@@ -604,11 +753,15 @@ def load_expiries(underlying):
         return []
 
     try:
+
         return engine.get_expiries(
             underlying
         ) or []
+
     except Exception as e:
+
         st.session_state.last_error = str(e)
+
         return []
 
 
@@ -625,14 +778,18 @@ def load_option_chain(
         return pd.DataFrame()
 
     try:
+
         return engine.get_option_chain(
             underlying=underlying,
             expiry_date=expiry,
             spot_price=float(spot),
             strikes_each_side=int(strikes),
         )
+
     except Exception as e:
+
         st.session_state.last_error = str(e)
+
         return pd.DataFrame()
 
 
@@ -647,12 +804,16 @@ def load_greeks(
         return pd.DataFrame()
 
     try:
+
         return engine.greeks_dataframe(
             underlying=underlying,
             expiry_date=expiry,
         )
+
     except Exception as e:
+
         st.session_state.last_error = str(e)
+
         return pd.DataFrame()
 
 
@@ -664,9 +825,13 @@ def load_pcr():
         return pd.DataFrame()
 
     try:
+
         return engine.pcr_dataframe()
+
     except Exception as e:
+
         st.session_state.last_error = str(e)
+
         return pd.DataFrame()
 
 
@@ -678,11 +843,15 @@ def load_oi():
         return {}
 
     try:
+
         return engine.get_all_oi_buildup(
             expiry_type="NEAR"
         ) or {}
+
     except Exception as e:
+
         st.session_state.last_error = str(e)
+
         return {}
 
 
@@ -709,7 +878,9 @@ def format_option_chain(df):
     }
 
     for old, new in rename.items():
+
         if old in work.columns:
+
             work.rename(
                 columns={
                     old: new
@@ -747,13 +918,14 @@ def format_option_chain(df):
 # PLACEHOLDER
 # ============================================================
 
-def unavailable(label, detail="Waiting for connection"):
+def unavailable(label, detail):
 
     st.markdown(
         f"""
-        <div class="status-card">
-        <b>{label}</b><br>
-        <span class="small-muted">⏳ {detail}</span>
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">WAITING</div>
+            <div class="small-muted">⏳ {detail}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -768,15 +940,16 @@ with st.sidebar:
 
     st.header("⚙️ Control Panel")
 
-    st.write(
-        "### Connection"
-    )
+    st.write("### Connection")
 
     if credentials_available():
+
         st.success(
             "Angel One credentials detected"
         )
+
     else:
+
         st.warning(
             "Angel One credentials not configured"
         )
@@ -785,9 +958,11 @@ with st.sidebar:
         "🔄 Connect / Refresh Connection",
         use_container_width=True,
     ):
+
         st.session_state.telemetry = None
         st.session_state.options_engine = None
         st.session_state.connected = False
+        st.session_state.jwt_token = None
         st.session_state.last_error = ""
 
         ensure_connection()
@@ -809,9 +984,7 @@ with st.sidebar:
 
     st.divider()
 
-    st.write(
-        "### Safety"
-    )
+    st.write("### Safety")
 
     st.info(
         "Paper Trading Only"
@@ -843,6 +1016,7 @@ if st.session_state.connected:
     if live_df is not None:
 
         if live_ltp is not None:
+
             live_df = apply_ltp(
                 live_df,
                 live_ltp,
@@ -856,8 +1030,13 @@ else:
         st.session_state.last_df is not None
         and not st.session_state.last_df.empty
     ):
+
         live_df = st.session_state.last_df
 
+
+# ============================================================
+# ANALYSIS
+# ============================================================
 
 if live_df is not None and not live_df.empty:
 
@@ -870,12 +1049,43 @@ if live_df is not None and not live_df.empty:
     )
 
     if live_ltp is None:
+
         try:
+
             live_ltp = float(
                 live_df["close"].iloc[-1]
             )
+
         except Exception:
+
             live_ltp = None
+
+
+# ============================================================
+# AI UPDATE
+# IMPORTANT: AI BEFORE DISPLAY
+# ============================================================
+
+if (
+    live_ltp is not None
+    and indicators
+):
+
+    now = time.time()
+
+    if (
+        now
+        - st.session_state.last_ai_time
+        >= 60
+    ):
+
+        st.session_state.ai_result = call_gemini(
+            indicators,
+            advanced,
+            live_ltp,
+        )
+
+        st.session_state.last_ai_time = now
 
 
 # ============================================================
@@ -885,9 +1095,7 @@ if live_df is not None and not live_df.empty:
 if not st.session_state.connected:
 
     st.warning(
-        "📡 Live connection is not active. "
-        "Dashboard is ready — configure Angel One credentials "
-        "to populate live market data."
+        "📡 Angel One connection is not active."
     )
 
 else:
@@ -906,75 +1114,68 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-m1, m2, m3, m4, m5 = st.columns(5)
+m1, m2 = st.columns(2)
 
 with m1:
 
-    if live_ltp is not None:
-        st.metric(
-            "NIFTY / Instrument",
-            f"{live_ltp:,.2f}",
-        )
-    else:
-        st.metric(
-            "NIFTY / Instrument",
-            "WAITING",
-        )
+    show_card(
+        "NIFTY / Instrument",
+        fmt_number(live_ltp),
+        SYMBOL,
+    )
 
 with m2:
 
-    if indicators:
-        st.metric(
-            "RSI",
-            indicators.get("rsi", "—"),
-        )
-    else:
-        st.metric(
-            "RSI",
-            "—",
-        )
+    show_card(
+        "RSI",
+        fmt_number(
+            indicators.get("rsi")
+        ),
+        "RSI 14",
+    )
+
+
+m3, m4 = st.columns(2)
 
 with m3:
 
-    if indicators:
-        st.metric(
-            "VWAP",
-            indicators.get("vwap", "—"),
-        )
+    vwap_value = indicators.get("vwap")
+
+    if vwap_value is None:
+        vwap_text = "N/A"
+        vwap_sub = "Volume unavailable"
     else:
-        st.metric(
-            "VWAP",
-            "—",
-        )
+        vwap_text = fmt_number(vwap_value)
+        vwap_sub = "VWAP"
+
+    show_card(
+        "VWAP",
+        vwap_text,
+        vwap_sub,
+    )
 
 with m4:
 
-    if indicators:
-        st.metric(
-            "ADX",
-            indicators.get("adx", "—"),
-        )
-    else:
-        st.metric(
-            "ADX",
-            "—",
-        )
+    show_card(
+        "ADX",
+        fmt_number(
+            indicators.get("adx")
+        ),
+        "ADX 14",
+    )
+
+
+m5 = st.container()
 
 with m5:
 
-    if indicators:
-        st.metric(
-            "Market Regime",
-            indicators.get(
-                "market_regime",
-                "—",
-            ),
-        )
-    else:
-        st.metric(
-            "Market Regime",
+    show_card(
+        "Market Regime",
+        indicators.get(
+            "market_regime",
             "WAITING",
-        )
+        ),
+    )
 
 
 # ============================================================
@@ -986,11 +1187,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-d1, d2, d3, d4 = st.columns(4)
+d1, d2 = st.columns(2)
 
 with d1:
 
-    st.metric(
+    show_card(
         "EMA Trend",
         indicators.get(
             "ema_trend",
@@ -1000,7 +1201,7 @@ with d1:
 
 with d2:
 
-    st.metric(
+    show_card(
         "Supertrend",
         indicators.get(
             "supertrend",
@@ -1008,9 +1209,12 @@ with d2:
         ),
     )
 
+
+d3, d4 = st.columns(2)
+
 with d3:
 
-    st.metric(
+    show_card(
         "Price vs VWAP",
         indicators.get(
             "price_vs_vwap",
@@ -1022,12 +1226,18 @@ with d4:
 
     structure = (
         advanced
-        .get("market_structure", {})
-        .get("trend", "WAITING")
+        .get(
+            "market_structure",
+            {}
+        )
+        .get(
+            "trend",
+            "WAITING",
+        )
     )
 
-    st.metric(
-        "Structure",
+    show_card(
+        "Market Structure",
         structure,
     )
 
@@ -1041,11 +1251,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-ai_col1, ai_col2, ai_col3 = st.columns(3)
-
 ai = st.session_state.ai_result
 
-with ai_col1:
+a1, a2 = st.columns(2)
+
+with a1:
 
     signal = ai.get(
         "signal",
@@ -1053,14 +1263,16 @@ with ai_col1:
     )
 
     st.markdown(
-        f'<div class="metric-card">'
-        f'<div class="small-muted">SIGNAL</div>'
-        f'<div class="big-signal">{signal}</div>'
-        f'</div>',
+        f"""
+        <div class="signal-card">
+            <div class="metric-label">AI SIGNAL</div>
+            <div class="signal-value">{signal}</div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
-with ai_col2:
+with a2:
 
     confidence = float(
         ai.get(
@@ -1069,54 +1281,23 @@ with ai_col2:
         )
     )
 
-    st.metric(
+    show_card(
         "AI Confidence",
         f"{confidence:.0f}%",
     )
 
-with ai_col3:
 
-    st.write("**AI Reason**")
-
-    st.write(
-        ai.get(
-            "reason",
-            "Waiting for analysis.",
-        )
-    )
+st.markdown(
+    '<div class="metric-card">'
+    '<div class="metric-label">AI REASON</div>'
+    f'<div>{ai.get("reason", "Waiting for analysis.")}</div>'
+    '</div>',
+    unsafe_allow_html=True,
+)
 
 
 # ============================================================
-# AI UPDATE
-# ============================================================
-
-if (
-    live_ltp is not None
-    and indicators
-):
-
-    now = time.time()
-
-    # Gemini call maximum once per 60 seconds.
-    if (
-        now
-        - st.session_state.last_ai_time
-        >= 60
-    ):
-
-        st.session_state.ai_result = (
-            call_gemini(
-                indicators,
-                advanced,
-                live_ltp,
-            )
-        )
-
-        st.session_state.last_ai_time = now
-
-
-# ============================================================
-# TRADE PLAN
+# PAPER TRADE PLAN
 # ============================================================
 
 st.markdown(
@@ -1130,43 +1311,43 @@ levels = calculate_levels(
     indicators.get("atr"),
 )
 
-t1, t2, t3, t4 = st.columns(4)
 
-with t1:
-    st.metric(
+p1, p2 = st.columns(2)
+
+with p1:
+
+    show_card(
         "Entry",
-        f"{levels['entry']:.2f}"
-        if levels["entry"] is not None
-        else "WAITING",
+        fmt_number(levels["entry"]),
     )
 
-with t2:
-    st.metric(
+with p2:
+
+    show_card(
         "Stop Loss",
-        f"{levels['sl']:.2f}"
-        if levels["sl"] is not None
-        else "WAITING",
+        fmt_number(levels["sl"]),
     )
 
-with t3:
-    st.metric(
+
+p3, p4 = st.columns(2)
+
+with p3:
+
+    show_card(
         "Target 1",
-        f"{levels['target1']:.2f}"
-        if levels["target1"] is not None
-        else "WAITING",
+        fmt_number(levels["target1"]),
     )
 
-with t4:
-    st.metric(
+with p4:
+
+    show_card(
         "Target 2",
-        f"{levels['target2']:.2f}"
-        if levels["target2"] is not None
-        else "WAITING",
+        fmt_number(levels["target2"]),
     )
 
 
 # ============================================================
-# TECHNICAL INDICATORS
+# TECHNICAL ANALYSIS
 # ============================================================
 
 st.markdown(
@@ -1174,48 +1355,72 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tech1, tech2, tech3, tech4, tech5 = st.columns(5)
+t1, t2 = st.columns(2)
 
-with tech1:
-    st.metric(
+with t1:
+
+    show_card(
         "EMA 9",
-        indicators.get("ema_9", "—"),
+        fmt_number(
+            indicators.get("ema_9")
+        ),
     )
 
-with tech2:
-    st.metric(
+with t2:
+
+    show_card(
         "EMA 21",
-        indicators.get("ema_21", "—"),
+        fmt_number(
+            indicators.get("ema_21")
+        ),
     )
 
-with tech3:
-    st.metric(
+
+t3, t4 = st.columns(2)
+
+with t3:
+
+    show_card(
         "EMA 50",
-        indicators.get("ema_50", "—"),
+        fmt_number(
+            indicators.get("ema_50")
+        ),
     )
 
-with tech4:
-    st.metric(
+with t4:
+
+    show_card(
         "ATR",
-        indicators.get("atr", "—"),
+        fmt_number(
+            indicators.get("atr")
+        ),
     )
 
-with tech5:
+
+t5 = st.container()
+
+with t5:
 
     ema200 = (
         advanced
-        .get("ema_200", {})
-        .get("value", "—")
+        .get(
+            "ema_200",
+            {}
+        )
+        .get(
+            "value",
+            None,
+        )
     )
 
-    st.metric(
+    show_card(
         "EMA 200",
-        ema200,
+        fmt_number(ema200),
     )
 
 
 # ============================================================
-# ADVANCED ANALYSIS
+# ADVANCED PRICE ACTION
 # ============================================================
 
 st.markdown(
@@ -1223,87 +1428,96 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-a1, a2 = st.columns(2)
+patterns = advanced.get(
+    "candlestick_patterns",
+    [],
+)
 
-with a1:
+if patterns:
 
-    patterns = advanced.get(
-        "candlestick_patterns",
-        [],
+    pattern_text = " • ".join(
+        str(x)
+        for x in patterns
     )
 
-    st.write("**Candlestick Pattern**")
+else:
 
-    if patterns:
-        st.write(
-            " • ".join(
-                str(x)
-                for x in patterns
-            )
-        )
-    else:
-        st.write("WAITING")
+    pattern_text = "WAITING"
+
+
+ap1, ap2 = st.columns(2)
+
+with ap1:
+
+    show_card(
+        "Candlestick Pattern",
+        pattern_text,
+    )
+
+with ap2:
 
     macd = advanced.get(
         "macd",
         {},
     )
 
-    st.write(
-        "**MACD Bias:** "
-        + str(
-            macd.get(
-                "bias",
-                "WAITING",
-            )
-        )
+    show_card(
+        "MACD Bias",
+        macd.get(
+            "bias",
+            "WAITING",
+        ),
     )
 
-with a2:
+
+ap3, ap4 = st.columns(2)
+
+with ap3:
 
     sr = advanced.get(
         "support_resistance",
         {},
     )
 
-    st.write(
-        "**Support:** "
-        + str(
-            sr.get(
-                "support",
-                "WAITING",
-            )
-        )
+    support = sr.get(
+        "support",
+        None,
     )
 
-    st.write(
-        "**Resistance:** "
-        + str(
-            sr.get(
-                "resistance",
-                "WAITING",
-            )
-        )
+    show_card(
+        "Support",
+        fmt_number(support),
     )
 
-    volume = advanced.get(
-        "volume",
-        {},
+with ap4:
+
+    resistance = sr.get(
+        "resistance",
+        None,
     )
 
-    st.write(
-        "**Volume:** "
-        + str(
-            volume.get(
-                "volume_signal",
-                "WAITING",
-            )
-        )
+    show_card(
+        "Resistance",
+        fmt_number(resistance),
     )
+
+
+volume = advanced.get(
+    "volume",
+    {},
+)
+
+show_card(
+    "Volume",
+    volume.get(
+        "volume_signal",
+        "WAITING",
+    ),
+)
 
 
 # ============================================================
-# LIVE CANDLE CHART
+# LIVE CANDLES
 # ============================================================
 
 st.markdown(
@@ -1313,9 +1527,7 @@ st.markdown(
 
 if live_df is not None and not live_df.empty:
 
-    chart_df = live_df.copy()
-
-    chart_df = chart_df.tail(100)
+    chart_df = live_df.tail(100).copy()
 
     if "timestamp" in chart_df.columns:
 
@@ -1330,19 +1542,22 @@ if live_df is not None and not live_df.empty:
         )
 
     with st.expander(
-        "View recent candles"
+        "📋 View recent candles"
     ):
 
+        display_df = live_df.tail(20).copy()
+
         st.dataframe(
-            live_df.tail(20),
+            display_df,
             use_container_width=True,
+            hide_index=True,
         )
 
 else:
 
     unavailable(
         "Live Candle Data",
-        "Angel One connection required",
+        "Waiting for Angel One market data",
     )
 
 
@@ -1362,14 +1577,9 @@ if not st.session_state.connected:
         "Waiting for Angel One connection",
     )
 
-    unavailable(
-        "OI / PCR / Greeks",
-        "Waiting for Angel One connection",
-    )
-
 else:
 
-    o1, o2, o3 = st.columns(3)
+    o1, o2 = st.columns(2)
 
     with o1:
 
@@ -1391,12 +1601,10 @@ else:
             value=5,
         )
 
-    with o3:
-
-        refresh_options = st.button(
-            "🔄 Load Options",
-            use_container_width=True,
-        )
+    refresh_options = st.button(
+        "🔄 Load Options",
+        use_container_width=True,
+    )
 
     expiries = load_expiries(
         underlying
@@ -1410,42 +1618,40 @@ else:
             key="option_expiry",
         )
 
-        st.session_state.selected_expiry = (
-            expiry
-        )
+        st.session_state.selected_expiry = expiry
 
         spot = live_ltp
 
         if spot is None:
+
             spot = indicators.get(
                 "ltp"
             )
 
-        if refresh_options:
+        if refresh_options and spot is not None:
 
-            if spot is not None:
+            chain = load_option_chain(
+                underlying,
+                expiry,
+                spot,
+                strikes,
+            )
 
-                chain = load_option_chain(
-                    underlying,
-                    expiry,
-                    spot,
-                    strikes,
-                )
+            greeks = load_greeks(
+                underlying,
+                expiry,
+            )
 
-                greeks = load_greeks(
-                    underlying,
-                    expiry,
-                )
+            pcr = load_pcr()
 
-                pcr = load_pcr()
+            oi = load_oi()
 
-                oi = load_oi()
+            st.session_state.options_chain = chain
+            st.session_state.options_greeks = greeks
+            st.session_state.options_pcr = pcr
+            st.session_state.options_oi = oi
 
-                st.session_state.options_chain = chain
-                st.session_state.options_greeks = greeks
-                st.session_state.options_pcr = pcr
-                st.session_state.options_oi = oi
-                st.session_state.last_options_time = time.time()
+            st.session_state.last_error = ""
 
         chain = st.session_state.options_chain
 
@@ -1465,76 +1671,19 @@ else:
                 hide_index=True,
             )
 
-            if "option_type" in chain.columns:
-
-                ce = chain[
-                    chain["option_type"]
-                    .astype(str)
-                    .str.upper()
-                    == "CE"
-                ]
-
-                pe = chain[
-                    chain["option_type"]
-                    .astype(str)
-                    .str.upper()
-                    == "PE"
-                ]
-
-                c1, c2, c3, c4 = st.columns(4)
-
-                with c1:
-                    st.metric(
-                        "CE Contracts",
-                        len(ce),
-                    )
-
-                with c2:
-                    st.metric(
-                        "PE Contracts",
-                        len(pe),
-                    )
-
-                with c3:
-
-                    ce_oi = (
-                        ce["opnInterest"].sum()
-                        if "opnInterest" in ce.columns
-                        else 0
-                    )
-
-                    st.metric(
-                        "CE OI",
-                        f"{ce_oi:,.0f}",
-                    )
-
-                with c4:
-
-                    pe_oi = (
-                        pe["opnInterest"].sum()
-                        if "opnInterest" in pe.columns
-                        else 0
-                    )
-
-                    st.metric(
-                        "PE OI",
-                        f"{pe_oi:,.0f}",
-                    )
-
         else:
 
             unavailable(
                 "Option Chain",
-                "Click Load Options to request live data",
+                "Press Load Options for live chain",
             )
+
 
         # ----------------------------------------------------
         # GREEKS
         # ----------------------------------------------------
 
-        st.write(
-            "### 🧮 Greeks / IV"
-        )
+        st.write("### 🧮 Greeks / IV")
 
         greeks = st.session_state.options_greeks
 
@@ -1551,7 +1700,8 @@ else:
             ]
 
             cols = [
-                c for c in preferred
+                c
+                for c in preferred
                 if c in greeks.columns
             ]
 
@@ -1570,13 +1720,12 @@ else:
                 "No live Greeks received yet",
             )
 
+
         # ----------------------------------------------------
         # PCR
         # ----------------------------------------------------
 
-        st.write(
-            "### 📊 Put-Call Ratio"
-        )
+        st.write("### 📊 Put-Call Ratio")
 
         pcr = st.session_state.options_pcr
 
@@ -1595,13 +1744,12 @@ else:
                 "No live PCR received yet",
             )
 
+
         # ----------------------------------------------------
         # OI BUILDUP
         # ----------------------------------------------------
 
-        st.write(
-            "### 🏗️ OI Buildup"
-        )
+        st.write("### 🏗️ OI Buildup")
 
         oi_data = st.session_state.options_oi
 
@@ -1616,15 +1764,19 @@ else:
                     if data:
 
                         try:
+
                             st.dataframe(
                                 pd.DataFrame(data),
                                 use_container_width=True,
                                 hide_index=True,
                             )
+
                         except Exception:
+
                             st.write(data)
 
                     else:
+
                         st.write(
                             "No data."
                         )
@@ -1640,7 +1792,7 @@ else:
 
         unavailable(
             "Option Expiry",
-            "No expiry list received from Angel One",
+            "No expiry list received",
         )
 
 
@@ -1653,27 +1805,30 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-s1, s2, s3, s4 = st.columns(4)
+s1, s2 = st.columns(2)
 
 with s1:
 
-    st.metric(
+    show_card(
         "Paper Trading",
         "ON",
     )
 
 with s2:
 
-    st.metric(
+    show_card(
         "Angel One",
         "CONNECTED"
         if st.session_state.connected
         else "WAITING",
     )
 
+
+s3, s4 = st.columns(2)
+
 with s3:
 
-    st.metric(
+    show_card(
         "Gemini",
         "READY"
         if get_gemini_key()
@@ -1682,7 +1837,7 @@ with s3:
 
 with s4:
 
-    st.metric(
+    show_card(
         "Options Engine",
         "READY"
         if st.session_state.options_engine
@@ -1691,7 +1846,7 @@ with s4:
 
 
 # ============================================================
-# ERROR / INFO
+# SYSTEM MESSAGE
 # ============================================================
 
 if st.session_state.last_error:
@@ -1712,7 +1867,7 @@ st.caption(
 )
 
 st.caption(
-    "📡 Market values are shown only when received from Angel One SmartAPI."
+    "📡 Market values are displayed only when received from Angel One SmartAPI."
 )
 
 st.caption(
@@ -1720,7 +1875,8 @@ st.caption(
 )
 
 st.caption(
-    f"Last UI refresh: {datetime.now().strftime('%H:%M:%S')}"
+    "Last UI refresh: "
+    + datetime.now().strftime("%H:%M:%S")
 )
 
 
