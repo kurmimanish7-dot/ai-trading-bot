@@ -295,6 +295,8 @@ def start_websocket(symbol):
         smart_api = SmartConnect(
             api_key=credentials["api_key"]
         )
+        global LIVE_SMART_API
+LIVE_SMART_API = smart_api
 
         totp = pyotp.TOTP(
             credentials["totp_secret"]
