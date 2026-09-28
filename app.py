@@ -288,19 +288,19 @@ def start_websocket(symbol):
     if not token:
         return
 
-    try:
+    global LIVE_SMART_API
 
-        import pyotp
+try:
 
-        smart_api = SmartConnect(
-            api_key=credentials["api_key"]
-        )
-        global LIVE_SMART_API
-LIVE_SMART_API = smart_api
+    import pyotp
 
-        totp = pyotp.TOTP(
-            credentials["totp_secret"]
-        ).now()
+    smart_api = SmartConnect(
+        api_key=credentials["api_key"]
+    )
+
+    totp = pyotp.TOTP(
+        credentials["totp_secret"]
+    ).now()
 
         session = smart_api.generateSession(
             credentials["client_code"],
