@@ -1943,16 +1943,16 @@ def live_market():
         )
 
     if current_ltp is None:
+    current_ltp = fetch_rest_ltp(symbol)
 
-        current_ltp = float(
-            st.session_state.last_df[
-                "close"
-            ].iloc[-1]
-        )
-
+if current_ltp is None:
     current_ltp = float(
-        current_ltp
+        st.session_state.last_df[
+            "close"
+        ].iloc[-1]
     )
+
+current_ltp = float(current_ltp)
 
     # --------------------------------------------------------
     # LIVE CANDLE
