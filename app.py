@@ -397,16 +397,7 @@ def start_websocket(symbol):
     except Exception:
 
         LIVE_WS_STARTED = False
-        and LIVE_WS_SYMBOL == symbol
-    ):
-        return
-
-    credentials = get_angel_credentials()
-
-    if not all(
-        credentials.values()
-    ):
-        return
+        
 
     token = get_instrument_token(
         symbol
