@@ -135,10 +135,10 @@ def get_secret(name):
 
 def get_credentials():
     return {
-        "api_key": get_secret("SMARTAPI_API_KEY"),
-        "client_code": get_secret("SMARTAPI_CLIENT_CODE"),
-        "pin": get_secret("SMARTAPI_PIN"),
-        "totp_secret": get_secret("SMARTAPI_TOTP_SECRET"),
+        "api_key": get_secret("ANGEL_API_KEY"),
+        "client_code": get_secret("ANGEL_CLIENT_CODE"),
+        "pin": get_secret("ANGEL_PIN"),
+        "totp_secret": get_secret("ANGEL_TOTP_SECRET"),
     }
 
 
