@@ -406,6 +406,59 @@ LIVE_SMART_API = smart_api
 # MARKET DATA
 # ============================================================
 
+def fetch_rest_ltp(symbol):
+    global LIVE_REST_LTP, LIVE_REST_LTP_TIME
+
+    try:
+        now = time.time()
+
+        if LIVE_REST_LTP is not None and (now - LIVE_REST_LTP_TIME) < 3:
+            return LIVE_REST_LTP
+
+        if LIVE_SMART_API is None:
+            return None
+
+        instrument = INSTRUMENTS.get(symbol)
+        if not instrument:
+            return None
+
+        exchange = instrument["exchange"]
+        token = get_instrument_token(symbol)
+
+        if not token:
+            return None
+
+        tradingsymbol = instrument.get("tradingsymbol", symbol)
+
+        response = LIVE_SMART_API.ltpData(
+            exchange,
+            tradingsymbol,
+            str(token)
+        )
+
+        if not response:
+            return None
+
+        data = response.get("data") or {}
+        ltp = data.get("ltp")
+
+        if ltp is None:
+            return None
+
+        ltp = float(ltp)
+
+        if ltp <= 0:
+            return None
+
+        LIVE_REST_LTP = ltp
+        LIVE_REST_LTP_TIME = now
+
+        LIVE_LTP[str(token)] = ltp
+
+        return ltp
+
+    except Exception:
+        return None
 def fetch_market_data(
     symbol,
     interval,
