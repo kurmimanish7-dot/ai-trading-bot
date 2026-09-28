@@ -267,9 +267,136 @@ def start_websocket(symbol):
     global LIVE_WS_THREAD
     global LIVE_WS_STARTED
     global LIVE_WS_SYMBOL
+    global LIVE_SMART_API
 
     if (
         LIVE_WS_STARTED
+        and LIVE_WS_SYMBOL == symbol
+    ):
+        return
+
+    credentials = get_angel_credentials()
+
+    if not all(
+        credentials.values()
+    ):
+        return
+
+    token = get_instrument_token(
+        symbol
+    )
+
+    if not token:
+        return
+
+    try:
+
+        import pyotp
+
+        smart_api = SmartConnect(
+            api_key=credentials["api_key"]
+        )
+
+        LIVE_SMART_API = smart_api
+
+        totp = pyotp.TOTP(
+            credentials["totp_secret"]
+        ).now()
+
+        session = smart_api.generateSession(
+            credentials["client_code"],
+            credentials["pin"],
+            totp,
+        )
+
+        if (
+            not session
+            or not session.get("status")
+        ):
+            return
+
+        auth_token = session[
+            "data"
+        ]["jwtToken"]
+
+        st.session_state.angel_jwt_token = (
+            auth_token
+        )
+
+        st.session_state.angel_api_key = (
+            credentials["api_key"]
+        )
+
+        st.session_state.angel_client_code = (
+            credentials["client_code"]
+        )
+
+        feed_token = (
+            smart_api.getfeedToken()
+        )
+
+        LIVE_WS = SmartWebSocketV2(
+            auth_token,
+            credentials["api_key"],
+            credentials["client_code"],
+            feed_token,
+        )
+
+        exchange_type = (
+            INSTRUMENTS[symbol][
+                "exchange_type"
+            ]
+        )
+
+        token_list = [
+            {
+                "exchangeType": exchange_type,
+                "tokens": [str(token)],
+            }
+        ]
+
+        def on_open(wsapp):
+
+            try:
+
+                LIVE_WS.subscribe(
+                    "ai_trading_live",
+                    1,
+                    token_list,
+                )
+
+            except Exception:
+
+                pass
+
+        LIVE_WS.on_open = on_open
+        LIVE_WS.on_data = websocket_on_data
+        LIVE_WS.on_error = websocket_on_error
+        LIVE_WS.on_close = websocket_on_close
+
+        def run_socket():
+
+            try:
+
+                LIVE_WS.connect()
+
+            except Exception:
+
+                pass
+
+        LIVE_WS_THREAD = threading.Thread(
+            target=run_socket,
+            daemon=True,
+        )
+
+        LIVE_WS_THREAD.start()
+
+        LIVE_WS_STARTED = True
+        LIVE_WS_SYMBOL = symbol
+
+    except Exception:
+
+        LIVE_WS_STARTED = False
         and LIVE_WS_SYMBOL == symbol
     ):
         return
