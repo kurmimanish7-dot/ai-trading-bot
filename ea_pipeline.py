@@ -12,7 +12,7 @@ Connects:
 
 IMPORTANT:
 - Paper trading only
-- No order placement
+- No real order placement
 - No fake market data
 - Missing data remains DATA_UNAVAILABLE
 """
@@ -30,13 +30,19 @@ class EAPipeline:
     """
     Complete Expert Advisor analysis pipeline.
 
-    This class ONLY analyses market data.
+    Stage 1:
+        Market data + multi-timeframe analysis
 
-    It does NOT:
-    - place orders
-    - modify broker positions
-    - create fake prices
-    - create fake options data
+    Stage 2:
+        Technical confluence
+
+    Stage 3:
+        Options intelligence
+
+    Stage 4:
+        Final Expert Advisor decision
+
+    This class never places real orders.
     """
 
     def __init__(
@@ -49,47 +55,73 @@ class EAPipeline:
     ):
         self.smart_api = smart_api
 
+        # -----------------------------------------------------
+        # STAGE 1
+        # -----------------------------------------------------
+
         self.market_engine = EAMarketEngine(
             smart_api=smart_api
         )
+
+        # -----------------------------------------------------
+        # STAGE 2
+        # -----------------------------------------------------
 
         self.technical_engine = TechnicalConfluenceEngine(
             minimum_trade_score=technical_score
         )
 
+        # -----------------------------------------------------
+        # STAGE 3
+        # -----------------------------------------------------
+
         self.options_engine = OptionsIntelligenceEngine(
             minimum_option_score=option_score
         )
 
+        # -----------------------------------------------------
+        # STAGE 4
+        # -----------------------------------------------------
+        #
+        # IMPORTANT:
+        # EADecisionEngine accepts a CONFIG dictionary.
+        # It does NOT accept the threshold values directly
+        # as keyword arguments.
+        #
+
+        decision_config = {
+            "minimum_technical_score": technical_score,
+            "minimum_option_score": option_score,
+            "minimum_final_score": final_score,
+            "minimum_rr": minimum_rr,
+        }
+
         self.decision_engine = EADecisionEngine(
-            minimum_technical_score=technical_score,
-            minimum_option_score=option_score,
-            minimum_final_score=final_score,
-            minimum_rr=minimum_rr,
+            config=decision_config
         )
 
     # =========================================================
-    # HELPERS
+    # SAFE HELPERS
     # =========================================================
 
     @staticmethod
-    def safe_float(value):
+    def safe_float(value) -> Optional[float]:
         try:
             if value is None:
                 return None
 
-            value = float(value)
+            number = float(value)
 
-            if value != value:
+            if number != number:
                 return None
 
-            return value
+            return number
 
         except (TypeError, ValueError):
             return None
 
     @staticmethod
-    def is_unavailable(value):
+    def is_unavailable(value) -> bool:
         if value is None:
             return True
 
@@ -101,29 +133,32 @@ class EAPipeline:
                 "N/A",
                 "NA",
                 "NONE",
+                "NULL",
+                "WAITING",
             )
 
         return False
 
     @staticmethod
-    def _unwrap_timeframe(value):
+    def _unwrap_timeframe(value: Any) -> Dict[str, Any]:
         """
-        Stage 1 returns:
+        Stage 1 currently returns:
 
-            {
-                status,
-                timeframe,
-                interval,
-                analysis: {
-                    price,
-                    ema9,
-                    ...
-                }
+        {
+            "status": "...",
+            "timeframe": "5M",
+            "interval": "...",
+            "analysis": {
+                "price": ...,
+                "ema9": ...,
+                ...
             }
+        }
 
-        Stage 2 expects the inner analysis dictionary.
+        Stage 2 and Stage 4 work more easily with the
+        inner analysis dictionary.
 
-        This function normalises both formats.
+        This function supports both formats.
         """
 
         if not isinstance(value, dict):
@@ -137,7 +172,7 @@ class EAPipeline:
         return value
 
     # =========================================================
-    # STAGE 1 -> STAGE 2 NORMALISATION
+    # NORMALISE MARKET SNAPSHOT
     # =========================================================
 
     def normalise_market_snapshot(
@@ -145,16 +180,39 @@ class EAPipeline:
         market_snapshot: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Convert Stage 1 output into the structure expected by
-        Stage 2 and Stage 4.
+        Convert Stage 1 output into a common structure.
+
+        Stage 2 expects:
+
+            mtf = {
+                "1M": {...},
+                "3M": {...},
+                ...
+            }
+
+        Stage 4 expects direct timeframe snapshots.
+
+        We also create:
+
+            support_resistance = {
+                "support": ...,
+                "resistance": ...
+            }
         """
 
         if not isinstance(market_snapshot, dict):
             return {
                 "status": "DATA_UNAVAILABLE",
                 "mtf": {},
+                "multi_timeframe": {},
                 "timeframes": {},
             }
+
+        result = dict(market_snapshot)
+
+        # -----------------------------------------------------
+        # Extract Stage 1 timeframes
+        # -----------------------------------------------------
 
         raw_timeframes = market_snapshot.get(
             "timeframes",
@@ -162,7 +220,6 @@ class EAPipeline:
         )
 
         mtf = {}
-        normalised_timeframes = {}
 
         if isinstance(raw_timeframes, dict):
 
@@ -173,26 +230,113 @@ class EAPipeline:
                 if not isinstance(snapshot, dict):
                     snapshot = {}
 
-                mtf[timeframe] = snapshot
+                mtf[str(timeframe).upper()] = snapshot
 
-                # Keep a consistent direct snapshot for Stage 4.
-                normalised_timeframes[timeframe] = snapshot
+        # -----------------------------------------------------
+        # Support versions that already contain "mtf"
+        # -----------------------------------------------------
 
-        # Some future versions may already provide mtf.
         if not mtf:
+
             existing_mtf = market_snapshot.get("mtf")
 
             if isinstance(existing_mtf, dict):
-                for timeframe, value in existing_mtf.items():
-                    mtf[timeframe] = self._unwrap_timeframe(
-                        value
-                    )
 
-        result = dict(market_snapshot)
+                for timeframe, value in existing_mtf.items():
+
+                    snapshot = self._unwrap_timeframe(value)
+
+                    if not isinstance(snapshot, dict):
+                        snapshot = {}
+
+                    mtf[str(timeframe).upper()] = snapshot
+
+        # -----------------------------------------------------
+        # Support "multi_timeframe"
+        # -----------------------------------------------------
+
+        if not mtf:
+
+            existing_mtf = market_snapshot.get(
+                "multi_timeframe"
+            )
+
+            if isinstance(existing_mtf, dict):
+
+                for timeframe, value in existing_mtf.items():
+
+                    snapshot = self._unwrap_timeframe(value)
+
+                    if not isinstance(snapshot, dict):
+                        snapshot = {}
+
+                    mtf[str(timeframe).upper()] = snapshot
+
+        # -----------------------------------------------------
+        # Store normalised structures
+        # -----------------------------------------------------
 
         result["mtf"] = mtf
         result["multi_timeframe"] = mtf
-        result["timeframes"] = normalised_timeframes
+        result["timeframes"] = mtf
+
+        # -----------------------------------------------------
+        # Build support/resistance wrapper for Stage 4
+        # -----------------------------------------------------
+
+        support = None
+        resistance = None
+
+        preferred_timeframes = (
+            "5M",
+            "15M",
+            "3M",
+            "1M",
+            "30M",
+            "1H",
+        )
+
+        for timeframe in preferred_timeframes:
+
+            snapshot = mtf.get(timeframe)
+
+            if not isinstance(snapshot, dict):
+                continue
+
+            if support is None:
+                support = self.safe_float(
+                    snapshot.get("support")
+                )
+
+            if resistance is None:
+                resistance = self.safe_float(
+                    snapshot.get("resistance")
+                )
+
+            if support is not None and resistance is not None:
+                break
+
+        # Existing Stage 1 support/resistance object
+        existing_sr = market_snapshot.get(
+            "support_resistance"
+        )
+
+        if isinstance(existing_sr, dict):
+
+            if support is None:
+                support = self.safe_float(
+                    existing_sr.get("support")
+                )
+
+            if resistance is None:
+                resistance = self.safe_float(
+                    existing_sr.get("resistance")
+                )
+
+        result["support_resistance"] = {
+            "support": support,
+            "resistance": resistance,
+        }
 
         return result
 
@@ -209,35 +353,25 @@ class EAPipeline:
     ) -> Dict[str, Any]:
         """
         Run Stage 1 multi-timeframe market analysis.
+
+        NOTE:
+        Current EAMarketEngine.build_market_snapshot()
+        does not accept symbol.
+
+        Symbol is therefore retained by the pipeline but is
+        not passed into Stage 1.
         """
 
         try:
+
             snapshot = self.market_engine.build_market_snapshot(
                 exchange=exchange,
                 token=token,
-                symbol=symbol,
                 days=days,
             )
 
-        except TypeError:
-            # Compatibility fallback for versions where symbol
-            # is not part of the method signature.
-            try:
-                snapshot = self.market_engine.build_market_snapshot(
-                    exchange=exchange,
-                    token=token,
-                    days=days,
-                )
-
-            except Exception as exc:
-                return {
-                    "status": "DATA_UNAVAILABLE",
-                    "error": f"Stage 1 error: {exc}",
-                    "timeframes": {},
-                    "mtf": {},
-                }
-
         except Exception as exc:
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "error": f"Stage 1 error: {exc}",
@@ -246,6 +380,7 @@ class EAPipeline:
             }
 
         if not isinstance(snapshot, dict):
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "error": "Stage 1 returned invalid data",
@@ -253,9 +388,16 @@ class EAPipeline:
                 "mtf": {},
             }
 
-        return self.normalise_market_snapshot(
+        normalised = self.normalise_market_snapshot(
             snapshot
         )
+
+        # Keep symbol available to downstream stages.
+        normalised["symbol"] = symbol
+        normalised["exchange"] = exchange
+        normalised["token"] = token
+
+        return normalised
 
     # =========================================================
     # STAGE 2
@@ -274,11 +416,13 @@ class EAPipeline:
         )
 
         try:
+
             result = self.technical_engine.calculate_confluence(
                 normalised
             )
 
         except Exception as exc:
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "decision": "NO_TRADE",
@@ -288,6 +432,7 @@ class EAPipeline:
             }
 
         if not isinstance(result, dict):
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "decision": "NO_TRADE",
@@ -299,7 +444,7 @@ class EAPipeline:
         return result
 
     # =========================================================
-    # OPTIONS DATA NORMALISATION
+    # OPTIONS INPUT NORMALISATION
     # =========================================================
 
     def normalise_options_input(
@@ -307,13 +452,29 @@ class EAPipeline:
         options_data: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """
-        Keep Stage 3 input flexible.
+        Normalise different possible option-chain wrappers.
 
-        The app may later provide option data in slightly
-        different wrappers.
+        Supported:
+
+            {
+                "contracts": [...]
+            }
+
+        or:
+
+            {
+                "option_chain": [...]
+            }
+
+        or:
+
+            {
+                "data": [...]
+            }
         """
 
         if not isinstance(options_data, dict):
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "contracts": [],
@@ -324,10 +485,16 @@ class EAPipeline:
         contracts = result.get("contracts")
 
         if not isinstance(contracts, list):
-            contracts = result.get("option_chain")
+
+            contracts = result.get(
+                "option_chain"
+            )
 
         if not isinstance(contracts, list):
-            contracts = result.get("data")
+
+            contracts = result.get(
+                "data"
+            )
 
         if not isinstance(contracts, list):
             contracts = []
@@ -352,7 +519,8 @@ class EAPipeline:
         """
         Run Stage 3 options intelligence.
 
-        No option data means DATA_UNAVAILABLE.
+        No option data = DATA_UNAVAILABLE.
+
         No synthetic option values are generated.
         """
 
@@ -360,9 +528,13 @@ class EAPipeline:
             options_data
         )
 
-        contracts = data.get("contracts", [])
+        contracts = data.get(
+            "contracts",
+            []
+        )
 
         if not contracts:
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "decision": "NO_TRADE",
@@ -374,8 +546,21 @@ class EAPipeline:
                 "contracts": [],
             }
 
+        if underlying_price is None:
+
+            return {
+                "status": "DATA_UNAVAILABLE",
+                "decision": "NO_TRADE",
+                "preferred_candidate": None,
+                "best_ce": None,
+                "best_pe": None,
+                "setup": None,
+                "reason": "Underlying price unavailable",
+                "contracts": contracts,
+            }
+
         try:
-            # Primary Stage 3 API.
+
             result = self.options_engine.analyse(
                 contracts=contracts,
                 underlying_price=underlying_price,
@@ -385,65 +570,36 @@ class EAPipeline:
                 pcr=pcr,
             )
 
-        except TypeError:
-            # Compatibility with alternate Stage 3 signatures.
-            try:
-                result = self.options_engine.analyse(
-                    option_chain=contracts,
-                    underlying_price=underlying_price,
-                    technical_direction=technical_direction,
-                    expiry=expiry,
-                    days_to_expiry=days_to_expiry,
-                    pcr=pcr,
-                )
-
-            except TypeError:
-                try:
-                    result = self.options_engine.analyse(
-                        contracts,
-                        underlying_price,
-                        technical_direction,
-                        expiry,
-                        days_to_expiry,
-                        pcr,
-                    )
-
-                except Exception as exc:
-                    return {
-                        "status": "DATA_UNAVAILABLE",
-                        "decision": "NO_TRADE",
-                        "preferred_candidate": None,
-                        "reason": f"Stage 3 error: {exc}",
-                    }
-
-            except Exception as exc:
-                return {
-                    "status": "DATA_UNAVAILABLE",
-                    "decision": "NO_TRADE",
-                    "preferred_candidate": None,
-                    "reason": f"Stage 3 error: {exc}",
-                }
-
         except Exception as exc:
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "decision": "NO_TRADE",
                 "preferred_candidate": None,
+                "best_ce": None,
+                "best_pe": None,
+                "setup": None,
                 "reason": f"Stage 3 error: {exc}",
+                "contracts": contracts,
             }
 
         if not isinstance(result, dict):
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "decision": "NO_TRADE",
                 "preferred_candidate": None,
+                "best_ce": None,
+                "best_pe": None,
+                "setup": None,
                 "reason": "Stage 3 returned invalid data",
+                "contracts": contracts,
             }
 
         return result
 
     # =========================================================
-    # EXTRACT UNDERLYING PRICE
+    # UNDERLYING PRICE
     # =========================================================
 
     def get_underlying_price(
@@ -451,56 +607,67 @@ class EAPipeline:
         market_snapshot: Dict[str, Any],
     ) -> Optional[float]:
         """
-        Prefer 5M, then 15M, then 3M, then 1M.
+        Prefer lower execution timeframes first.
         """
+
+        if not isinstance(market_snapshot, dict):
+            return None
 
         timeframes = market_snapshot.get(
             "timeframes",
             {}
         )
 
-        for timeframe in (
-            "5M",
-            "15M",
-            "3M",
-            "1M",
-            "30M",
-            "1H",
-        ):
-            snapshot = timeframes.get(timeframe, {})
+        if isinstance(timeframes, dict):
 
-            if not isinstance(snapshot, dict):
-                continue
-
-            for key in (
-                "price",
-                "ltp",
-                "close",
+            for timeframe in (
+                "5M",
+                "15M",
+                "3M",
+                "1M",
+                "30M",
+                "1H",
             ):
-                value = self.safe_float(
-                    snapshot.get(key)
+
+                snapshot = timeframes.get(
+                    timeframe,
+                    {}
                 )
 
-                if value is not None:
-                    return value
+                if not isinstance(snapshot, dict):
+                    continue
 
-        # Fallback to top-level fields.
+                for key in (
+                    "price",
+                    "ltp",
+                    "close",
+                ):
+
+                    value = self.safe_float(
+                        snapshot.get(key)
+                    )
+
+                    if value is not None and value > 0:
+                        return value
+
+        # Top-level fallback
         for key in (
             "price",
             "ltp",
             "underlying_price",
         ):
+
             value = self.safe_float(
                 market_snapshot.get(key)
             )
 
-            if value is not None:
+            if value is not None and value > 0:
                 return value
 
         return None
 
     # =========================================================
-    # DAYS TO EXPIRY
+    # EXPIRY
     # =========================================================
 
     @staticmethod
@@ -508,19 +675,22 @@ class EAPipeline:
         expiry: Optional[str],
     ) -> Optional[float]:
         """
-        Supports common formats:
+        Supported formats:
 
             29SEP2026
             29-SEP-2026
             2026-09-29
             2026/09/29
             29/09/2026
+            29-09-2026
         """
 
         if not expiry:
             return None
 
-        text = str(expiry).strip().upper()
+        text = str(
+            expiry
+        ).strip().upper()
 
         formats = (
             "%d%b%Y",
@@ -534,7 +704,9 @@ class EAPipeline:
         expiry_date = None
 
         for fmt in formats:
+
             try:
+
                 expiry_date = datetime.strptime(
                     text,
                     fmt
@@ -564,47 +736,41 @@ class EAPipeline:
         technical_result: Dict[str, Any],
         options_result: Optional[Dict[str, Any]] = None,
         symbol: Optional[str] = None,
-        expiry: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run final Expert Advisor decision.
 
-        Output is a PAPER analysis only.
+        IMPORTANT:
+        Actual Stage 4 signature is:
+
+            decide(
+                market_snapshot,
+                technical_result,
+                option_result,
+                instrument
+            )
+
+        No real order is placed.
         """
 
         if options_result is None:
+
             options_result = {
-                "status": "DATA_UNAVAILABLE"
+                "status": "DATA_UNAVAILABLE",
+                "decision": "NO_TRADE",
             }
 
         try:
+
             result = self.decision_engine.decide(
                 market_snapshot=market_snapshot,
                 technical_result=technical_result,
-                options_result=options_result,
-                symbol=symbol,
-                expiry=expiry,
+                option_result=options_result,
+                instrument=symbol,
             )
 
-        except TypeError:
-            try:
-                result = self.decision_engine.decide(
-                    market_snapshot,
-                    technical_result,
-                    options_result,
-                    symbol,
-                    expiry,
-                )
-
-            except Exception as exc:
-                return {
-                    "status": "DATA_UNAVAILABLE",
-                    "decision": "NO_TRADE",
-                    "reason": f"Stage 4 error: {exc}",
-                    "paper_trading": True,
-                }
-
         except Exception as exc:
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "decision": "NO_TRADE",
@@ -613,6 +779,7 @@ class EAPipeline:
             }
 
         if not isinstance(result, dict):
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "decision": "NO_TRADE",
@@ -639,17 +806,15 @@ class EAPipeline:
         pcr: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        Complete:
+        Complete Expert Advisor pipeline:
 
             Stage 1
-              ↓
+               ↓
             Stage 2
-              ↓
+               ↓
             Stage 3
-              ↓
+               ↓
             Stage 4
-
-        Returns one unified EA result.
         """
 
         # -----------------------------------------------------
@@ -663,9 +828,10 @@ class EAPipeline:
             days=days,
         )
 
-        # If market data itself failed, do not manufacture a
-        # signal.
-        if market_snapshot.get("status") == "DATA_UNAVAILABLE":
+        if market_snapshot.get(
+            "status"
+        ) == "DATA_UNAVAILABLE":
+
             return {
                 "status": "DATA_UNAVAILABLE",
                 "decision": "NO_TRADE",
@@ -674,13 +840,15 @@ class EAPipeline:
                 "token": token,
                 "market": market_snapshot,
                 "technical": {
-                    "status": "DATA_UNAVAILABLE"
+                    "status": "DATA_UNAVAILABLE",
+                    "direction": "NEUTRAL",
+                    "score": 0.0,
                 },
                 "options": {
-                    "status": "DATA_UNAVAILABLE"
+                    "status": "DATA_UNAVAILABLE",
                 },
                 "ea_decision": {
-                    "decision": "NO_TRADE"
+                    "decision": "NO_TRADE",
                 },
                 "paper_trading": True,
                 "reason": market_snapshot.get(
@@ -690,7 +858,7 @@ class EAPipeline:
             }
 
         # -----------------------------------------------------
-        # UNDERLYING
+        # UNDERLYING PRICE
         # -----------------------------------------------------
 
         underlying_price = self.get_underlying_price(
@@ -712,16 +880,21 @@ class EAPipeline:
         if technical_direction in (
             "LONG",
             "BULLISH",
+            "BUY",
         ):
+
             technical_direction = "LONG"
 
         elif technical_direction in (
             "SHORT",
             "BEARISH",
+            "SELL",
         ):
+
             technical_direction = "SHORT"
 
         else:
+
             technical_direction = "NEUTRAL"
 
         # -----------------------------------------------------
@@ -754,11 +927,10 @@ class EAPipeline:
             technical_result=technical_result,
             options_result=options_result,
             symbol=symbol,
-            expiry=expiry,
         )
 
         # -----------------------------------------------------
-        # UNIFIED RESULT
+        # FINAL UNIFIED RESULT
         # -----------------------------------------------------
 
         return {
@@ -796,7 +968,7 @@ class EAPipeline:
         }
 
     # =========================================================
-    # ALIAS
+    # ALIAS FOR APP
     # =========================================================
 
     def build_ea_analysis(
@@ -809,9 +981,6 @@ class EAPipeline:
         days: int = 5,
         pcr: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """
-        Friendly alias for app.py.
-        """
 
         return self.analyse(
             exchange=exchange,
@@ -825,7 +994,7 @@ class EAPipeline:
 
 
 # =============================================================
-# SIMPLE FUNCTION API
+# FACTORY
 # =============================================================
 
 def build_ea_pipeline(
@@ -835,9 +1004,6 @@ def build_ea_pipeline(
     final_score: float = 70.0,
     minimum_rr: float = 1.5,
 ) -> EAPipeline:
-    """
-    Create a ready-to-use EA pipeline.
-    """
 
     return EAPipeline(
         smart_api=smart_api,
