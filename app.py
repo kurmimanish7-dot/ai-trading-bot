@@ -181,9 +181,9 @@ def create_options():
             smart_api = telemetry.smart_api
 
             session = getattr(
-                smart_api,
-                "authToken",
-                None,
+    smart_api,
+    "access_token",
+    None,
             )
 
             if session:
