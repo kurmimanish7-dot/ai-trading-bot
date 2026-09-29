@@ -14,41 +14,86 @@ st.set_page_config(
 )
 
 PAPER_TRADING = True
+
 st.markdown("""
 <style>
 @media (max-width: 768px) {
+
+    /* Main content ko mobile width use karne do */
+    .block-container {
+        padding-left: 0.65rem !important;
+        padding-right: 0.65rem !important;
+        max-width: 100% !important;
+    }
+
+    /* Columns ko zabardasti 47% me mat squeeze karo */
     [data-testid="stHorizontalBlock"] {
+        display: flex !important;
         flex-wrap: wrap !important;
-        gap: 0.35rem !important;
+        width: 100% !important;
+        gap: 0.45rem !important;
     }
 
     [data-testid="column"] {
-        min-width: 47% !important;
-        flex: 1 1 47% !important;
+        min-width: 48% !important;
+        width: 48% !important;
+        flex: 1 1 48% !important;
     }
 
-    [data-testid="stMetricValue"] {
-        font-size: 20px !important;
-        line-height: 1.15 !important;
-        white-space: nowrap !important;
+    /* Metric card */
+    [data-testid="stMetric"] {
+        width: 100% !important;
+        min-width: 0 !important;
+        overflow: visible !important;
     }
 
     [data-testid="stMetricLabel"] {
-        font-size: 11px !important;
+        font-size: 10px !important;
         line-height: 1.15 !important;
+        white-space: normal !important;
+        overflow: visible !important;
     }
 
+    [data-testid="stMetricValue"] {
+        font-size: 18px !important;
+        line-height: 1.15 !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        word-break: normal !important;
+    }
+
+    [data-testid="stMetricDelta"] {
+        font-size: 10px !important;
+        white-space: normal !important;
+    }
+
+    /* Headings */
     h1 {
-        font-size: 28px !important;
-        line-height: 1.1 !important;
+        font-size: 27px !important;
+        line-height: 1.08 !important;
+        word-break: normal !important;
     }
 
     h2 {
-        font-size: 23px !important;
+        font-size: 21px !important;
+        line-height: 1.15 !important;
     }
 
     h3 {
-        font-size: 19px !important;
+        font-size: 18px !important;
+        line-height: 1.15 !important;
+    }
+
+    /* Normal text */
+    p, label, div {
+        word-break: normal !important;
+    }
+
+    /* Tables */
+    [data-testid="stDataFrame"] {
+        width: 100% !important;
+        overflow-x: auto !important;
     }
 }
 </style>
