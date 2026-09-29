@@ -14,6 +14,45 @@ st.set_page_config(
 )
 
 PAPER_TRADING = True
+st.markdown("""
+<style>
+@media (max-width: 768px) {
+    [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+        gap: 0.35rem !important;
+    }
+
+    [data-testid="column"] {
+        min-width: 47% !important;
+        flex: 1 1 47% !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 20px !important;
+        line-height: 1.15 !important;
+        white-space: nowrap !important;
+    }
+
+    [data-testid="stMetricLabel"] {
+        font-size: 11px !important;
+        line-height: 1.15 !important;
+    }
+
+    h1 {
+        font-size: 28px !important;
+        line-height: 1.1 !important;
+    }
+
+    h2 {
+        font-size: 23px !important;
+    }
+
+    h3 {
+        font-size: 19px !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ============================================================
 # IMPORTS
