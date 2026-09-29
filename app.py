@@ -2,17 +2,15 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, time
-import traceback
 
 # ============================================================
-# CONFIG
+# PAGE
 # ============================================================
 
 st.set_page_config(
     page_title="AI Trading Expert Advisor",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
 PAPER_TRADING = True
@@ -25,117 +23,182 @@ try:
     from options_engine import OptionsEngine
 except Exception as e:
     OptionsEngine = None
-    OPTIONS_IMPORT_ERROR = str(e)
+    OPTIONS_ERROR = str(e)
 
 try:
     from telemetry_engine import TelemetryEngine
-except Exception:
+except Exception as e:
     TelemetryEngine = None
-
-try:
-    import config
-except Exception:
-    config = None
-
+    TELEMETRY_ERROR = str(e)
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def safe_float(value, default=None):
+def sf(x, default=None):
     try:
-        if value is None:
+        if x is None:
             return default
-        if isinstance(value, str):
-            value = value.replace(",", "").strip()
-            if value == "":
+        if isinstance(x, str):
+            x = x.replace(",", "").strip()
+            if not x:
                 return default
-        return float(value)
+        return float(x)
     except Exception:
         return default
 
 
-def fmt_number(value, decimals=2):
-    value = safe_float(value)
-    if value is None:
-        return "-"
-    return f"{value:,.{decimals}f}"
+def fmt(x, d=2):
+    x = sf(x)
+    return "-" if x is None else f"{x:,.{d}f}"
 
 
-def normalize_expiry(value):
-    if value is None:
+def expiry_norm(x):
+    if x is None:
         return None
 
-    if isinstance(value, (datetime, date)):
-        return value.strftime("%Y-%m-%d")
+    if isinstance(x, (datetime, date)):
+        return x.strftime("%Y-%m-%d")
 
-    text = str(value).strip().upper()
+    s = str(x).strip().upper()
 
-    for fmt in [
+    for f in (
         "%Y-%m-%d",
+        "%Y/%m/%d",
         "%d-%m-%Y",
         "%d/%m/%Y",
         "%d%b%Y",
-        "%d%b%y",
         "%d-%b-%Y",
+        "%d%b%y",
         "%d-%b-%y",
-    ]:
+    ):
         try:
-            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+            return datetime.strptime(s, f).strftime("%Y-%m-%d")
         except Exception:
             pass
 
-    return text
+    return s
 
 
-def expiry_display(value):
-    normalized = normalize_expiry(value)
+def expiry_label(x):
+    n = expiry_norm(x)
 
-    if not normalized:
-        return str(value)
+    if not n:
+        return str(x)
 
     try:
-        d = datetime.strptime(normalized, "%Y-%m-%d")
-        return d.strftime("%d %b %Y")
+        return datetime.strptime(
+            n, "%Y-%m-%d"
+        ).strftime("%d %b %Y")
     except Exception:
-        return str(value)
+        return str(x)
 
 
-def is_market_open():
+def market_open():
     now = datetime.now()
 
     if now.weekday() >= 5:
         return False
 
-    current = now.time()
-
-    return time(9, 15) <= current <= time(15, 30)
-
-
-def get_market_status():
-    if is_market_open():
-        return "🟢 MARKET OPEN"
-    return "🔴 MARKET CLOSED"
+    return time(9, 15) <= now.time() <= time(15, 30)
 
 
 # ============================================================
-# SESSION STATE
+# SECRETS
 # ============================================================
 
-defaults = {
-    "selected_underlying": None,
-    "selected_expiry": None,
-    "selected_option_type": "CE",
-    "last_refresh": None,
-    "option_data": None,
-    "greeks_data": None,
-    "quote_data": None,
-    "advisory": None,
-}
+def secret(name):
+    try:
+        value = st.secrets.get(name)
+        return str(value).strip() if value else ""
+    except Exception:
+        return ""
 
-for key, value in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
+
+ANGEL_API_KEY = secret("ANGEL_API_KEY")
+ANGEL_CLIENT_CODE = secret("ANGEL_CLIENT_CODE")
+ANGEL_PIN = secret("ANGEL_PIN")
+ANGEL_TOTP_SECRET = secret("ANGEL_TOTP_SECRET")
+ANGEL_JWT_TOKEN = secret("ANGEL_JWT_TOKEN")
+
+
+# ============================================================
+# CREATE TELEMETRY
+# ============================================================
+
+@st.cache_resource(show_spinner=False)
+def create_telemetry():
+    if TelemetryEngine is None:
+        return None
+
+    if not all([
+        ANGEL_API_KEY,
+        ANGEL_CLIENT_CODE,
+        ANGEL_PIN,
+        ANGEL_TOTP_SECRET,
+    ]):
+        return None
+
+    try:
+        return TelemetryEngine(
+            api_key=ANGEL_API_KEY,
+            client_code=ANGEL_CLIENT_CODE,
+            pin=ANGEL_PIN,
+            totp_secret=ANGEL_TOTP_SECRET,
+        )
+    except Exception:
+        return None
+
+
+telemetry = create_telemetry()
+
+
+# ============================================================
+# CREATE OPTIONS ENGINE
+# ============================================================
+
+@st.cache_resource(show_spinner=False)
+def create_options():
+    if OptionsEngine is None:
+        return None
+
+    # OptionsEngine needs JWT.
+    # First use explicitly stored JWT if available.
+    if ANGEL_JWT_TOKEN:
+        try:
+            return OptionsEngine(
+                jwt_token=ANGEL_JWT_TOKEN,
+                api_key=ANGEL_API_KEY,
+                client_code=ANGEL_CLIENT_CODE,
+            )
+        except Exception:
+            pass
+
+    # If JWT is not stored, use TelemetryEngine's
+    # SmartAPI session and feed the generated auth token.
+    if telemetry is not None:
+        try:
+            smart_api = telemetry.smart_api
+
+            session = getattr(
+                smart_api,
+                "authToken",
+                None,
+            )
+
+            if session:
+                return OptionsEngine(
+                    jwt_token=str(session),
+                    api_key=ANGEL_API_KEY,
+                    client_code=ANGEL_CLIENT_CODE,
+                )
+        except Exception:
+            pass
+
+    return None
+
+
+options = create_options()
 
 
 # ============================================================
@@ -145,46 +208,32 @@ for key, value in defaults.items():
 st.title("📊 AI Trading Expert Advisor")
 
 st.caption(
-    "Technical + Options + Greeks + OI + PCR + AI + After-Market Preparation"
+    "Options + Technical Analysis + Greeks + OI + PCR + "
+    "Expiry Risk + After-Market Preparation"
 )
 
-status_col1, status_col2, status_col3 = st.columns(3)
+h1, h2, h3 = st.columns(3)
 
-with status_col1:
-    st.metric("Trading Mode", "PAPER ONLY")
+with h1:
+    st.metric("Mode", "PAPER ONLY")
 
-with status_col2:
-    st.metric("Market", get_market_status())
-
-with status_col3:
+with h2:
     st.metric(
-        "Last Refresh",
-        st.session_state.last_refresh.strftime("%H:%M:%S")
-        if st.session_state.last_refresh
-        else "-"
+        "Market",
+        "OPEN" if market_open() else "CLOSED",
+    )
+
+with h3:
+    st.metric(
+        "Angel One",
+        "CONNECTED"
+        if telemetry is not None
+        else "CHECK",
     )
 
 st.warning(
-    "⚠️ PAPER TRADING ONLY — इस application से कोई real order place नहीं होगा."
+    "⚠️ PAPER TRADING ONLY — कोई real order place नहीं होगा."
 )
-
-
-# ============================================================
-# ENGINE INITIALIZATION
-# ============================================================
-
-@st.cache_resource(show_spinner=False)
-def create_options_engine():
-    if OptionsEngine is None:
-        return None
-
-    try:
-        return OptionsEngine()
-    except Exception:
-        return None
-
-
-engine = create_options_engine()
 
 
 # ============================================================
@@ -193,553 +242,237 @@ engine = create_options_engine()
 
 st.sidebar.header("⚙️ Expert Advisor")
 
-if engine is None:
-    st.sidebar.error("Options Engine unavailable")
 
-    if "OPTIONS_IMPORT_ERROR" in globals():
-        st.sidebar.caption(OPTIONS_IMPORT_ERROR)
+# ============================================================
+# UNDERLYINGS
+# ============================================================
+
+UNDERLYINGS = [
+    "NIFTY",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "MIDCPNIFTY",
+    "SENSEX",
+    "BANKEX",
+]
+
+saved_underlying = st.session_state.get(
+    "underlying",
+    "NIFTY",
+)
+
+if saved_underlying not in UNDERLYINGS:
+    saved_underlying = "NIFTY"
+
+underlying = st.sidebar.selectbox(
+    "Underlying",
+    UNDERLYINGS,
+    index=UNDERLYINGS.index(
+        saved_underlying
+    ),
+)
+
+st.session_state["underlying"] = underlying
 
 
 # ============================================================
-# GET AVAILABLE UNDERLYINGS
+# EXPIRIES
 # ============================================================
 
-def get_available_underlyings():
-    """
-    Dynamically discover index option underlyings from the
-    Angel One scrip master through OptionsEngine.
-    """
+@st.cache_data(ttl=300, show_spinner=False)
+def load_expiries(symbol):
 
-    preferred = [
-        "NIFTY",
-        "BANKNIFTY",
-        "FINNIFTY",
-        "MIDCPNIFTY",
-        "SENSEX",
-        "BANKEX",
-    ]
-
-    discovered = []
-
-    # --------------------------------------------------------
-    # Try engine master / contracts
-    # --------------------------------------------------------
+    if options is None:
+        return []
 
     try:
-        if engine is not None:
+        result = options.get_expiry_options(
+            symbol
+        )
 
-            master = None
+        values = []
 
-            for attr in [
-                "scrip_master",
-                "master_df",
-                "master",
-                "df",
-                "scrip_df",
-            ]:
+        for item in result or []:
+
+            if isinstance(item, dict):
+                value = item.get("value")
+            else:
+                value = item
+
+            value = expiry_norm(value)
+
+            if value:
                 try:
-                    obj = getattr(engine, attr, None)
-                    if isinstance(obj, pd.DataFrame) and not obj.empty:
-                        master = obj
-                        break
+                    d = datetime.strptime(
+                        value,
+                        "%Y-%m-%d",
+                    ).date()
+
+                    if d >= date.today():
+                        values.append(value)
+
                 except Exception:
                     pass
 
-            if master is not None:
-
-                df = master.copy()
-
-                if "instrumenttype" in df.columns:
-                    df = df[
-                        df["instrumenttype"]
-                        .astype(str)
-                        .str.upper()
-                        .eq("OPTIDX")
-                    ]
-
-                if "name" in df.columns:
-
-                    names = (
-                        df["name"]
-                        .dropna()
-                        .astype(str)
-                        .str.upper()
-                        .str.strip()
-                        .unique()
-                        .tolist()
-                    )
-
-                    discovered.extend(names)
+        return sorted(
+            list(set(values))
+        )
 
     except Exception:
-        pass
-
-    # --------------------------------------------------------
-    # Try known common contracts
-    # --------------------------------------------------------
-
-    for symbol in preferred:
-        try:
-            if engine is not None:
-
-                contracts = engine.get_option_contracts(
-                    underlying=symbol
-                )
-
-                if contracts is not None:
-                    if isinstance(contracts, pd.DataFrame):
-                        if not contracts.empty:
-                            discovered.append(symbol)
-                    elif len(contracts) > 0:
-                        discovered.append(symbol)
-
-        except Exception:
-            pass
-
-    discovered = [
-        str(x).upper().strip()
-        for x in discovered
-        if x
-    ]
-
-    # Unique
-    discovered = list(dict.fromkeys(discovered))
-
-    # Preferred symbols first
-    ordered = []
-
-    for symbol in preferred:
-        if symbol in discovered:
-            ordered.append(symbol)
-
-    for symbol in discovered:
-        if symbol not in ordered:
-            ordered.append(symbol)
-
-    # Always keep these if engine is working
-    if not ordered and engine is not None:
-        ordered = preferred.copy()
-
-    return ordered
+        return []
 
 
-underlyings = get_available_underlyings()
-
-if not underlyings:
-    underlyings = [
-        "NIFTY",
-        "BANKNIFTY",
-        "FINNIFTY",
-        "MIDCPNIFTY",
-        "SENSEX",
-        "BANKEX",
-    ]
-
-
-# ============================================================
-# UNDERLYING DROPDOWN
-# ============================================================
-
-default_underlying = st.session_state.selected_underlying
-
-if default_underlying not in underlyings:
-    default_underlying = underlyings[0]
-
-selected_underlying = st.sidebar.selectbox(
-    "Underlying",
-    underlyings,
-    index=underlyings.index(default_underlying),
+expiries = load_expiries(
+    underlying
 )
 
-st.session_state.selected_underlying = selected_underlying
-
-
-# ============================================================
-# EXPIRY DROPDOWN
-# ============================================================
-
-def get_expiry_list(symbol):
-    expiries = []
-
-    if engine is None:
-        return expiries
-
-    # First try new helper
-    try:
-        result = engine.get_expiry_options(symbol)
-
-        if result:
-            for item in result:
-
-                if isinstance(item, dict):
-                    value = item.get("value")
-                    label = item.get("label", expiry_display(value))
-                else:
-                    value = item
-                    label = expiry_display(item)
-
-                if value:
-                    expiries.append(
-                        {
-                            "value": normalize_expiry(value),
-                            "label": label,
-                        }
-                    )
-    except Exception:
-        pass
-
-    # Fallback
-    if not expiries:
-        try:
-            result = engine.get_expiries(symbol)
-
-            if result:
-                for item in result:
-                    value = normalize_expiry(item)
-
-                    if value:
-                        try:
-                            d = datetime.strptime(
-                                value,
-                                "%Y-%m-%d"
-                            ).date()
-
-                            if d >= date.today():
-                                expiries.append(
-                                    {
-                                        "value": value,
-                                        "label": expiry_display(value),
-                                    }
-                                )
-                        except Exception:
-                            expiries.append(
-                                {
-                                    "value": value,
-                                    "label": expiry_display(value),
-                                }
-                            )
-        except Exception:
-            pass
-
-    # Remove duplicates
-    final = []
-    seen = set()
-
-    for item in expiries:
-        value = item["value"]
-
-        if value and value not in seen:
-            seen.add(value)
-            final.append(item)
-
-    # Sort
-    try:
-        final.sort(
-            key=lambda x: datetime.strptime(
-                x["value"],
-                "%Y-%m-%d"
-            )
-        )
-    except Exception:
-        pass
-
-    return final
-
-
-expiry_items = get_expiry_list(selected_underlying)
-
-if not expiry_items:
+if not expiries:
     st.sidebar.error(
-        f"No expiry data available for {selected_underlying}"
+        "Expiry data unavailable"
     )
-
     selected_expiry = None
-
 else:
 
-    expiry_values = [
-        item["value"]
-        for item in expiry_items
-    ]
-
-    saved_expiry = st.session_state.selected_expiry
-
-    if saved_expiry not in expiry_values:
-        saved_expiry = expiry_values[0]
-
-    expiry_index = expiry_values.index(saved_expiry)
-
-    selected_expiry = st.sidebar.selectbox(
-        "Option Expiry",
-        expiry_values,
-        index=expiry_index,
-        format_func=lambda x: expiry_display(x),
+    old_expiry = st.session_state.get(
+        "expiry"
     )
 
-    st.session_state.selected_expiry = selected_expiry
+    if old_expiry not in expiries:
+        old_expiry = expiries[0]
+
+    selected_expiry = st.sidebar.selectbox(
+        "Expiry",
+        expiries,
+        index=expiries.index(
+            old_expiry
+        ),
+        format_func=expiry_label,
+    )
+
+    st.session_state["expiry"] = selected_expiry
 
 
 # ============================================================
 # OPTION TYPE
 # ============================================================
 
-selected_option_type = st.sidebar.selectbox(
-    "Option Type",
-    ["CE", "PE", "BOTH"],
-    index=["CE", "PE", "BOTH"].index(
-        st.session_state.selected_option_type
-        if st.session_state.selected_option_type in ["CE", "PE", "BOTH"]
-        else "CE"
-    ),
+old_type = st.session_state.get(
+    "option_type",
+    "CE",
 )
 
-st.session_state.selected_option_type = selected_option_type
+if old_type not in [
+    "CE",
+    "PE",
+    "BOTH",
+]:
+    old_type = "CE"
+
+option_type = st.sidebar.selectbox(
+    "Option Type",
+    ["CE", "PE", "BOTH"],
+    index=[
+        "CE",
+        "PE",
+        "BOTH",
+    ].index(old_type),
+)
+
+st.session_state["option_type"] = option_type
 
 
 # ============================================================
 # REFRESH
 # ============================================================
 
-refresh = st.sidebar.button(
-    "🔄 Refresh Market Data",
+if st.sidebar.button(
+    "🔄 Refresh",
     use_container_width=True,
-)
-
-if refresh:
-    st.session_state.last_refresh = datetime.now()
+):
     st.cache_data.clear()
+    st.session_state["last_refresh"] = (
+        datetime.now()
+    )
     st.rerun()
 
 
 # ============================================================
-# MARKET INFORMATION
+# SELECTED CONTRACT
 # ============================================================
 
 st.subheader("📌 Selected Contract")
 
-info1, info2, info3, info4 = st.columns(4)
+c1, c2, c3, c4 = st.columns(4)
 
-with info1:
+with c1:
     st.metric(
         "Underlying",
-        selected_underlying,
+        underlying,
     )
 
-with info2:
+with c2:
     st.metric(
         "Expiry",
-        expiry_display(selected_expiry)
+        expiry_label(
+            selected_expiry
+        )
         if selected_expiry
         else "-",
     )
 
-with info3:
+with c3:
     st.metric(
         "Option",
-        selected_option_type,
+        option_type,
     )
 
-with info4:
+with c4:
     st.metric(
-        "Market",
-        "OPEN" if is_market_open() else "CLOSED",
+        "Session",
+        "LIVE"
+        if market_open()
+        else "AFTER MARKET",
     )
 
 
 # ============================================================
-# SPOT PRICE
+# SPOT
 # ============================================================
 
-def find_spot_contract(symbol):
-    """
-    Try to dynamically locate underlying spot contract.
-    """
+SPOT_TOKENS = {
+    "NIFTY": ("NSE", "99926000"),
+    "BANKNIFTY": ("NSE", "99926009"),
+    "SENSEX": ("BSE", "99919000"),
+}
 
-    if engine is None:
+
+def get_spot(symbol):
+
+    if telemetry is None:
         return None
 
-    # --------------------------------------------------------
-    # Try engine master
-    # --------------------------------------------------------
+    exchange, token = SPOT_TOKENS.get(
+        symbol,
+        ("NSE", None),
+    )
 
-    master = None
-
-    for attr in [
-        "scrip_master",
-        "master_df",
-        "master",
-        "df",
-        "scrip_df",
-    ]:
-
-        try:
-            obj = getattr(engine, attr, None)
-
-            if isinstance(obj, pd.DataFrame) and not obj.empty:
-                master = obj
-                break
-
-        except Exception:
-            pass
-
-    if master is None:
+    if token is None:
         return None
 
-    df = master.copy()
-
-    if "exchange" in df.columns:
-        exchange_mask = (
-            df["exchange"]
-            .astype(str)
-            .str.upper()
-            .isin(["NSE", "BSE"])
-        )
-        df = df[exchange_mask]
-
-    elif "exch_seg" in df.columns:
-        exchange_mask = (
-            df["exch_seg"]
-            .astype(str)
-            .str.upper()
-            .isin(["NSE", "BSE"])
-        )
-        df = df[exchange_mask]
-
-    # Try exact name
-    if "name" in df.columns:
-
-        exact = df[
-            df["name"]
-            .astype(str)
-            .str.upper()
-            .eq(symbol.upper())
-        ]
-
-        if not exact.empty:
-            return exact.iloc[0]
-
-    # Try symbol
-    if "symbol" in df.columns:
-
-        exact = df[
-            df["symbol"]
-            .astype(str)
-            .str.upper()
-            .str.startswith(symbol.upper())
-        ]
-
-        if not exact.empty:
-            return exact.iloc[0]
-
-    return None
-
-
-def get_spot_price(symbol):
-    if engine is None:
-        return None
-
-    contract = find_spot_contract(symbol)
-
-    if contract is None:
-        # Common NIFTY fallback
-        if symbol == "NIFTY":
-            token = "99926000"
-            exchange = "NSE"
-
-        elif symbol == "BANKNIFTY":
-            token = "99926009"
-            exchange = "NSE"
-
-        elif symbol == "SENSEX":
-            token = "99919000"
-            exchange = "BSE"
-
-        else:
-            return None
-    else:
-        token = str(
-            contract.get("token")
-            if hasattr(contract, "get")
-            else ""
+    try:
+        result = telemetry.get_live_ltp(
+            exchange,
+            symbol,
+            token,
         )
 
-        exchange = str(
-            contract.get("exch_seg", "NSE")
-            if hasattr(contract, "get")
-            else "NSE"
-        )
+        if isinstance(result, dict):
 
-    # Try engine methods
-    for method_name in [
-        "get_live_ltp",
-        "get_ltp",
-        "get_market_quote",
-    ]:
+            if result.get("status"):
 
-        try:
-
-            method = getattr(engine, method_name, None)
-
-            if method is None:
-                continue
-
-            result = None
-
-            # get_live_ltp style
-            try:
-                result = method(
-                    exchange,
-                    symbol,
-                    token,
+                return sf(
+                    result.get("ltp")
                 )
-            except Exception:
-                pass
-
-            if result is None:
-                try:
-                    result = method(
-                        symbol,
-                        token,
-                    )
-                except Exception:
-                    pass
-
-            if result is None:
-                continue
-
-            if isinstance(result, dict):
-
-                for key in [
-                    "ltp",
-                    "LTP",
-                    "last_traded_price",
-                    "lastTradedPrice",
-                    "close",
-                    "price",
-                ]:
-                    if key in result:
-                        value = safe_float(result[key])
-
-                        if value is not None:
-                            return value
-
-                data = result.get("data")
-
-                if isinstance(data, dict):
-
-                    for key in [
-                        "ltp",
-                        "LTP",
-                        "last_traded_price",
-                        "lastTradedPrice",
-                        "close",
-                        "price",
-                    ]:
-                        if key in data:
-                            value = safe_float(data[key])
-
-                            if value is not None:
-                                return value
 
     except Exception:
         pass
@@ -747,37 +480,34 @@ def get_spot_price(symbol):
     return None
 
 
-spot_price = get_spot_price(selected_underlying)
+spot = get_spot(
+    underlying
+)
 
 
 # ============================================================
 # SPOT DISPLAY
 # ============================================================
 
-st.subheader("📈 Underlying Market")
+st.subheader("📈 Underlying")
 
-spot_col1, spot_col2, spot_col3 = st.columns(3)
+s1, s2, s3 = st.columns(3)
 
-with spot_col1:
+with s1:
     st.metric(
-        "Spot / LTP",
-        fmt_number(spot_price),
+        "LTP",
+        fmt(spot),
     )
 
-with spot_col2:
-    st.metric(
-        "Selected Expiry",
-        expiry_display(selected_expiry)
-        if selected_expiry
-        else "-",
-    )
+with s2:
 
-with spot_col3:
-
-    if spot_price:
+    if spot:
+        atm = round(
+            spot / 50
+        ) * 50
         st.metric(
             "ATM Reference",
-            fmt_number(round(spot_price / 50) * 50),
+            fmt(atm, 0),
         )
     else:
         st.metric(
@@ -785,84 +515,107 @@ with spot_col3:
             "-",
         )
 
+with s3:
+    st.metric(
+        "Expiry Count",
+        len(expiries),
+    )
+
 
 # ============================================================
 # OPTION CONTRACTS
 # ============================================================
 
-def fetch_contracts(symbol, expiry):
-    if engine is None:
-        return pd.DataFrame()
+@st.cache_data(ttl=120, show_spinner=False)
+def load_contracts(
+    symbol,
+    expiry,
+):
 
-    if not expiry:
+    if options is None or not expiry:
         return pd.DataFrame()
 
     try:
-
-        result = engine.get_option_contracts(
+        return options.get_option_contracts(
             underlying=symbol,
-            expiry=expiry,
+            expiry_date=expiry,
         )
-
-        if isinstance(result, pd.DataFrame):
-            return result.copy()
-
-        if isinstance(result, list):
-            return pd.DataFrame(result)
-
-    except TypeError:
-
-        try:
-            result = engine.get_option_contracts(
-                symbol,
-                expiry,
-            )
-
-            if isinstance(result, pd.DataFrame):
-                return result.copy()
-
-            return pd.DataFrame(result)
-
-        except Exception:
-            pass
-
     except Exception:
-        pass
-
-    return pd.DataFrame()
+        return pd.DataFrame()
 
 
-contracts = fetch_contracts(
-    selected_underlying,
+contracts = load_contracts(
+    underlying,
     selected_expiry,
 )
 
 
 # ============================================================
-# FILTER OPTION TYPE
+# NEAR ATM
 # ============================================================
 
-if not contracts.empty:
+if (
+    spot is not None
+    and not contracts.empty
+):
 
-    if "option_type" in contracts.columns:
+    try:
 
-        if selected_option_type in ["CE", "PE"]:
-            contracts = contracts[
-                contracts["option_type"]
-                .astype(str)
-                .str.upper()
-                .eq(selected_option_type)
+        near_atm = (
+            options.get_near_atm_contracts(
+                underlying=underlying,
+                expiry_date=selected_expiry,
+                spot_price=spot,
+                strikes_each_side=5,
+            )
+        )
+
+    except Exception:
+        near_atm = contracts.copy()
+
+else:
+    near_atm = contracts.copy()
+
+
+# ============================================================
+# FILTER
+# ============================================================
+
+if not near_atm.empty:
+
+    if option_type in [
+        "CE",
+        "PE",
+    ]:
+
+        near_atm = near_atm[
+            near_atm[
+                "option_type"
             ]
+            .astype(str)
+            .str.upper()
+            == option_type
+        ].copy()
 
-    elif "symbol" in contracts.columns:
 
-        if selected_option_type in ["CE", "PE"]:
-            contracts = contracts[
-                contracts["symbol"]
-                .astype(str)
-                .str.upper()
-                .str.endswith(selected_option_type)
-            ]
+# ============================================================
+# LIVE OPTION QUOTES
+# ============================================================
+
+if (
+    options is not None
+    and not near_atm.empty
+):
+
+    try:
+        chain = options.get_market_quote(
+            near_atm
+        )
+    except Exception:
+        chain = near_atm.copy()
+
+else:
+    chain = pd.DataFrame()
 
 
 # ============================================================
@@ -871,211 +624,131 @@ if not contracts.empty:
 
 st.subheader("⛓️ Option Chain")
 
-if contracts.empty:
+if chain.empty:
 
     st.info(
-        "Option contracts अभी उपलब्ध नहीं हैं. "
-        "Expiry/underlying selection और Angel One master data check करें."
+        "Option chain data unavailable."
     )
 
 else:
 
-    display_df = contracts.copy()
-
-    # Numeric strike
-    if "strike" in display_df.columns:
-        display_df["strike"] = pd.to_numeric(
-            display_df["strike"],
-            errors="coerce",
-        )
-
-    # Sort
-    if "strike" in display_df.columns:
-        display_df = display_df.sort_values("strike")
-
-    # Show relevant columns
-    preferred_columns = [
+    show_cols = [
         "symbol",
-        "name",
         "strike",
         "option_type",
         "expiry_normalized",
-        "expiry",
         "token",
-        "exch_seg",
+        "ltp",
+        "open",
+        "high",
+        "low",
+        "close",
+        "tradeVolume",
+        "opnInterest",
     ]
 
-    columns = [
-        c for c in preferred_columns
-        if c in display_df.columns
+    cols = [
+        c for c in show_cols
+        if c in chain.columns
     ]
 
-    if columns:
-        display_df = display_df[columns]
+    display = chain[cols].copy()
+
+    if "strike" in display.columns:
+        display["strike"] = pd.to_numeric(
+            display["strike"],
+            errors="coerce",
+        )
 
     st.dataframe(
-        display_df,
+        display,
         use_container_width=True,
         hide_index=True,
     )
 
 
 # ============================================================
-# OPTION CHAIN / QUOTES
+# PCR
 # ============================================================
 
-def fetch_option_chain(symbol, expiry):
-    if engine is None:
+def calculate_pcr(df):
+
+    if (
+        df is None
+        or df.empty
+        or "opnInterest"
+        not in df.columns
+        or "option_type"
+        not in df.columns
+    ):
         return None
 
-    methods = [
-        "get_option_chain",
-        "analyze_strikes",
-    ]
+    work = df.copy()
 
-    for method_name in methods:
+    work["opnInterest"] = pd.to_numeric(
+        work["opnInterest"],
+        errors="coerce",
+    ).fillna(0)
 
-        try:
+    ce = work.loc[
+        work["option_type"].eq("CE"),
+        "opnInterest",
+    ].sum()
 
-            method = getattr(engine, method_name, None)
+    pe = work.loc[
+        work["option_type"].eq("PE"),
+        "opnInterest",
+    ].sum()
 
-            if method is None:
-                continue
+    if ce <= 0:
+        return None
 
-            try:
-                result = method(
-                    underlying=symbol,
-                    expiry=expiry,
-                )
-            except Exception:
-
-                try:
-                    result = method(
-                        symbol,
-                        expiry,
-                    )
-                except Exception:
-                    continue
-
-            if result is not None:
-                return result
-
-        except Exception:
-            continue
-
-    return None
+    return pe / ce
 
 
-chain_result = fetch_option_chain(
-    selected_underlying,
-    selected_expiry,
+pcr = calculate_pcr(
+    chain
 )
 
 
 # ============================================================
-# PCR
+# OPTIONS INTELLIGENCE
 # ============================================================
 
-def calculate_pcr_from_contracts(df):
-    if df is None or df.empty:
-        return None
+st.subheader(
+    "📊 Options Intelligence"
+)
 
-    oi_col = None
+o1, o2, o3, o4 = st.columns(4)
 
-    for col in [
-        "oi",
-        "open_interest",
-        "openInterest",
-        "OI",
-    ]:
-        if col in df.columns:
-            oi_col = col
-            break
-
-    if oi_col is None:
-        return None
-
-    option_col = None
-
-    for col in [
-        "option_type",
-        "optionType",
-        "instrument",
-        "symbol",
-    ]:
-        if col in df.columns:
-            option_col = col
-            break
-
-    if option_col is None:
-        return None
-
-    temp = df.copy()
-
-    temp[oi_col] = pd.to_numeric(
-        temp[oi_col],
-        errors="coerce",
-    ).fillna(0)
-
-    types = (
-        temp[option_col]
-        .astype(str)
-        .str.upper()
-    )
-
-    ce_oi = temp.loc[
-        types.str.contains("CE"),
-        oi_col,
-    ].sum()
-
-    pe_oi = temp.loc[
-        types.str.contains("PE"),
-        oi_col,
-    ].sum()
-
-    if ce_oi <= 0:
-        return None
-
-    return pe_oi / ce_oi
-
-
-pcr_value = calculate_pcr_from_contracts(contracts)
-
-
-# ============================================================
-# OPTIONS SUMMARY
-# ============================================================
-
-st.subheader("📊 Options Intelligence")
-
-c1, c2, c3, c4 = st.columns(4)
-
-with c1:
+with o1:
     st.metric(
         "PCR",
-        f"{pcr_value:.2f}"
-        if pcr_value is not None
+        f"{pcr:.2f}"
+        if pcr is not None
         else "Unavailable",
     )
 
-with c2:
+with o2:
     st.metric(
         "Contracts",
-        len(contracts),
+        len(chain),
     )
 
-with c3:
-    st.metric(
-        "Underlying",
-        selected_underlying,
-    )
-
-with c4:
+with o3:
     st.metric(
         "Expiry",
-        expiry_display(selected_expiry)
+        expiry_label(
+            selected_expiry
+        )
         if selected_expiry
         else "-",
+    )
+
+with o4:
+    st.metric(
+        "Spot",
+        fmt(spot),
     )
 
 
@@ -1085,82 +758,67 @@ with c4:
 
 st.subheader("🧮 Option Greeks")
 
-def fetch_greeks(symbol, expiry):
-    if engine is None:
-        return None
-
-    try:
-
-        method = getattr(
-            engine,
-            "get_option_greeks",
-            None,
-        )
-
-        if method is None:
-            return None
-
-        try:
-            return method(
-                underlying=symbol,
-                expiry=expiry,
-            )
-        except Exception:
-
-            try:
-                return method(
-                    symbol,
-                    expiry,
-                )
-            except Exception:
-                return None
-
-    except Exception:
-        return None
-
-
-greeks = fetch_greeks(
-    selected_underlying,
-    selected_expiry,
-)
-
-if greeks is None:
+if (
+    options is None
+    or not selected_expiry
+):
 
     st.info(
-        "Greeks data अभी available नहीं है."
+        "Greeks unavailable."
     )
 
 else:
 
-    if isinstance(greeks, pd.DataFrame):
+    try:
 
-        if greeks.empty:
-            st.info("Greeks data empty है.")
+        greek_rows = (
+            options.get_option_greeks(
+                underlying,
+                selected_expiry,
+            )
+        )
 
+        greek_df = pd.DataFrame(
+            greek_rows or []
+        )
+
+        if greek_df.empty:
+            st.info(
+                "Greeks data unavailable."
+            )
         else:
+
+            greek_cols = [
+                "tradingSymbol",
+                "symbol",
+                "strikePrice",
+                "optionType",
+                "delta",
+                "gamma",
+                "theta",
+                "vega",
+                "impliedVolatility",
+                "tradeVolume",
+            ]
+
+            cols = [
+                c for c in greek_cols
+                if c in greek_df.columns
+            ]
+
             st.dataframe(
-                greeks,
+                greek_df[cols]
+                if cols
+                else greek_df,
                 use_container_width=True,
                 hide_index=True,
             )
 
-    elif isinstance(greeks, list):
+    except Exception as e:
 
-        if len(greeks) > 0:
-            st.dataframe(
-                pd.DataFrame(greeks),
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.info("Greeks data empty है.")
-
-    elif isinstance(greeks, dict):
-
-        st.json(greeks)
-
-    else:
-        st.write(greeks)
+        st.info(
+            f"Greeks unavailable: {e}"
+        )
 
 
 # ============================================================
@@ -1169,441 +827,480 @@ else:
 
 st.subheader("📌 OI Buildup")
 
-def fetch_oi(symbol, expiry):
-    if engine is None:
-        return None
-
-    for method_name in [
-        "get_all_oi_buildup",
-        "get_oi_buildup",
-    ]:
-
-        try:
-
-            method = getattr(
-                engine,
-                method_name,
-                None,
-            )
-
-            if method is None:
-                continue
-
-            try:
-                result = method(
-                    underlying=symbol,
-                    expiry=expiry,
-                )
-            except Exception:
-
-                try:
-                    result = method(
-                        symbol,
-                        expiry,
-                    )
-                except Exception:
-                    continue
-
-            if result is not None:
-                return result
-
-        except Exception:
-            continue
-
-    return None
-
-
-oi_result = fetch_oi(
-    selected_underlying,
-    selected_expiry,
-)
-
-if oi_result is None:
+if options is None:
 
     st.info(
-        "OI buildup data unavailable."
+        "Options engine unavailable."
     )
 
 else:
 
-    if isinstance(oi_result, pd.DataFrame):
+    oi_tabs = st.tabs([
+        "Long Built Up",
+        "Short Built Up",
+        "Short Covering",
+        "Long Unwinding",
+    ])
 
-        st.dataframe(
-            oi_result,
-            use_container_width=True,
-            hide_index=True,
-        )
+    oi_types = [
+        "Long Built Up",
+        "Short Built Up",
+        "Short Covering",
+        "Long Unwinding",
+    ]
 
-    elif isinstance(oi_result, list):
+    for tab, oi_type in zip(
+        oi_tabs,
+        oi_types,
+    ):
 
-        st.dataframe(
-            pd.DataFrame(oi_result),
-            use_container_width=True,
-            hide_index=True,
-        )
+        with tab:
 
-    else:
+            try:
 
-        st.json(oi_result)
-        
+                rows = options.get_oi_buildup(
+                    expiry_type="NEAR",
+                    data_type=oi_type,
+                )
+
+                df = pd.DataFrame(
+                    rows or []
+                )
+
+                if df.empty:
+                    st.info(
+                        "Data unavailable."
+                    )
+                else:
+                    st.dataframe(
+                        df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            except Exception:
+                st.info(
+                    "OI buildup data unavailable."
+                )
+
 
 # ============================================================
 # TECHNICAL ANALYSIS
 # ============================================================
 
-st.subheader("📈 Technical Analysis")
+st.subheader(
+    "📈 Technical Analysis"
+)
 
-technical_columns = st.columns(6)
+TECH_TOKENS = {
+    "NIFTY": (
+        "NSE",
+        "99926000",
+    ),
+    "BANKNIFTY": (
+        "NSE",
+        "99926009",
+    ),
+}
 
-technical_values = [
-    ("RSI", "-"),
-    ("ADX", "-"),
-    ("VWAP", "-"),
-    ("EMA 20", "-"),
-    ("MACD", "-"),
-    ("Trend", "WAITING"),
-]
 
-for column, (label, value) in zip(
-    technical_columns,
-    technical_values,
+@st.cache_data(ttl=120, show_spinner=False)
+def technical_data(
+    symbol,
 ):
-    with column:
-        st.metric(label, value)
+
+    if telemetry is None:
+        return None
+
+    if symbol not in TECH_TOKENS:
+        return None
+
+    exchange, token = TECH_TOKENS[
+        symbol
+    ]
+
+    try:
+
+        df = telemetry.fetch_ohlcv(
+            exchange=exchange,
+            token=token,
+            interval="FIVE_MINUTE",
+            days=5,
+        )
+
+        if df.empty:
+            return None
+
+        rsi = telemetry.calculate_rsi(
+            df["close"]
+        )
+
+        atr = telemetry.calculate_atr(
+            df
+        )
+
+        ema9 = telemetry.calculate_ema(
+            df["close"],
+            9,
+        )
+
+        ema21 = telemetry.calculate_ema(
+            df["close"],
+            21,
+        )
+
+        ema50 = telemetry.calculate_ema(
+            df["close"],
+            50,
+        )
+
+        adx = telemetry.calculate_adx(
+            df
+        )
+
+        vwap = telemetry.calculate_vwap(
+            df
+        )
+
+        supertrend = (
+            telemetry.calculate_supertrend(
+                df
+            )
+        )
+
+        last = df.iloc[-1]
+
+        return {
+            "close": sf(
+                last["close"]
+            ),
+            "rsi": sf(
+                rsi.iloc[-1]
+            ),
+            "atr": sf(
+                atr.iloc[-1]
+            ),
+            "ema9": sf(
+                ema9.iloc[-1]
+            ),
+            "ema21": sf(
+                ema21.iloc[-1]
+            ),
+            "ema50": sf(
+                ema50.iloc[-1]
+            ),
+            "adx": sf(
+                adx.iloc[-1]
+            ),
+            "vwap": sf(
+                vwap.iloc[-1]
+            ),
+            "supertrend": (
+                "BULLISH"
+                if supertrend.iloc[-1] == 1
+                else "BEARISH"
+            ),
+        }
+
+    except Exception:
+        return None
 
 
-st.caption(
-    "Technical engine connected होने पर RSI, ADX, VWAP, EMA, MACD, "
-    "support/resistance और momentum यहाँ populate होंगे."
+tech = technical_data(
+    underlying
 )
 
 
-# ============================================================
-# AI EXPERT ADVISORY
-# ============================================================
-
-st.subheader("🤖 AI Expert Advisory")
-
-if not is_market_open():
+if tech is None:
 
     st.info(
-        "🌙 Market closed है — After-Market Expert Advisor active है. "
-        "Selected expiry के लिए next-session preparation यहाँ की जा सकती है."
+        "Technical data unavailable."
     )
 
 else:
 
-    st.info(
-        "🟢 Market open है — live/paper-trading analysis mode."
+    t1, t2, t3, t4, t5, t6 = (
+        st.columns(6)
     )
+
+    with t1:
+        st.metric(
+            "RSI",
+            fmt(tech["rsi"]),
+        )
+
+    with t2:
+        st.metric(
+            "ADX",
+            fmt(tech["adx"]),
+        )
+
+    with t3:
+        st.metric(
+            "VWAP",
+            fmt(tech["vwap"]),
+        )
+
+    with t4:
+        st.metric(
+            "EMA 9",
+            fmt(tech["ema9"]),
+        )
+
+    with t5:
+        st.metric(
+            "EMA 21",
+            fmt(tech["ema21"]),
+        )
+
+    with t6:
+        st.metric(
+            "Trend",
+            tech["supertrend"],
+        )
 
 
 # ============================================================
-# RULE BASED ADVISORY
+# EXPERT ADVISOR
 # ============================================================
 
-def build_advisory(
-    symbol,
-    expiry,
-    option_type,
-    spot,
-    contracts_df,
-    pcr,
-):
+st.subheader(
+    "🤖 Expert Advisor"
+)
 
-    if spot is None:
-        return {
-            "signal": "WAITING",
-            "confidence": 0,
-            "reason": "Underlying LTP unavailable",
-        }
+signal = "WAIT"
+confidence = 0
+reasons = []
 
-    reasons = []
 
-    signal = "WAIT"
+if tech is not None:
 
-    # --------------------------------------------------------
-    # PCR
-    # --------------------------------------------------------
+    if (
+        tech["ema9"] is not None
+        and tech["ema21"] is not None
+    ):
 
-    if pcr is not None:
-
-        if pcr > 1.20:
+        if tech["ema9"] > tech["ema21"]:
             reasons.append(
-                "PCR relatively high"
+                "Short EMA above EMA21"
             )
-
-        elif pcr < 0.80:
-            reasons.append(
-                "PCR relatively low"
-            )
-
         else:
             reasons.append(
-                "PCR neutral zone"
+                "Short EMA below EMA21"
             )
 
-    # --------------------------------------------------------
-    # Basic expiry awareness
-    # --------------------------------------------------------
+    if (
+        tech["rsi"] is not None
+    ):
 
-    expiry_text = expiry_display(expiry)
-
-    reasons.append(
-        f"Selected expiry: {expiry_text}"
-    )
-
-    reasons.append(
-        f"Underlying: {symbol}"
-    )
-
-    # --------------------------------------------------------
-    # No automatic trade call
-    # --------------------------------------------------------
-
-    if option_type == "CE":
-
-        if pcr is not None and pcr > 1.20:
-            signal = "CE WATCH"
+        if tech["rsi"] > 60:
+            reasons.append(
+                "RSI bullish zone"
+            )
+        elif tech["rsi"] < 40:
+            reasons.append(
+                "RSI bearish zone"
+            )
         else:
-            signal = "CE WAIT"
+            reasons.append(
+                "RSI neutral"
+            )
 
-    elif option_type == "PE":
+    if (
+        tech["adx"] is not None
+    ):
 
-        if pcr is not None and pcr < 0.80:
-            signal = "PE WATCH"
+        if tech["adx"] >= 25:
+            reasons.append(
+                "Trend strength elevated"
+            )
         else:
-            signal = "PE WAIT"
+            reasons.append(
+                "Trend strength weak/range"
+            )
 
-    else:
-
-        signal = "WAIT"
+    if tech["supertrend"] == "BULLISH":
+        signal = "BULLISH WATCH"
+    elif tech["supertrend"] == "BEARISH":
+        signal = "BEARISH WATCH"
 
     confidence = 50
 
     if pcr is not None:
         confidence += 10
 
-    return {
-        "signal": signal,
-        "confidence": min(confidence, 100),
-        "reason": " | ".join(reasons),
-    }
+    if tech["adx"] is not None:
+        confidence += 10
+
+else:
+
+    reasons.append(
+        "Technical data unavailable"
+    )
 
 
-advisory = build_advisory(
-    selected_underlying,
-    selected_expiry,
-    selected_option_type,
-    spot_price,
-    contracts,
-    pcr_value,
-)
+a1, a2, a3 = st.columns(3)
 
-st.session_state.advisory = advisory
-
-
-adv1, adv2, adv3 = st.columns(3)
-
-with adv1:
+with a1:
     st.metric(
         "EA Signal",
-        advisory["signal"],
+        signal,
     )
 
-with adv2:
+with a2:
     st.metric(
         "Confidence",
-        f'{advisory["confidence"]}%',
+        f"{min(confidence, 100)}%",
     )
 
-with adv3:
+with a3:
     st.metric(
-        "Mode",
-        "PAPER",
+        "Execution",
+        "DISABLED",
     )
 
 st.write(
-    f"**Reason:** {advisory['reason']}"
+    "**Analysis:** "
+    + (
+        " | ".join(reasons)
+        if reasons
+        else "Waiting for data"
+    )
 )
 
 
 # ============================================================
-# AFTER MARKET PLAN
+# AFTER MARKET
 # ============================================================
 
-st.subheader("🌙 After-Market Trade Preparation")
+st.subheader(
+    "🌙 After-Market Preparation"
+)
 
-if not is_market_open():
+if market_open():
 
-    st.success(
-        "After-market planning enabled."
+    st.info(
+        "Market open — live/paper analysis mode."
     )
 
 else:
 
-    st.info(
-        "Market open है. After-market section current selected expiry "
-        "को continuously monitor कर सकता है."
+    st.success(
+        "Market closed — After-Market Expert Advisor active."
     )
 
+st.markdown(
+    f"""
+**Next-session preparation**
 
-plan_col1, plan_col2 = st.columns(2)
+- Underlying: **{underlying}**
+- Selected expiry: **{expiry_label(selected_expiry) if selected_expiry else "-"}**
+- Option side: **{option_type}**
+- Reference spot: **{fmt(spot)}**
+- Current EA state: **{signal}**
 
-with plan_col1:
+### Pre-trade checklist
 
-    st.markdown("### 📋 Tomorrow / Future Plan")
-
-    st.write(
-        f"**Underlying:** {selected_underlying}"
-    )
-
-    st.write(
-        f"**Expiry:** "
-        f"{expiry_display(selected_expiry) if selected_expiry else '-'}"
-    )
-
-    st.write(
-        f"**Option:** {selected_option_type}"
-    )
-
-    st.write(
-        f"**Reference Spot:** {fmt_number(spot_price)}"
-    )
-
-
-with plan_col2:
-
-    st.markdown("### 🎯 EA Checklist")
-
-    st.write("☐ Trend confirmation")
-    st.write("☐ Support / Resistance")
-    st.write("☐ RSI / ADX confirmation")
-    st.write("☐ VWAP / EMA confirmation")
-    st.write("☐ OI buildup")
-    st.write("☐ PCR")
-    st.write("☐ Greeks")
-    st.write("☐ Risk / Reward")
-    st.write("☐ Expiry risk")
-    st.write("☐ News / Sentiment")
-
-
-# ============================================================
-# RISK MANAGEMENT
-# ============================================================
-
-st.subheader("🛡️ Risk Management")
-
-risk1, risk2, risk3, risk4 = st.columns(4)
-
-with risk1:
-    st.metric("Trading Mode", "PAPER")
-
-with risk2:
-    st.metric(
-        "Max Daily Loss",
-        "₹2,000",
-    )
-
-with risk3:
-    st.metric(
-        "Max Trades",
-        "5",
-    )
-
-with risk4:
-    st.metric(
-        "Real Orders",
-        "DISABLED",
-    )
-
-
-st.warning(
-    "⚠️ EA किसी भी स्थिति में इस UI से real order execute नहीं करेगा."
+☐ Trend confirmation  
+☐ Multi-timeframe confirmation  
+☐ Support / resistance  
+☐ RSI / ADX  
+☐ VWAP / EMA  
+☐ OI buildup  
+☐ PCR  
+☐ Delta / Gamma / Theta  
+☐ India VIX  
+☐ News / sentiment  
+☐ Risk / reward  
+☐ Expiry risk
+"""
 )
 
 
 # ============================================================
-# SYSTEM STATUS
+# RISK
 # ============================================================
 
-st.subheader("🔧 System Status")
+st.subheader(
+    "🛡️ Risk Controls"
+)
 
-s1, s2, s3, s4 = st.columns(4)
+r1, r2, r3, r4 = st.columns(4)
 
-with s1:
+with r1:
     st.metric(
         "Paper Trading",
         "ON",
     )
 
-with s2:
-
+with r2:
     st.metric(
-        "Angel One",
-        "CONNECTED"
-        if engine is not None
-        else "CHECK",
+        "Max Daily Loss",
+        "₹2,000",
     )
 
-with s3:
-
+with r3:
     st.metric(
-        "Options Engine",
-        "READY"
-        if engine is not None
-        else "ERROR",
+        "Max Trades",
+        "5",
     )
 
-with s4:
-
+with r4:
     st.metric(
-        "AI",
-        "READY"
-        if config is not None
-        else "CHECK",
+        "Real Orders",
+        "OFF",
     )
 
 
 # ============================================================
-# DEBUG
+# STATUS
 # ============================================================
 
-with st.expander("🔍 Technical Debug Information"):
+with st.expander(
+    "🔧 System Status"
+):
 
     st.write(
-        "Underlying:",
-        selected_underlying,
+        "Options Engine:",
+        "READY"
+        if options is not None
+        else "CHECK",
     )
 
     st.write(
-        "Expiry:",
+        "Telemetry Engine:",
+        "READY"
+        if telemetry is not None
+        else "CHECK",
+    )
+
+    st.write(
+        "Expiry Count:",
+        len(expiries),
+    )
+
+    st.write(
+        "Selected Expiry:",
         selected_expiry,
     )
 
     st.write(
-        "Option Type:",
-        selected_option_type,
-    )
-
-    st.write(
-        "Contracts:",
-        len(contracts),
-    )
-
-    st.write(
-        "Spot:",
-        spot_price,
-    )
-
-    st.write(
         "Market:",
-        "OPEN" if is_market_open() else "CLOSED",
+        "OPEN"
+        if market_open()
+        else "CLOSED",
     )
 
-    if engine is None:
+    if OptionsEngine is None:
         st.error(
-            "OptionsEngine initialize नहीं हुआ."
+            f"Options import error: "
+            f"{OPTIONS_ERROR}"
+        )
+
+    if TelemetryEngine is None:
+        st.error(
+            f"Telemetry import error: "
+            f"{TELEMETRY_ERROR}"
         )
 
 
@@ -1614,6 +1311,6 @@ with st.expander("🔍 Technical Debug Information"):
 st.divider()
 
 st.caption(
-    "AI Trading Expert Advisor • Paper Trading Only • "
-    "No Real Orders • Options + Technical + AI Research"
+    "AI Trading Expert Advisor • "
+    "PAPER TRADING ONLY • NO REAL ORDERS"
 )
