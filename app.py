@@ -2,10 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, time
+import json
+import math
 
-# ============================================================
+# =========================================================
 # PAGE
-# ============================================================
+# =========================================================
 
 st.set_page_config(
     page_title="AI Trading Expert Advisor",
@@ -15,126 +17,129 @@ st.set_page_config(
 
 PAPER_TRADING = True
 
+# =========================================================
+# MOBILE UI
+# =========================================================
+
 st.markdown("""
 <style>
-@media (max-width: 768px) {
+.block-container{
+    padding-top:1rem!important;
+    padding-left:.7rem!important;
+    padding-right:.7rem!important;
+    max-width:100%!important;
+}
 
-    /* Main content ko mobile width use karne do */
-    .block-container {
-        padding-left: 0.65rem !important;
-        padding-right: 0.65rem !important;
-        max-width: 100% !important;
+@media(max-width:768px){
+    [data-testid="stHorizontalBlock"]{
+        flex-wrap:wrap!important;
+        gap:.4rem!important;
     }
 
-    /* Columns ko zabardasti 47% me mat squeeze karo */
-    [data-testid="stHorizontalBlock"] {
-        display: flex !important;
-        flex-wrap: wrap !important;
-        width: 100% !important;
-        gap: 0.45rem !important;
+    [data-testid="column"]{
+        min-width:48%!important;
+        flex:1 1 48%!important;
     }
 
-    [data-testid="column"] {
-        min-width: 48% !important;
-        width: 48% !important;
-        flex: 1 1 48% !important;
+    [data-testid="stMetric"]{
+        width:100%!important;
+        min-width:0!important;
+        overflow:visible!important;
     }
 
-    /* Metric card */
-    [data-testid="stMetric"] {
-        width: 100% !important;
-        min-width: 0 !important;
-        overflow: visible !important;
+    [data-testid="stMetricLabel"]{
+        font-size:11px!important;
+        line-height:1.2!important;
+        white-space:normal!important;
+        overflow:visible!important;
     }
 
-    [data-testid="stMetricLabel"] {
-        font-size: 10px !important;
-        line-height: 1.15 !important;
-        white-space: normal !important;
-        overflow: visible !important;
+    [data-testid="stMetricValue"]{
+        font-size:18px!important;
+        line-height:1.2!important;
+        white-space:normal!important;
+        overflow:visible!important;
+        text-overflow:clip!important;
     }
 
-    [data-testid="stMetricValue"] {
-        font-size: 18px !important;
-        line-height: 1.15 !important;
-        white-space: normal !important;
-        overflow: visible !important;
-        text-overflow: clip !important;
-        word-break: normal !important;
-    }
+    h1{font-size:25px!important}
+    h2{font-size:21px!important}
+    h3{font-size:18px!important}
 
-    [data-testid="stMetricDelta"] {
-        font-size: 10px !important;
-        white-space: normal !important;
+    .trade-card{
+        padding:.75rem!important;
     }
+}
 
-    /* Headings */
-    h1 {
-        font-size: 27px !important;
-        line-height: 1.08 !important;
-        word-break: normal !important;
-    }
+.trade-card{
+    border:1px solid rgba(128,128,128,.30);
+    border-radius:12px;
+    padding:1rem;
+    margin:.5rem 0;
+}
 
-    h2 {
-        font-size: 21px !important;
-        line-height: 1.15 !important;
-    }
+.small{
+    font-size:.88rem;
+    opacity:.85;
+}
 
-    h3 {
-        font-size: 18px !important;
-        line-height: 1.15 !important;
-    }
-
-    /* Normal text */
-    p, label, div {
-        word-break: normal !important;
-    }
-
-    /* Tables */
-    [data-testid="stDataFrame"] {
-        width: 100% !important;
-        overflow-x: auto !important;
-    }
+.reason{
+    line-height:1.5;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================================
-# IMPORTS
-# ============================================================
-
-try:
-    from options_engine import OptionsEngine
-except Exception as e:
-    OptionsEngine = None
-    OPTIONS_ERROR = str(e)
+# =========================================================
+# OPTIONAL ENGINES
+# =========================================================
 
 try:
     from telemetry_engine import TelemetryEngine
-except Exception as e:
+except Exception:
     TelemetryEngine = None
-    TELEMETRY_ERROR = str(e)
 
-# ============================================================
+try:
+    from options_engine import OptionsEngine
+except Exception:
+    OptionsEngine = None
+
+# =========================================================
 # HELPERS
-# ============================================================
+# =========================================================
 
-def sf(x, default=None):
+def secret(name):
+    try:
+        v = st.secrets.get(name)
+        return str(v).strip() if v else ""
+    except Exception:
+        return ""
+
+
+def num(x, default=None):
     try:
         if x is None:
             return default
         if isinstance(x, str):
             x = x.replace(",", "").strip()
-            if not x:
-                return default
         return float(x)
     except Exception:
         return default
 
 
-def fmt(x, d=2):
-    x = sf(x)
-    return "-" if x is None else f"{x:,.{d}f}"
+def fmt(x, digits=2):
+    x = num(x)
+    if x is None:
+        return "-"
+    return f"{x:,.{digits}f}"
+
+
+def safe_text(x):
+    return str(x) if x is not None else ""
+
+
+def market_open():
+    now = datetime.now()
+    return now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 30)
 
 
 def expiry_norm(x):
@@ -146,7 +151,7 @@ def expiry_norm(x):
 
     s = str(x).strip().upper()
 
-    for f in (
+    formats = [
         "%Y-%m-%d",
         "%Y/%m/%d",
         "%d-%m-%Y",
@@ -155,7 +160,9 @@ def expiry_norm(x):
         "%d-%b-%Y",
         "%d%b%y",
         "%d-%b-%y",
-    ):
+    ]
+
+    for f in formats:
         try:
             return datetime.strptime(s, f).strftime("%Y-%m-%d")
         except Exception:
@@ -166,38 +173,49 @@ def expiry_norm(x):
 
 def expiry_label(x):
     n = expiry_norm(x)
-
     if not n:
-        return str(x)
+        return "-"
 
     try:
-        return datetime.strptime(
-            n, "%Y-%m-%d"
-        ).strftime("%d %b %Y")
+        return datetime.strptime(n, "%Y-%m-%d").strftime("%d %b %Y")
     except Exception:
         return str(x)
 
 
-def market_open():
-    now = datetime.now()
+def clean_df(df):
+    if df is None:
+        return pd.DataFrame()
 
-    if now.weekday() >= 5:
-        return False
+    if isinstance(df, pd.DataFrame):
+        return df.copy()
 
-    return time(9, 15) <= now.time() <= time(15, 30)
+    try:
+        return pd.DataFrame(df)
+    except Exception:
+        return pd.DataFrame()
 
 
-# ============================================================
+def first_value(row, names, default=None):
+    for n in names:
+        if isinstance(row, dict) and n in row:
+            v = row.get(n)
+            if v is not None and str(v) != "":
+                return v
+
+        try:
+            if n in row.index:
+                v = row[n]
+                if pd.notna(v):
+                    return v
+        except Exception:
+            pass
+
+    return default
+
+
+# =========================================================
 # SECRETS
-# ============================================================
-
-def secret(name):
-    try:
-        value = st.secrets.get(name)
-        return str(value).strip() if value else ""
-    except Exception:
-        return ""
-
+# =========================================================
 
 ANGEL_API_KEY = secret("ANGEL_API_KEY")
 ANGEL_CLIENT_CODE = secret("ANGEL_CLIENT_CODE")
@@ -205,10 +223,17 @@ ANGEL_PIN = secret("ANGEL_PIN")
 ANGEL_TOTP_SECRET = secret("ANGEL_TOTP_SECRET")
 ANGEL_JWT_TOKEN = secret("ANGEL_JWT_TOKEN")
 
+GEMINI_API_KEY = (
+    secret("GEMINI_API_KEY")
+    or secret("GOOGLE_API_KEY")
+    or secret("GEMINI_KEY")
+)
 
-# ============================================================
-# CREATE TELEMETRY
-# ============================================================
+GEMINI_MODEL = secret("GEMINI_MODEL") or "gemini-3.6-flash"
+
+# =========================================================
+# ENGINES
+# =========================================================
 
 @st.cache_resource(show_spinner=False)
 def create_telemetry():
@@ -234,45 +259,31 @@ def create_telemetry():
         return None
 
 
-telemetry = create_telemetry()
-
-
-# ============================================================
-# CREATE OPTIONS ENGINE
-# ============================================================
-
 @st.cache_resource(show_spinner=False)
 def create_options():
     if OptionsEngine is None:
         return None
 
-    # OptionsEngine needs JWT.
-    # First use explicitly stored JWT if available.
-    if ANGEL_JWT_TOKEN:
-        try:
+    try:
+        if ANGEL_JWT_TOKEN:
             return OptionsEngine(
                 jwt_token=ANGEL_JWT_TOKEN,
                 api_key=ANGEL_API_KEY,
                 client_code=ANGEL_CLIENT_CODE,
             )
-        except Exception:
-            pass
+    except Exception:
+        pass
 
-    # If JWT is not stored, use TelemetryEngine's
-    # SmartAPI session and feed the generated auth token.
-    if telemetry is not None:
+    telemetry_obj = create_telemetry()
+
+    if telemetry_obj is not None:
         try:
-            smart_api = telemetry.smart_api
+            smart_api = telemetry_obj.smart_api
+            token = getattr(smart_api, "access_token", None)
 
-            session = getattr(
-    smart_api,
-    "access_token",
-    None,
-            )
-
-            if session:
+            if token:
                 return OptionsEngine(
-                    jwt_token=str(session),
+                    jwt_token=str(token),
                     api_key=ANGEL_API_KEY,
                     client_code=ANGEL_CLIENT_CODE,
                 )
@@ -282,54 +293,12 @@ def create_options():
     return None
 
 
+telemetry = create_telemetry()
 options = create_options()
 
-
-# ============================================================
-# HEADER
-# ============================================================
-
-st.title("📊 AI Trading Expert Advisor")
-
-st.caption(
-    "Options + Technical Analysis + Greeks + OI + PCR + "
-    "Expiry Risk + After-Market Preparation"
-)
-
-h1, h2, h3 = st.columns(3)
-
-with h1:
-    st.metric("Mode", "PAPER ONLY")
-
-with h2:
-    st.metric(
-        "Market",
-        "OPEN" if market_open() else "CLOSED",
-    )
-
-with h3:
-    st.metric(
-        "Angel One",
-        "CONNECTED"
-        if telemetry is not None
-        else "CHECK",
-    )
-
-st.warning(
-    "⚠️ PAPER TRADING ONLY — कोई real order place नहीं होगा."
-)
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-st.sidebar.header("⚙️ Expert Advisor")
-
-
-# ============================================================
-# UNDERLYINGS
-# ============================================================
+# =========================================================
+# MARKET CONFIG
+# =========================================================
 
 UNDERLYINGS = [
     "NIFTY",
@@ -340,83 +309,919 @@ UNDERLYINGS = [
     "BANKEX",
 ]
 
-saved_underlying = st.session_state.get(
-    "underlying",
-    "NIFTY",
-)
+SPOT_TOKENS = {
+    "NIFTY": ("NSE", "99926000"),
+    "BANKNIFTY": ("NSE", "99926009"),
+    "SENSEX": ("BSE", "99919000"),
+}
 
-if saved_underlying not in UNDERLYINGS:
-    saved_underlying = "NIFTY"
+# =========================================================
+# SPOT
+# =========================================================
 
-underlying = st.sidebar.selectbox(
-    "Underlying",
-    UNDERLYINGS,
-    index=UNDERLYINGS.index(
-        saved_underlying
-    ),
-)
+def get_spot(symbol):
+    if telemetry is None:
+        return None
 
-st.session_state["underlying"] = underlying
+    exchange, token = SPOT_TOKENS.get(
+        symbol,
+        ("NSE", None)
+    )
+
+    if token is None:
+        return None
+
+    try:
+        result = telemetry.get_live_ltp(
+            exchange,
+            symbol,
+            token,
+        )
+
+        if isinstance(result, dict):
+            if result.get("status"):
+                return num(result.get("ltp"))
+
+            for key in ["ltp", "data"]:
+                value = result.get(key)
+
+                if isinstance(value, dict):
+                    v = (
+                        value.get("ltp")
+                        or value.get("LTP")
+                    )
+                    if v is not None:
+                        return num(v)
+
+        return num(result)
+
+    except Exception:
+        return None
 
 
-# ============================================================
+# =========================================================
 # EXPIRIES
-# ============================================================
+# =========================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_expiries(symbol):
-
     if options is None:
         return []
 
     try:
-        result = options.get_expiry_options(
-            symbol
-        )
+        result = options.get_expiry_options(symbol)
 
         values = []
 
         for item in result or []:
-
             if isinstance(item, dict):
-                value = item.get("value")
+                value = (
+                    item.get("value")
+                    or item.get("expiry")
+                    or item.get("expiryDate")
+                )
             else:
                 value = item
 
             value = expiry_norm(value)
 
-            if value:
-                try:
-                    d = datetime.strptime(
-                        value,
-                        "%Y-%m-%d",
-                    ).date()
+            if not value:
+                continue
 
-                    if d >= date.today():
-                        values.append(value)
+            try:
+                d = datetime.strptime(
+                    value,
+                    "%Y-%m-%d"
+                ).date()
 
-                except Exception:
-                    pass
+                if d >= date.today():
+                    values.append(value)
 
-        return sorted(
-            list(set(values))
-        )
+            except Exception:
+                pass
+
+        return sorted(set(values))
 
     except Exception:
         return []
 
 
+# =========================================================
+# CONTRACTS
+# =========================================================
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_contracts(symbol, expiry):
+    if options is None or not expiry:
+        return pd.DataFrame()
+
+    try:
+        return clean_df(
+            options.get_option_contracts(
+                underlying=symbol,
+                expiry_date=expiry,
+            )
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_chain(symbol, expiry, spot):
+    contracts = load_contracts(symbol, expiry)
+
+    if contracts.empty:
+        return pd.DataFrame(), contracts
+
+    try:
+        if spot is not None:
+            near = options.get_near_atm_contracts(
+                underlying=symbol,
+                expiry_date=expiry,
+                spot_price=spot,
+                strikes_each_side=8,
+            )
+            near = clean_df(near)
+
+            if not near.empty:
+                contracts = near
+
+    except Exception:
+        pass
+
+    try:
+        quoted = options.get_market_quote(contracts)
+        quoted = clean_df(quoted)
+
+        if not quoted.empty:
+            return quoted, contracts
+
+    except Exception:
+        pass
+
+    return contracts.copy(), contracts
+
+
+# =========================================================
+# PCR
+# =========================================================
+
+def calculate_pcr(df):
+    if df.empty:
+        return None
+
+    oi_col = None
+
+    for c in ["opnInterest", "openInterest", "oi", "open_interest"]:
+        if c in df.columns:
+            oi_col = c
+            break
+
+    type_col = None
+
+    for c in ["option_type", "optionType", "optionTypeName"]:
+        if c in df.columns:
+            type_col = c
+            break
+
+    if oi_col is None or type_col is None:
+        return None
+
+    work = df.copy()
+
+    work[oi_col] = pd.to_numeric(
+        work[oi_col],
+        errors="coerce"
+    ).fillna(0)
+
+    types = (
+        work[type_col]
+        .astype(str)
+        .str.upper()
+    )
+
+    ce = work.loc[
+        types.str.contains("CE"),
+        oi_col
+    ].sum()
+
+    pe = work.loc[
+        types.str.contains("PE"),
+        oi_col
+    ].sum()
+
+    if ce <= 0:
+        return None
+
+    return pe / ce
+
+
+# =========================================================
+# OHLCV
+# =========================================================
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=5):
+    if telemetry is None:
+        return pd.DataFrame()
+
+    if symbol not in SPOT_TOKENS:
+        return pd.DataFrame()
+
+    exchange, token = SPOT_TOKENS[symbol]
+
+    try:
+        df = telemetry.fetch_ohlcv(
+            exchange=exchange,
+            token=token,
+            interval=interval,
+            days=days,
+        )
+
+        df = clean_df(df)
+
+        if df.empty:
+            return df
+
+        # Normalize columns
+        rename = {}
+
+        for c in df.columns:
+            lc = str(c).lower()
+
+            if lc in ["open", "o"]:
+                rename[c] = "open"
+
+            elif lc in ["high", "h"]:
+                rename[c] = "high"
+
+            elif lc in ["low", "l"]:
+                rename[c] = "low"
+
+            elif lc in ["close", "c", "ltp"]:
+                rename[c] = "close"
+
+            elif lc in ["volume", "vol"]:
+                rename[c] = "volume"
+
+        df = df.rename(columns=rename)
+
+        needed = [
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
+
+        if not all(c in df.columns for c in needed):
+            return pd.DataFrame()
+
+        for c in needed + (
+            ["volume"] if "volume" in df.columns else []
+        ):
+            df[c] = pd.to_numeric(
+                df[c],
+                errors="coerce"
+            )
+
+        df = df.dropna(
+            subset=needed
+        ).reset_index(drop=True)
+
+        return df
+
+    except Exception:
+        return pd.DataFrame()
+
+
+# =========================================================
+# INDICATORS
+# =========================================================
+
+def add_indicators(df):
+    df = df.copy()
+
+    if df.empty:
+        return df
+
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+
+    df["EMA20"] = close.ewm(
+        span=20,
+        adjust=False
+    ).mean()
+
+    df["EMA50"] = close.ewm(
+        span=50,
+        adjust=False
+    ).mean()
+
+    delta = close.diff()
+
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+
+    rs = avg_gain / avg_loss.replace(
+        0,
+        np.nan
+    )
+
+    df["RSI"] = 100 - (
+        100 / (1 + rs)
+    )
+
+    ema12 = close.ewm(
+        span=12,
+        adjust=False
+    ).mean()
+
+    ema26 = close.ewm(
+        span=26,
+        adjust=False
+    ).mean()
+
+    df["MACD"] = ema12 - ema26
+
+    df["MACD_SIGNAL"] = df["MACD"].ewm(
+        span=9,
+        adjust=False
+    ).mean()
+
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+
+    tr = pd.concat(
+        [tr1, tr2, tr3],
+        axis=1
+    ).max(axis=1)
+
+    atr = tr.rolling(14).mean()
+
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+
+    plus_dm = plus_dm.where(
+        (plus_dm > minus_dm) &
+        (plus_dm > 0),
+        0
+    )
+
+    minus_dm = minus_dm.where(
+        (minus_dm > plus_dm) &
+        (minus_dm > 0),
+        0
+    )
+
+    plus_di = (
+        100 *
+        plus_dm.rolling(14).sum() /
+        atr.rolling(14).sum()
+    )
+
+    minus_di = (
+        100 *
+        minus_dm.rolling(14).sum() /
+        atr.rolling(14).sum()
+    )
+
+    dx = (
+        100 *
+        (plus_di - minus_di).abs() /
+        (plus_di + minus_di).replace(
+            0,
+            np.nan
+        )
+    )
+
+    df["ADX"] = dx.rolling(14).mean()
+
+    if "volume" in df.columns:
+        typical = (
+            high + low + close
+        ) / 3
+
+        cumulative_volume = (
+            df["volume"].cumsum()
+        )
+
+        df["VWAP"] = (
+            (typical * df["volume"]).cumsum()
+            / cumulative_volume.replace(
+                0,
+                np.nan
+            )
+        )
+
+        df["VOL_AVG20"] = df[
+            "volume"
+        ].rolling(20).mean()
+
+    else:
+        df["VWAP"] = np.nan
+        df["VOL_AVG20"] = np.nan
+
+    return df
+
+
+# =========================================================
+# MARKET ANALYSIS
+# =========================================================
+
+def analyze_market(symbol):
+    result = {
+        "symbol": symbol,
+        "trend": "UNKNOWN",
+        "momentum": "NEUTRAL",
+        "rsi": None,
+        "adx": None,
+        "ema20": None,
+        "ema50": None,
+        "macd": None,
+        "macd_signal": None,
+        "vwap": None,
+        "volume_ratio": None,
+        "support": None,
+        "resistance": None,
+        "last": None,
+        "score": 0,
+        "reasons": [],
+    }
+
+    df5 = add_indicators(
+        fetch_ohlcv(
+            symbol,
+            "FIVE_MINUTE",
+            5
+        )
+    )
+
+    if df5.empty:
+        return result
+
+    row = df5.iloc[-1]
+
+    last = num(row.get("close"))
+
+    result["last"] = last
+    result["rsi"] = num(row.get("RSI"))
+    result["adx"] = num(row.get("ADX"))
+    result["ema20"] = num(row.get("EMA20"))
+    result["ema50"] = num(row.get("EMA50"))
+    result["macd"] = num(row.get("MACD"))
+    result["macd_signal"] = num(
+        row.get("MACD_SIGNAL")
+    )
+    result["vwap"] = num(row.get("VWAP"))
+
+    if (
+        "volume" in df5.columns and
+        num(row.get("volume")) is not None and
+        num(row.get("VOL_AVG20")) not in [None, 0]
+    ):
+        result["volume_ratio"] = (
+            num(row.get("volume")) /
+            num(row.get("VOL_AVG20"))
+        )
+
+    recent = df5.tail(30)
+
+    result["support"] = num(
+        recent["low"].min()
+    )
+
+    result["resistance"] = num(
+        recent["high"].max()
+    )
+
+    score = 0
+
+    if (
+        result["ema20"] is not None and
+        result["ema50"] is not None
+    ):
+        if last > result["ema20"] > result["ema50"]:
+            score += 2
+            result["reasons"].append(
+                "Price EMA20 aur EMA50 ke upar hai."
+            )
+
+        elif last < result["ema20"] < result["ema50"]:
+            score -= 2
+            result["reasons"].append(
+                "Price EMA20 aur EMA50 ke neeche hai."
+            )
+
+    if result["vwap"] is not None:
+        if last > result["vwap"]:
+            score += 1
+            result["reasons"].append(
+                "Price VWAP ke upar hai."
+            )
+        elif last < result["vwap"]:
+            score -= 1
+            result["reasons"].append(
+                "Price VWAP ke neeche hai."
+            )
+
+    if (
+        result["macd"] is not None and
+        result["macd_signal"] is not None
+    ):
+        if result["macd"] > result["macd_signal"]:
+            score += 1
+            result["reasons"].append(
+                "MACD bullish side par hai."
+            )
+        else:
+            score -= 1
+            result["reasons"].append(
+                "MACD bearish side par hai."
+            )
+
+    if result["rsi"] is not None:
+        if result["rsi"] >= 60:
+            score += 1
+            result["momentum"] = "BULLISH"
+        elif result["rsi"] <= 40:
+            score -= 1
+            result["momentum"] = "BEARISH"
+
+    if (
+        result["adx"] is not None and
+        result["adx"] >= 20
+    ):
+        result["reasons"].append(
+            f"ADX {result['adx']:.1f}, trend strength active."
+        )
+
+    if result["volume_ratio"] is not None:
+        if result["volume_ratio"] >= 1.3:
+            result["reasons"].append(
+                "Volume average se significantly higher hai."
+            )
+
+    result["score"] = score
+
+    if score >= 3:
+        result["trend"] = "BULLISH"
+    elif score <= -3:
+        result["trend"] = "BEARISH"
+    else:
+        result["trend"] = "SIDEWAYS"
+
+    return result
+
+
+# =========================================================
+# OPTION IDEA BUILDER
+# =========================================================
+
+def nearest_option(chain, spot, side):
+    if chain.empty or spot is None:
+        return None
+
+    type_col = None
+
+    for c in [
+        "option_type",
+        "optionType",
+        "optionTypeName",
+    ]:
+        if c in chain.columns:
+            type_col = c
+            break
+
+    strike_col = None
+
+    for c in [
+        "strike",
+        "strikePrice",
+        "strike_price",
+    ]:
+        if c in chain.columns:
+            strike_col = c
+            break
+
+    if type_col is None or strike_col is None:
+        return None
+
+    work = chain.copy()
+
+    types = (
+        work[type_col]
+        .astype(str)
+        .str.upper()
+    )
+
+    work = work[
+        types.str.contains(side)
+    ].copy()
+
+    if work.empty:
+        return None
+
+    work["_strike"] = pd.to_numeric(
+        work[strike_col],
+        errors="coerce"
+    )
+
+    work = work.dropna(
+        subset=["_strike"]
+    )
+
+    if work.empty:
+        return None
+
+    work["_distance"] = (
+        work["_strike"] - spot
+    ).abs()
+
+    return work.sort_values(
+        "_distance"
+    ).iloc[0]
+
+
+def option_ltp(row):
+    return num(
+        first_value(
+            row,
+            [
+                "ltp",
+                "LTP",
+                "lastTradedPrice",
+                "last_price",
+            ]
+        )
+    )
+
+
+def make_trade_idea(
+    market,
+    symbol,
+    instrument="INDEX",
+    option_side=None,
+    expiry=None,
+    chain=None,
+):
+    last = market.get("last")
+
+    if last is None:
+        return None
+
+    bullish = market["score"] >= 3
+    bearish = market["score"] <= -3
+
+    if not bullish and not bearish:
+        return None
+
+    direction = "BUY" if bullish else "SELL"
+
+    if bullish:
+        entry = last
+        sl = (
+            market["support"]
+            if market["support"] and
+            market["support"] < entry
+            else entry * 0.997
+        )
+
+        risk = entry - sl
+
+        target1 = entry + risk * 1.5
+        target2 = entry + risk * 2.5
+
+    else:
+        entry = last
+        sl = (
+            market["resistance"]
+            if market["resistance"] and
+            market["resistance"] > entry
+            else entry * 1.003
+        )
+
+        risk = sl - entry
+
+        target1 = entry - risk * 1.5
+        target2 = entry - risk * 2.5
+
+    if risk <= 0:
+        return None
+
+    idea = {
+        "segment": instrument,
+        "symbol": symbol,
+        "action": direction,
+        "entry": entry,
+        "sl": sl,
+        "target1": target1,
+        "target2": target2,
+        "risk_reward": 1.5,
+        "confidence": min(
+            95,
+            max(
+                70,
+                70 + abs(market["score"]) * 5
+            )
+        ),
+        "holding": (
+            "Intraday"
+            if market_open()
+            else "Next Session"
+        ),
+        "expiry": expiry,
+        "option": None,
+        "why": " ".join(
+            market["reasons"][:5]
+        ),
+        "invalidation": (
+            f"Price {'below' if bullish else 'above'} "
+            f"SL level sustain kare."
+        ),
+    }
+
+    # Option selection
+    if (
+        instrument == "INDEX OPTION" and
+        chain is not None and
+        not chain.empty
+    ):
+        side = "CE" if bullish else "PE"
+
+        selected = nearest_option(
+            chain,
+            last,
+            side
+        )
+
+        if selected is not None:
+            strike = first_value(
+                selected,
+                [
+                    "strike",
+                    "strikePrice",
+                    "strike_price",
+                ]
+            )
+
+            ltp = option_ltp(selected)
+
+            idea["option"] = side
+            idea["strike"] = strike
+            idea["option_ltp"] = ltp
+
+            if ltp is not None and ltp > 0:
+                idea["entry"] = ltp
+                idea["sl"] = ltp * 0.85
+                idea["target1"] = ltp * 1.20
+                idea["target2"] = ltp * 1.35
+
+            idea["why"] += (
+                f" Direction ke according {side} selection "
+                f"ki gayi hai, nearest ATM strike {strike}."
+            )
+
+    return idea
+
+
+# =========================================================
+# GEMINI
+# =========================================================
+
+def ask_gemini(ideas, market_data):
+    if not GEMINI_API_KEY:
+        return None
+
+    try:
+        from google import genai
+
+        client = genai.Client(
+            api_key=GEMINI_API_KEY
+        )
+
+        payload = {
+            "market": market_data,
+            "ideas": ideas,
+        }
+
+        prompt = f"""
+You are an Indian market research assistant for a PAPER TRADING ONLY
+application.
+
+Analyze the supplied market data.
+
+Do NOT invent prices, OI, news, Greeks or other data.
+
+For every supplied trade idea explain:
+1. Why the setup exists
+2. Trend confirmation
+3. Momentum
+4. Risk
+5. What invalidates it
+6. Whether it is intraday or next-session
+
+Return concise professional analysis.
+
+DATA:
+{json.dumps(payload, default=str)}
+"""
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+        )
+
+        return getattr(
+            response,
+            "text",
+            None
+        )
+
+    except Exception as e:
+        return f"AI explanation unavailable: {e}"
+
+
+# =========================================================
+# HEADER
+# =========================================================
+
+st.title("📊 AI Trading Expert Advisor")
+
+st.caption(
+    "Live/After-Market Research • Options • Equities • "
+    "Technical Analysis • Paper Trading Only"
+)
+
+h1, h2, h3, h4 = st.columns(4)
+
+with h1:
+    st.metric(
+        "Mode",
+        "PAPER ONLY"
+    )
+
+with h2:
+    st.metric(
+        "Market",
+        "OPEN" if market_open()
+        else "AFTER MARKET"
+    )
+
+with h3:
+    st.metric(
+        "Angel One",
+        "CONNECTED"
+        if telemetry is not None
+        else "NOT CONNECTED"
+    )
+
+with h4:
+    st.metric(
+        "AI",
+        "READY"
+        if GEMINI_API_KEY
+        else "DATA MODE"
+    )
+
+st.warning(
+    "PAPER TRADING ONLY — koi real order place nahi hoga."
+)
+
+# =========================================================
+# SIDEBAR
+# =========================================================
+
+st.sidebar.header("⚙️ Expert Advisor")
+
+old_underlying = st.session_state.get(
+    "underlying",
+    "NIFTY"
+)
+
+if old_underlying not in UNDERLYINGS:
+    old_underlying = "NIFTY"
+
+underlying = st.sidebar.selectbox(
+    "Underlying",
+    UNDERLYINGS,
+    index=UNDERLYINGS.index(
+        old_underlying
+    ),
+)
+
+st.session_state["underlying"] = underlying
+
 expiries = load_expiries(
     underlying
 )
 
-if not expiries:
-    st.sidebar.error(
-        "Expiry data unavailable"
-    )
-    selected_expiry = None
-else:
+selected_expiry = None
 
+if expiries:
     old_expiry = st.session_state.get(
         "expiry"
     )
@@ -433,390 +1238,193 @@ else:
         format_func=expiry_label,
     )
 
-    st.session_state["expiry"] = selected_expiry
-
-
-# ============================================================
-# OPTION TYPE
-# ============================================================
-
-old_type = st.session_state.get(
-    "option_type",
-    "CE",
-)
-
-if old_type not in [
-    "CE",
-    "PE",
-    "BOTH",
-]:
-    old_type = "CE"
+    st.session_state["expiry"] = (
+        selected_expiry
+    )
+else:
+    st.sidebar.info(
+        "Expiry data unavailable"
+    )
 
 option_type = st.sidebar.selectbox(
     "Option Type",
     ["CE", "PE", "BOTH"],
-    index=[
-        "CE",
-        "PE",
-        "BOTH",
-    ].index(old_type),
 )
 
-st.session_state["option_type"] = option_type
-
-
-# ============================================================
-# REFRESH
-# ============================================================
-
 if st.sidebar.button(
-    "🔄 Refresh",
-    use_container_width=True,
+    "🔄 Refresh Data",
+    use_container_width=True
 ):
     st.cache_data.clear()
-    st.session_state["last_refresh"] = (
-        datetime.now()
-    )
     st.rerun()
 
+# =========================================================
+# CURRENT MARKET
+# =========================================================
 
-# ============================================================
-# SELECTED CONTRACT
-# ============================================================
+spot = get_spot(
+    underlying
+)
 
-st.subheader("📌 Selected Contract")
+st.subheader(
+    "📌 Current Market"
+)
 
-c1, c2, c3, c4 = st.columns(4)
+m1, m2, m3, m4 = st.columns(4)
 
-with c1:
+with m1:
     st.metric(
         "Underlying",
-        underlying,
+        underlying
     )
 
-with c2:
+with m2:
+    st.metric(
+        "LTP",
+        fmt(spot)
+    )
+
+with m3:
     st.metric(
         "Expiry",
         expiry_label(
             selected_expiry
         )
         if selected_expiry
-        else "-",
+        else "-"
     )
 
-with c3:
-    st.metric(
-        "Option",
-        option_type,
-    )
-
-with c4:
+with m4:
     st.metric(
         "Session",
         "LIVE"
         if market_open()
-        else "AFTER MARKET",
+        else "AFTER MARKET"
     )
 
+# =========================================================
+# MARKET ANALYSIS
+# =========================================================
 
-# ============================================================
-# SPOT
-# ============================================================
-
-SPOT_TOKENS = {
-    "NIFTY": ("NSE", "99926000"),
-    "BANKNIFTY": ("NSE", "99926009"),
-    "SENSEX": ("BSE", "99919000"),
-}
-
-
-def get_spot(symbol):
-
-    if telemetry is None:
-        return None
-
-    exchange, token = SPOT_TOKENS.get(
-        symbol,
-        ("NSE", None),
-    )
-
-    if token is None:
-        return None
-
-    try:
-        result = telemetry.get_live_ltp(
-            exchange,
-            symbol,
-            token,
-        )
-
-        if isinstance(result, dict):
-
-            if result.get("status"):
-
-                return sf(
-                    result.get("ltp")
-                )
-
-    except Exception:
-        pass
-
-    return None
-
-
-spot = get_spot(
+market = analyze_market(
     underlying
 )
 
-
-# ============================================================
-# SPOT DISPLAY
-# ============================================================
-
-st.subheader("📈 Underlying")
-
-s1, s2, s3 = st.columns(3)
-
-with s1:
-    st.metric(
-        "LTP",
-        fmt(spot),
-    )
-
-with s2:
-
-    if spot:
-        atm = round(
-            spot / 50
-        ) * 50
-        st.metric(
-            "ATM Reference",
-            fmt(atm, 0),
-        )
-    else:
-        st.metric(
-            "ATM Reference",
-            "-",
-        )
-
-with s3:
-    st.metric(
-        "Expiry Count",
-        len(expiries),
-    )
-
-
-# ============================================================
-# OPTION CONTRACTS
-# ============================================================
-
-@st.cache_data(ttl=120, show_spinner=False)
-def load_contracts(
-    symbol,
-    expiry,
-):
-
-    if options is None or not expiry:
-        return pd.DataFrame()
-
-    try:
-        return options.get_option_contracts(
-            underlying=symbol,
-            expiry_date=expiry,
-        )
-    except Exception:
-        return pd.DataFrame()
-
-
-contracts = load_contracts(
-    underlying,
-    selected_expiry,
+st.subheader(
+    "📈 Market Intelligence"
 )
 
+a1, a2, a3, a4 = st.columns(4)
 
-# ============================================================
-# NEAR ATM
-# ============================================================
-
-if (
-    spot is not None
-    and not contracts.empty
-):
-
-    try:
-
-        near_atm = (
-            options.get_near_atm_contracts(
-                underlying=underlying,
-                expiry_date=selected_expiry,
-                spot_price=spot,
-                strikes_each_side=5,
-            )
-        )
-
-    except Exception:
-        near_atm = contracts.copy()
-
-else:
-    near_atm = contracts.copy()
-
-
-# ============================================================
-# FILTER
-# ============================================================
-
-if not near_atm.empty:
-
-    if option_type in [
-        "CE",
-        "PE",
-    ]:
-
-        near_atm = near_atm[
-            near_atm[
-                "option_type"
-            ]
-            .astype(str)
-            .str.upper()
-            == option_type
-        ].copy()
-
-
-# ============================================================
-# LIVE OPTION QUOTES
-# ============================================================
-
-if (
-    options is not None
-    and not near_atm.empty
-):
-
-    try:
-        chain = options.get_market_quote(
-            near_atm
-        )
-    except Exception:
-        chain = near_atm.copy()
-
-else:
-    chain = pd.DataFrame()
-
-
-# ============================================================
-# OPTION CHAIN
-# ============================================================
-
-st.subheader("⛓️ Option Chain")
-
-if chain.empty:
-
-    st.info(
-        "Option chain data unavailable."
+with a1:
+    st.metric(
+        "Trend",
+        market["trend"]
     )
 
-else:
-
-    show_cols = [
-        "symbol",
-        "strike",
-        "option_type",
-        "expiry_normalized",
-        "token",
-        "ltp",
-        "open",
-        "high",
-        "low",
-        "close",
-        "tradeVolume",
-        "opnInterest",
-    ]
-
-    cols = [
-        c for c in show_cols
-        if c in chain.columns
-    ]
-
-    display = chain[cols].copy()
-
-    if "strike" in display.columns:
-        display["strike"] = pd.to_numeric(
-            display["strike"],
-            errors="coerce",
-        )
-
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True,
+with a2:
+    st.metric(
+        "Momentum",
+        market["momentum"]
     )
 
+with a3:
+    st.metric(
+        "RSI",
+        fmt(market["rsi"], 1)
+    )
 
-# ============================================================
-# PCR
-# ============================================================
+with a4:
+    st.metric(
+        "ADX",
+        fmt(market["adx"], 1)
+    )
 
-def calculate_pcr(df):
+a5, a6, a7, a8 = st.columns(4)
 
-    if (
-        df is None
-        or df.empty
-        or "opnInterest"
-        not in df.columns
-        or "option_type"
-        not in df.columns
-    ):
-        return None
+with a5:
+    st.metric(
+        "EMA20",
+        fmt(market["ema20"])
+    )
 
-    work = df.copy()
+with a6:
+    st.metric(
+        "EMA50",
+        fmt(market["ema50"])
+    )
 
-    work["opnInterest"] = pd.to_numeric(
-        work["opnInterest"],
-        errors="coerce",
-    ).fillna(0)
+with a7:
+    st.metric(
+        "VWAP",
+        fmt(market["vwap"])
+    )
 
-    ce = work.loc[
-        work["option_type"].eq("CE"),
-        "opnInterest",
-    ].sum()
+with a8:
+    st.metric(
+        "Volume Ratio",
+        fmt(market["volume_ratio"], 2)
+    )
 
-    pe = work.loc[
-        work["option_type"].eq("PE"),
-        "opnInterest",
-    ].sum()
+# =========================================================
+# SUPPORT / RESISTANCE
+# =========================================================
 
-    if ce <= 0:
-        return None
+r1, r2 = st.columns(2)
 
-    return pe / ce
+with r1:
+    st.metric(
+        "Support",
+        fmt(market["support"])
+    )
 
+with r2:
+    st.metric(
+        "Resistance",
+        fmt(market["resistance"])
+    )
+
+if market["reasons"]:
+    st.markdown("### Current Analysis")
+
+    for reason in market["reasons"]:
+        st.write("• " + reason)
+
+# =========================================================
+# OPTIONS
+# =========================================================
+
+chain = pd.DataFrame()
+
+if selected_expiry:
+    chain, all_contracts = get_chain(
+        underlying,
+        selected_expiry,
+        spot
+    )
 
 pcr = calculate_pcr(
     chain
 )
 
-
-# ============================================================
-# OPTIONS INTELLIGENCE
-# ============================================================
-
 st.subheader(
-    "📊 Options Intelligence"
+    "🧮 Options Intelligence"
 )
 
-o1, o2, o3, o4 = st.columns(4)
+o1, o2, o3 = st.columns(3)
 
 with o1:
     st.metric(
         "PCR",
-        f"{pcr:.2f}"
+        fmt(pcr, 2)
         if pcr is not None
-        else "Unavailable",
+        else "Unavailable"
     )
 
 with o2:
     st.metric(
         "Contracts",
-        len(chain),
+        len(chain)
     )
 
 with o3:
@@ -826,575 +1434,368 @@ with o3:
             selected_expiry
         )
         if selected_expiry
-        else "-",
+        else "-"
     )
 
-with o4:
-    st.metric(
-        "Spot",
-        fmt(spot),
-    )
-
-
-# ============================================================
-# GREEKS
-# ============================================================
-
-st.subheader("🧮 Option Greeks")
-
-if (
-    options is None
-    or not selected_expiry
-):
-
-    st.info(
-        "Greeks unavailable."
-    )
-
-else:
-
-    try:
-
-        greek_rows = (
-            options.get_option_greeks(
-                underlying,
-                selected_expiry,
-            )
-        )
-
-        greek_df = pd.DataFrame(
-            greek_rows or []
-        )
-
-        if greek_df.empty:
-            st.info(
-                "Greeks data unavailable."
-            )
-        else:
-
-            greek_cols = [
-                "tradingSymbol",
-                "symbol",
-                "strikePrice",
-                "optionType",
-                "delta",
-                "gamma",
-                "theta",
-                "vega",
-                "impliedVolatility",
-                "tradeVolume",
-            ]
-
-            cols = [
-                c for c in greek_cols
-                if c in greek_df.columns
-            ]
-
-            st.dataframe(
-                greek_df[cols]
-                if cols
-                else greek_df,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    except Exception as e:
-
-        st.info(
-            f"Greeks unavailable: {e}"
-        )
-
-
-# ============================================================
-# OI BUILDUP
-# ============================================================
-
-st.subheader("📌 OI Buildup")
-
-if options is None:
-
-    st.info(
-        "Options engine unavailable."
-    )
-
-else:
-
-    oi_tabs = st.tabs([
-        "Long Built Up",
-        "Short Built Up",
-        "Short Covering",
-        "Long Unwinding",
-    ])
-
-    oi_types = [
-        "Long Built Up",
-        "Short Built Up",
-        "Short Covering",
-        "Long Unwinding",
+if not chain.empty:
+    display_cols = [
+        "symbol",
+        "strike",
+        "option_type",
+        "expiry_normalized",
+        "ltp",
+        "tradeVolume",
+        "opnInterest",
     ]
 
-    for tab, oi_type in zip(
-        oi_tabs,
-        oi_types,
-    ):
-
-        with tab:
-
-            try:
-
-                rows = options.get_oi_buildup(
-                    expiry_type="NEAR",
-                    data_type=oi_type,
-                )
-
-                df = pd.DataFrame(
-                    rows or []
-                )
-
-                if df.empty:
-                    st.info(
-                        "Data unavailable."
-                    )
-                else:
-                    st.dataframe(
-                        df,
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-            except Exception:
-                st.info(
-                    "OI buildup data unavailable."
-                )
-
-
-# ============================================================
-# TECHNICAL ANALYSIS
-# ============================================================
-
-st.subheader(
-    "📈 Technical Analysis"
-)
-
-TECH_TOKENS = {
-    "NIFTY": (
-        "NSE",
-        "99926000",
-    ),
-    "BANKNIFTY": (
-        "NSE",
-        "99926009",
-    ),
-}
-
-
-@st.cache_data(ttl=120, show_spinner=False)
-def technical_data(
-    symbol,
-):
-
-    if telemetry is None:
-        return None
-
-    if symbol not in TECH_TOKENS:
-        return None
-
-    exchange, token = TECH_TOKENS[
-        symbol
+    cols = [
+        c for c in display_cols
+        if c in chain.columns
     ]
 
-    try:
-
-        df = telemetry.fetch_ohlcv(
-            exchange=exchange,
-            token=token,
-            interval="FIVE_MINUTE",
-            days=5,
+    if option_type in ["CE", "PE"]:
+        type_col = (
+            "option_type"
+            if "option_type" in chain.columns
+            else None
         )
 
-        if df.empty:
-            return None
+        if type_col:
+            view = chain[
+                chain[type_col]
+                .astype(str)
+                .str.upper()
+                .eq(option_type)
+            ]
+        else:
+            view = chain
+    else:
+        view = chain
 
-        rsi = telemetry.calculate_rsi(
-            df["close"]
+    if cols:
+        st.dataframe(
+            view[cols],
+            use_container_width=True,
+            hide_index=True
         )
 
-        atr = telemetry.calculate_atr(
-            df
-        )
+# =========================================================
+# TRADE IDEAS
+# =========================================================
 
-        ema9 = telemetry.calculate_ema(
-            df["close"],
-            9,
-        )
-
-        ema21 = telemetry.calculate_ema(
-            df["close"],
-            21,
-        )
-
-        ema50 = telemetry.calculate_ema(
-            df["close"],
-            50,
-        )
-
-        adx = telemetry.calculate_adx(
-            df
-        )
-
-        vwap = telemetry.calculate_vwap(
-            df
-        )
-
-        supertrend = (
-            telemetry.calculate_supertrend(
-                df
-            )
-        )
-
-        last = df.iloc[-1]
-
-        return {
-            "close": sf(
-                last["close"]
-            ),
-            "rsi": sf(
-                rsi.iloc[-1]
-            ),
-            "atr": sf(
-                atr.iloc[-1]
-            ),
-            "ema9": sf(
-                ema9.iloc[-1]
-            ),
-            "ema21": sf(
-                ema21.iloc[-1]
-            ),
-            "ema50": sf(
-                ema50.iloc[-1]
-            ),
-            "adx": sf(
-                adx.iloc[-1]
-            ),
-            "vwap": sf(
-                vwap.iloc[-1]
-            ),
-            "supertrend": (
-                "BULLISH"
-                if supertrend.iloc[-1] == 1
-                else "BEARISH"
-            ),
-        }
-
-    except Exception:
-        return None
-
-
-tech = technical_data(
-    underlying
-)
-
-
-if tech is None:
-
-    st.info(
-        "Technical data unavailable."
-    )
-
-else:
-
-    t1, t2, t3, t4, t5, t6 = (
-        st.columns(6)
-    )
-
-    with t1:
-        st.metric(
-            "RSI",
-            fmt(tech["rsi"]),
-        )
-
-    with t2:
-        st.metric(
-            "ADX",
-            fmt(tech["adx"]),
-        )
-
-    with t3:
-        st.metric(
-            "VWAP",
-            fmt(tech["vwap"]),
-        )
-
-    with t4:
-        st.metric(
-            "EMA 9",
-            fmt(tech["ema9"]),
-        )
-
-    with t5:
-        st.metric(
-            "EMA 21",
-            fmt(tech["ema21"]),
-        )
-
-    with t6:
-        st.metric(
-            "Trend",
-            tech["supertrend"],
-        )
-
-
-# ============================================================
-# EXPERT ADVISOR
-# ============================================================
+st.divider()
 
 st.subheader(
-    "🤖 Expert Advisor"
+    "🎯 AI Trade Ideas"
 )
-
-signal = "WAIT"
-confidence = 0
-reasons = []
-
-
-if tech is not None:
-
-    if (
-        tech["ema9"] is not None
-        and tech["ema21"] is not None
-    ):
-
-        if tech["ema9"] > tech["ema21"]:
-            reasons.append(
-                "Short EMA above EMA21"
-            )
-        else:
-            reasons.append(
-                "Short EMA below EMA21"
-            )
-
-    if (
-        tech["rsi"] is not None
-    ):
-
-        if tech["rsi"] > 60:
-            reasons.append(
-                "RSI bullish zone"
-            )
-        elif tech["rsi"] < 40:
-            reasons.append(
-                "RSI bearish zone"
-            )
-        else:
-            reasons.append(
-                "RSI neutral"
-            )
-
-    if (
-        tech["adx"] is not None
-    ):
-
-        if tech["adx"] >= 25:
-            reasons.append(
-                "Trend strength elevated"
-            )
-        else:
-            reasons.append(
-                "Trend strength weak/range"
-            )
-
-    if tech["supertrend"] == "BULLISH":
-        signal = "BULLISH WATCH"
-    elif tech["supertrend"] == "BEARISH":
-        signal = "BEARISH WATCH"
-
-    confidence = 50
-
-    if pcr is not None:
-        confidence += 10
-
-    if tech["adx"] is not None:
-        confidence += 10
-
-else:
-
-    reasons.append(
-        "Technical data unavailable"
-    )
-
-
-a1, a2, a3 = st.columns(3)
-
-with a1:
-    st.metric(
-        "EA Signal",
-        signal,
-    )
-
-with a2:
-    st.metric(
-        "Confidence",
-        f"{min(confidence, 100)}%",
-    )
-
-with a3:
-    st.metric(
-        "Execution",
-        "DISABLED",
-    )
 
 st.write(
-    "**Analysis:** "
-    + (
-        " | ".join(reasons)
-        if reasons
-        else "Waiting for data"
-    )
+    "Trade Ideas button market ko dobara analyze karke "
+    "available valid setups banayega."
 )
 
-
-# ============================================================
-# AFTER MARKET
-# ============================================================
-
-st.subheader(
-    "🌙 After-Market Preparation"
-)
-
-if market_open():
-
-    st.info(
-        "Market open — live/paper analysis mode."
-    )
-
-else:
-
-    st.success(
-        "Market closed — After-Market Expert Advisor active."
-    )
-
-st.markdown(
-    f"""
-**Next-session preparation**
-
-- Underlying: **{underlying}**
-- Selected expiry: **{expiry_label(selected_expiry) if selected_expiry else "-"}**
-- Option side: **{option_type}**
-- Reference spot: **{fmt(spot)}**
-- Current EA state: **{signal}**
-
-### Pre-trade checklist
-
-☐ Trend confirmation  
-☐ Multi-timeframe confirmation  
-☐ Support / resistance  
-☐ RSI / ADX  
-☐ VWAP / EMA  
-☐ OI buildup  
-☐ PCR  
-☐ Delta / Gamma / Theta  
-☐ India VIX  
-☐ News / sentiment  
-☐ Risk / reward  
-☐ Expiry risk
-"""
-)
-
-
-# ============================================================
-# RISK
-# ============================================================
-
-st.subheader(
-    "🛡️ Risk Controls"
-)
-
-r1, r2, r3, r4 = st.columns(4)
-
-with r1:
-    st.metric(
-        "Paper Trading",
-        "ON",
-    )
-
-with r2:
-    st.metric(
-        "Max Daily Loss",
-        "₹2,000",
-    )
-
-with r3:
-    st.metric(
-        "Max Trades",
-        "5",
-    )
-
-with r4:
-    st.metric(
-        "Real Orders",
-        "OFF",
-    )
-
-
-# ============================================================
-# STATUS
-# ============================================================
-
-with st.expander(
-    "🔧 System Status"
+if st.button(
+    "🚀 GENERATE TRADE IDEAS",
+    type="primary",
+    use_container_width=True
 ):
 
-    st.write(
-        "Options Engine:",
-        "READY"
-        if options is not None
-        else "CHECK",
-    )
+    with st.spinner(
+        "Market data + technical setup analyze ho raha hai..."
+    ):
 
-    st.write(
-        "Telemetry Engine:",
-        "READY"
-        if telemetry is not None
-        else "CHECK",
-    )
+        ideas = []
 
-    st.write(
-        "Expiry Count:",
-        len(expiries),
-    )
+        # -------------------------------------------------
+        # 1. INDEX SPOT
+        # -------------------------------------------------
 
-    st.write(
-        "Selected Expiry:",
-        selected_expiry,
-    )
-
-    st.write(
-        "Market:",
-        "OPEN"
-        if market_open()
-        else "CLOSED",
-    )
-
-    if OptionsEngine is None:
-        st.error(
-            f"Options import error: "
-            f"{OPTIONS_ERROR}"
+        base_idea = make_trade_idea(
+            market,
+            underlying,
+            "INDEX",
+            expiry=selected_expiry,
+            chain=chain,
         )
 
-    if TelemetryEngine is None:
-        st.error(
-            f"Telemetry import error: "
-            f"{TELEMETRY_ERROR}"
+        if base_idea:
+            ideas.append(
+                base_idea
+            )
+
+        # -------------------------------------------------
+        # 2. INDEX OPTION
+        # -------------------------------------------------
+
+        option_idea = make_trade_idea(
+            market,
+            underlying,
+            "INDEX OPTION",
+            expiry=selected_expiry,
+            chain=chain,
         )
 
+        if option_idea:
+            ideas.append(
+                option_idea
+            )
 
-# ============================================================
-# FOOTER
-# ============================================================
+        # -------------------------------------------------
+        # 3. BANKNIFTY
+        # -------------------------------------------------
+
+        if underlying != "BANKNIFTY":
+
+            bank_market = analyze_market(
+                "BANKNIFTY"
+            )
+
+            bank_idea = make_trade_idea(
+                bank_market,
+                "BANKNIFTY",
+                "INDEX",
+            )
+
+            if bank_idea:
+                ideas.append(
+                    bank_idea
+                )
+
+        # -------------------------------------------------
+        # 4. NIFTY
+        # -------------------------------------------------
+
+        if underlying != "NIFTY":
+
+            nifty_market = analyze_market(
+                "NIFTY"
+            )
+
+            nifty_idea = make_trade_idea(
+                nifty_market,
+                "NIFTY",
+                "INDEX",
+            )
+
+            if nifty_idea:
+                ideas.append(
+                    nifty_idea
+                )
+
+        # -------------------------------------------------
+        # 5. SENSEX
+        # -------------------------------------------------
+
+        sensex_market = analyze_market(
+            "SENSEX"
+        )
+
+        sensex_idea = make_trade_idea(
+            sensex_market,
+            "SENSEX",
+            "INDEX",
+        )
+
+        if sensex_idea:
+            ideas.append(
+                sensex_idea
+            )
+
+        # Remove duplicates
+        unique = []
+
+        seen = set()
+
+        for idea in ideas:
+            key = (
+                idea["segment"],
+                idea["symbol"],
+                idea["action"],
+                idea.get("option"),
+                str(idea.get("strike")),
+            )
+
+            if key not in seen:
+                seen.add(key)
+                unique.append(idea)
+
+        ideas = unique[:5]
+
+    if not ideas:
+
+        st.warning(
+            "Current available data se koi sufficiently strong "
+            "setup confirm nahi hua. Fake trade generate nahi kiya gaya."
+        )
+
+    else:
+
+        st.success(
+            f"{len(ideas)} valid setup(s) generated."
+        )
+
+        # -------------------------------------------------
+        # DISPLAY IDEAS
+        # -------------------------------------------------
+
+        for i, idea in enumerate(
+            ideas,
+            start=1
+        ):
+
+            st.markdown(
+                f"""
+                <div class="trade-card">
+                <h3>Trade Idea {i} — {idea['symbol']}</h3>
+                <div class="small">
+                Segment: {idea['segment']} |
+                Holding: {idea['holding']}
+                </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            with c1:
+                st.metric(
+                    "Action",
+                    idea["action"]
+                )
+
+            with c2:
+                st.metric(
+                    "Confidence",
+                    f"{idea['confidence']:.0f}%"
+                )
+
+            with c3:
+                st.metric(
+                    "Entry",
+                    fmt(idea["entry"])
+                )
+
+            with c4:
+                st.metric(
+                    "Risk/Reward",
+                    f"1:{idea['risk_reward']:.1f}"
+                )
+
+            c5, c6, c7, c8 = st.columns(4)
+
+            with c5:
+                st.metric(
+                    "SL",
+                    fmt(idea["sl"])
+                )
+
+            with c6:
+                st.metric(
+                    "Target 1",
+                    fmt(idea["target1"])
+                )
+
+            with c7:
+                st.metric(
+                    "Target 2",
+                    fmt(idea["target2"])
+                )
+
+            with c8:
+                if idea.get("option"):
+                    label = (
+                        f"{idea['option']} "
+                        f"{idea.get('strike', '-')}"
+                    )
+                else:
+                    label = "SPOT"
+
+                st.metric(
+                    "Instrument",
+                    label
+                )
+
+            if idea.get("expiry"):
+                st.write(
+                    f"**Expiry:** "
+                    f"{expiry_label(idea['expiry'])}"
+                )
+
+            if idea.get("option_ltp") is not None:
+                st.write(
+                    f"**Option LTP:** "
+                    f"{fmt(idea['option_ltp'])}"
+                )
+
+            st.markdown(
+                f"""
+                <div class="reason">
+                <b>Why this trade:</b>
+                {idea['why']}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            st.write(
+                f"**Invalidation:** {idea['invalidation']}"
+            )
+
+            st.write(
+                "**Trailing SL:** T1 hit hone ke baad "
+                "SL ko cost/previous swing ke around trail karein."
+            )
+
+            st.divider()
+
+        # -------------------------------------------------
+        # GEMINI EXPLANATION
+        # -------------------------------------------------
+
+        if GEMINI_API_KEY:
+
+            with st.spinner(
+                "AI explanation prepare ho rahi hai..."
+            ):
+
+                ai_text = ask_gemini(
+                    ideas,
+                    {
+                        "underlying": underlying,
+                        "market_open": market_open(),
+                        "spot": spot,
+                        "trend": market["trend"],
+                        "momentum": market["momentum"],
+                        "rsi": market["rsi"],
+                        "adx": market["adx"],
+                        "ema20": market["ema20"],
+                        "ema50": market["ema50"],
+                        "vwap": market["vwap"],
+                        "pcr": pcr,
+                    }
+                )
+
+            if ai_text:
+                st.subheader(
+                    "🤖 AI Explanation"
+                )
+                st.write(ai_text)
+
+        else:
+            st.info(
+                "Gemini API key available nahi hai. "
+                "Current trade ideas real market-data/technical "
+                "analysis par based hain; fake AI text nahi banaya gaya."
+            )
+
+# =========================================================
+# STATUS
+# =========================================================
 
 st.divider()
 
 st.caption(
-    "AI Trading Expert Advisor • "
-    "PAPER TRADING ONLY • NO REAL ORDERS"
+    "Paper Trading Only • No real orders • "
+    "Market data unavailable hone par fabricated trade nahi banaya jata."
 )
