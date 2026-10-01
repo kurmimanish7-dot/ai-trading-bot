@@ -729,54 +729,80 @@ SPOT_TOKENS = {
 # =========================================================
 
 def get_spot(symbol):
+    # 1) Market open: live LTP try karo
+    if telemetry is not None:
+        exchange, token = SPOT_TOKENS.get(symbol, ("NSE", None))
 
-    if telemetry is None:
-        return None
-
-    exchange, token = SPOT_TOKENS.get(
-        symbol,
-        ("NSE", None)
-    )
-
-    if token is None:
-        return None
-
-    try:
-
-        result = telemetry.get_live_ltp(
-            exchange,
-            symbol,
-            token,
-        )
-
-        if isinstance(result, dict):
-
-            if result.get("status"):
-                return num(
-                    result.get("ltp")
+        if token is not None:
+            try:
+                result = telemetry.get_live_ltp(
+                    exchange,
+                    symbol,
+                    token
                 )
 
-            for key in [
-                "ltp",
-                "data",
-            ]:
+                if isinstance(result, dict):
+                    # Direct LTP
+                    for key in ["ltp", "LTP"]:
+                        value = num(result.get(key))
+                        if value is not None and value > 0:
+                            return value
 
-                value = result.get(key)
+                    # Nested data
+                    data = result.get("data")
 
-                if isinstance(value, dict):
+                    if isinstance(data, dict):
+                        for key in ["ltp", "LTP"]:
+                            value = num(data.get(key))
+                            if value is not None and value > 0:
+                                return value
 
-                    v = (
-                        value.get("ltp")
-                        or value.get("LTP")
-                    )
+                else:
+                    value = num(result)
+                    if value is not None and value > 0:
+                        return value
 
-                    if v is not None:
-                        return num(v)
+            except Exception:
+                pass
 
-        return num(result)
+    # 2) Market closed / live LTP unavailable:
+    #    latest 5-minute candle ka CLOSE use karo
+    try:
+        df = fetch_ohlcv(
+            symbol,
+            "FIVE_MINUTE",
+            5
+        )
+
+        if not df.empty and "close" in df.columns:
+            value = num(df["close"].iloc[-1])
+
+            if value is not None and value > 0:
+                return value
 
     except Exception:
-        return None
+        pass
+
+    # 3) Final fallback:
+    #    latest available daily candle
+    try:
+        df = fetch_ohlcv(
+            symbol,
+            "ONE_DAY",
+            10
+        )
+
+        if not df.empty and "close" in df.columns:
+            value = num(df["close"].iloc[-1])
+
+            if value is not None and value > 0:
+                return value
+
+    except Exception:
+        pass
+
+    # 4) Kuch bhi reliable data nahi mila
+    return None
 
 # =========================================================
 # EXPIRIES
