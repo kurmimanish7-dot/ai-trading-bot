@@ -11,10 +11,6 @@ class TelemetryEngine:
     No real orders.
     """
 
-    # =========================================================
-    # INIT
-    # =========================================================
-
     def __init__(
         self,
         api_key,
@@ -57,24 +53,58 @@ class TelemetryEngine:
             self.feed_token = None
 
     # =========================================================
-    # NUMBER HELPER
+    # HELPERS
     # =========================================================
 
     @staticmethod
-    def _number(value):
+    def _number(value, default=None):
         try:
             if value is None:
-                return None
+                return default
+
+            if isinstance(value, pd.Series):
+                if value.empty:
+                    return default
+                value = value.iloc[-1]
+
+            if isinstance(value, pd.DataFrame):
+                if value.empty:
+                    return default
+                value = value.iloc[-1, -1]
 
             value = float(value)
 
             if pd.isna(value):
-                return None
+                return default
 
             return value
 
         except Exception:
-            return None
+            return default
+
+    @staticmethod
+    def _last_value(series, default=None):
+        try:
+            if series is None:
+                return default
+
+            s = pd.to_numeric(
+                series,
+                errors="coerce"
+            )
+
+            if s.empty:
+                return default
+
+            value = s.iloc[-1]
+
+            if pd.isna(value):
+                return default
+
+            return float(value)
+
+        except Exception:
+            return default
 
     # =========================================================
     # LIVE LTP
@@ -123,10 +153,7 @@ class TelemetryEngine:
                     data.get("close")
                 )
 
-                if (
-                    ltp is not None
-                    and ltp > 0
-                ):
+                if ltp is not None and ltp > 0:
                     return {
                         "status": True,
                         "exchange": exchange,
@@ -308,7 +335,7 @@ class TelemetryEngine:
             return pd.DataFrame()
 
     # =========================================================
-    # LAST HISTORICAL CANDLE
+    # LAST CANDLE
     # =========================================================
 
     def get_last_candle(
@@ -326,10 +353,7 @@ class TelemetryEngine:
                 days=days,
             )
 
-            if (
-                df is None
-                or df.empty
-            ):
+            if df is None or df.empty:
                 return None
 
             row = df.iloc[-1]
@@ -460,9 +484,7 @@ class TelemetryEngine:
             errors="coerce",
         )
 
-        previous_close = (
-            close.shift(1)
-        )
+        previous_close = close.shift(1)
 
         tr1 = high - low
 
@@ -494,9 +516,8 @@ class TelemetryEngine:
     # =========================================================
 
     @staticmethod
-    def calculate_vwap(
-        df,
-    ):
+    def calculate_vwap(df):
+
         high = pd.to_numeric(
             df["high"],
             errors="coerce",
@@ -512,16 +533,16 @@ class TelemetryEngine:
             errors="coerce",
         )
 
-        if "volume" in df.columns:
-            volume = pd.to_numeric(
-                df["volume"],
-                errors="coerce",
-            ).fillna(0)
-        else:
-            volume = pd.Series(
-                0,
-                index=df.index,
-            )
+        volume = pd.to_numeric(
+            df.get(
+                "volume",
+                pd.Series(
+                    0,
+                    index=df.index,
+                )
+            ),
+            errors="coerce",
+        ).fillna(0)
 
         typical_price = (
             high + low + close
@@ -591,9 +612,7 @@ class TelemetryEngine:
             & (down_move > 0)
         ] = down_move
 
-        previous_close = (
-            close.shift(1)
-        )
+        previous_close = close.shift(1)
 
         true_range = pd.concat(
             [
@@ -640,19 +659,19 @@ class TelemetryEngine:
             )
         )
 
+        denominator = (
+            plus_di + minus_di
+        ).replace(
+            0,
+            pd.NA,
+        )
+
         dx = (
             100
             * (
-                plus_di
-                - minus_di
+                plus_di - minus_di
             ).abs()
-            / (
-                plus_di
-                + minus_di
-            ).replace(
-                0,
-                pd.NA,
-            )
+            / denominator
         )
 
         return dx.ewm(
@@ -666,9 +685,8 @@ class TelemetryEngine:
     # =========================================================
 
     @staticmethod
-    def calculate_macd(
-        series,
-    ):
+    def calculate_macd(series):
+
         close = pd.to_numeric(
             series,
             errors="coerce",
@@ -702,33 +720,30 @@ class TelemetryEngine:
         )
 
     # =========================================================
-    # INDICATORS
+    # INDICATOR ENGINE
+    #
+    # IMPORTANT:
+    # Existing offline_market_simulator.py expects
+    # a DICTIONARY of latest indicator values.
     # =========================================================
 
     @staticmethod
-    def calculate_indicators(
-        df,
-    ):
-        """
-        Compatible with existing offline_market_simulator.py.
-
-        The simulator expects:
-            indicators["ltp"]
-
-        Therefore this method explicitly creates
-        the ltp column from the latest close.
-        """
+    def calculate_indicators(df):
 
         if (
             df is None
+            or not isinstance(
+                df,
+                pd.DataFrame
+            )
             or df.empty
         ):
-            return pd.DataFrame()
+            return {}
 
         work = df.copy()
 
         # -----------------------------------------------------
-        # Normalize column names
+        # Normalize names
         # -----------------------------------------------------
 
         rename = {}
@@ -745,9 +760,7 @@ class TelemetryEngine:
                 "datetime",
                 "date",
             ]:
-                rename[column] = (
-                    "timestamp"
-                )
+                rename[column] = "timestamp"
 
             elif name in [
                 "open",
@@ -791,57 +804,33 @@ class TelemetryEngine:
         )
 
         # -----------------------------------------------------
-        # If LTP exists but close doesn't,
-        # use LTP as close.
+        # Close / LTP compatibility
         # -----------------------------------------------------
 
         if (
             "close" not in work.columns
             and "ltp" in work.columns
         ):
-            work["close"] = (
-                work["ltp"]
-            )
+            work["close"] = work["ltp"]
 
-        required = [
-            "open",
-            "high",
-            "low",
-            "close",
-        ]
+        if "close" not in work.columns:
+            return {}
 
-        for column in required:
+        # -----------------------------------------------------
+        # OHLC fallback
+        # -----------------------------------------------------
 
-            if column not in work.columns:
+        if "open" not in work.columns:
+            work["open"] = work["close"]
 
-                # Graceful fallback for
-                # simple close/ltp datasets.
-                if (
-                    column == "open"
-                    and "close" in work.columns
-                ):
-                    work["open"] = (
-                        work["close"]
-                    )
+        if "high" not in work.columns:
+            work["high"] = work["close"]
 
-                elif (
-                    column == "high"
-                    and "close" in work.columns
-                ):
-                    work["high"] = (
-                        work["close"]
-                    )
+        if "low" not in work.columns:
+            work["low"] = work["close"]
 
-                elif (
-                    column == "low"
-                    and "close" in work.columns
-                ):
-                    work["low"] = (
-                        work["close"]
-                    )
-
-                else:
-                    return pd.DataFrame()
+        if "volume" not in work.columns:
+            work["volume"] = 0
 
         # -----------------------------------------------------
         # Numeric conversion
@@ -852,75 +841,76 @@ class TelemetryEngine:
             "high",
             "low",
             "close",
-            "ltp",
             "volume",
         ]:
-
-            if column in work.columns:
-                work[column] = pd.to_numeric(
-                    work[column],
-                    errors="coerce",
-                )
-
-        # -----------------------------------------------------
-        # LTP compatibility
-        # -----------------------------------------------------
-
-        if "ltp" not in work.columns:
-
-            work["ltp"] = (
-                work["close"]
+            work[column] = pd.to_numeric(
+                work[column],
+                errors="coerce",
             )
 
-        else:
-
-            work["ltp"] = (
-                work["ltp"]
-                .fillna(
-                    work["close"]
-                )
-            )
-
-        # -----------------------------------------------------
-        # Volume
-        # -----------------------------------------------------
-
-        if "volume" not in work.columns:
-            work["volume"] = 0
-
-        work["volume"] = (
-            work["volume"]
-            .fillna(0)
+        work = work.dropna(
+            subset=[
+                "open",
+                "high",
+                "low",
+                "close",
+            ]
+        ).reset_index(
+            drop=True
         )
 
+        if work.empty:
+            return {}
+
         # -----------------------------------------------------
-        # EMA
+        # LTP
         # -----------------------------------------------------
 
-        work["ema9"] = (
+        work["ltp"] = work["close"]
+
+        # If actual LTP column existed, use it
+        # where valid.
+        if "ltp" in df.columns:
+            original_ltp = pd.to_numeric(
+                df["ltp"],
+                errors="coerce"
+            )
+
+            if len(original_ltp) == len(work):
+                original_ltp = (
+                    original_ltp
+                    .reset_index(drop=True)
+                )
+
+                work["ltp"] = (
+                    original_ltp
+                    .fillna(work["close"])
+                )
+
+        # -----------------------------------------------------
+        # Indicators
+        # -----------------------------------------------------
+
+        work["ema_9"] = (
             TelemetryEngine.calculate_ema(
                 work["close"],
                 9,
             )
         )
 
-        work["ema20"] = (
+        work["ema_21"] = (
             TelemetryEngine.calculate_ema(
                 work["close"],
-                20,
+                21,
             )
         )
 
-        work["ema50"] = (
+        work["ema_50"] = (
             TelemetryEngine.calculate_ema(
                 work["close"],
                 50,
             )
         )
-
-        # -----------------------------------------------------
-        # RSI
-        # -----------------------------------------------------
 
         work["rsi"] = (
             TelemetryEngine.calculate_rsi(
@@ -929,20 +919,12 @@ class TelemetryEngine:
             )
         )
 
-        # -----------------------------------------------------
-        # ATR
-        # -----------------------------------------------------
-
         work["atr"] = (
             TelemetryEngine.calculate_atr(
                 work,
                 14,
             )
         )
-
-        # -----------------------------------------------------
-        # ADX
-        # -----------------------------------------------------
 
         work["adx"] = (
             TelemetryEngine.calculate_adx(
@@ -951,19 +933,11 @@ class TelemetryEngine:
             )
         )
 
-        # -----------------------------------------------------
-        # VWAP
-        # -----------------------------------------------------
-
         work["vwap"] = (
             TelemetryEngine.calculate_vwap(
                 work
             )
         )
-
-        # -----------------------------------------------------
-        # MACD
-        # -----------------------------------------------------
 
         macd, signal, histogram = (
             TelemetryEngine.calculate_macd(
@@ -972,82 +946,360 @@ class TelemetryEngine:
         )
 
         work["macd"] = macd
+        work["macd_signal"] = signal
+        work["macd_hist"] = histogram
 
-        work["macd_signal"] = (
-            signal
+        # -----------------------------------------------------
+        # Latest values
+        # -----------------------------------------------------
+
+        latest = work.iloc[-1]
+
+        ltp = TelemetryEngine._number(
+            latest.get("ltp")
         )
 
-        work["macd_hist"] = (
-            histogram
+        close = TelemetryEngine._number(
+            latest.get("close")
         )
 
-        return work
+        ema_9 = TelemetryEngine._number(
+            latest.get("ema_9")
+        )
+
+        ema_21 = TelemetryEngine._number(
+            latest.get("ema_21")
+        )
+
+        ema_50 = TelemetryEngine._number(
+            latest.get("ema_50")
+        )
+
+        rsi = TelemetryEngine._number(
+            latest.get("rsi")
+        )
+
+        atr = TelemetryEngine._number(
+            latest.get("atr")
+        )
+
+        adx = TelemetryEngine._number(
+            latest.get("adx")
+        )
+
+        vwap = TelemetryEngine._number(
+            latest.get("vwap")
+        )
+
+        macd = TelemetryEngine._number(
+            latest.get("macd")
+        )
+
+        macd_signal = TelemetryEngine._number(
+            latest.get("macd_signal")
+        )
+
+        macd_hist = TelemetryEngine._number(
+            latest.get("macd_hist")
+        )
+
+        # -----------------------------------------------------
+        # Price vs VWAP
+        # -----------------------------------------------------
+
+        if (
+            close is not None
+            and vwap is not None
+        ):
+            if close > vwap:
+                price_vs_vwap = "ABOVE"
+            elif close < vwap:
+                price_vs_vwap = "BELOW"
+            else:
+                price_vs_vwap = "AT VWAP"
+        else:
+            price_vs_vwap = "UNKNOWN"
+
+        # -----------------------------------------------------
+        # EMA trend
+        # -----------------------------------------------------
+
+        if (
+            ema_9 is not None
+            and ema_21 is not None
+            and ema_50 is not None
+        ):
+            if (
+                ema_9 > ema_21
+                and ema_21 > ema_50
+            ):
+                ema_trend = "BULLISH"
+
+            elif (
+                ema_9 < ema_21
+                and ema_21 < ema_50
+            ):
+                ema_trend = "BEARISH"
+
+            else:
+                ema_trend = "MIXED"
+        else:
+            ema_trend = "UNKNOWN"
+
+        # -----------------------------------------------------
+        # Supertrend-style directional state
+        #
+        # This is a lightweight offline compatibility value.
+        # -----------------------------------------------------
+
+        if (
+            close is not None
+            and atr is not None
+        ):
+            upper = close + (
+                2.0 * atr
+            )
+
+            lower = close - (
+                2.0 * atr
+            )
+
+            if close > lower:
+                supertrend = "BULLISH"
+            elif close < upper:
+                supertrend = "BEARISH"
+            else:
+                supertrend = "NEUTRAL"
+        else:
+            supertrend = "UNKNOWN"
+
+        # -----------------------------------------------------
+        # Market regime
+        # -----------------------------------------------------
+
+        if (
+            ema_trend == "BULLISH"
+            and rsi is not None
+            and rsi >= 55
+            and adx is not None
+            and adx >= 20
+        ):
+            market_regime = "TRENDING BULLISH"
+
+        elif (
+            ema_trend == "BEARISH"
+            and rsi is not None
+            and rsi <= 45
+            and adx is not None
+            and adx >= 20
+        ):
+            market_regime = "TRENDING BEARISH"
+
+        elif (
+            adx is not None
+            and adx < 20
+        ):
+            market_regime = "RANGE / WEAK TREND"
+
+        else:
+            market_regime = "MIXED"
+
+        # -----------------------------------------------------
+        # Recent candles
+        # -----------------------------------------------------
+
+        recent_candles = []
+
+        recent = work.tail(5)
+
+        for _, row in recent.iterrows():
+
+            recent_candles.append({
+                "timestamp": str(
+                    row.get(
+                        "timestamp",
+                        ""
+                    )
+                ),
+                "open": TelemetryEngine._number(
+                    row.get("open")
+                ),
+                "high": TelemetryEngine._number(
+                    row.get("high")
+                ),
+                "low": TelemetryEngine._number(
+                    row.get("low")
+                ),
+                "close": TelemetryEngine._number(
+                    row.get("close")
+                ),
+                "volume": TelemetryEngine._number(
+                    row.get("volume"),
+                    0
+                ),
+            })
+
+        # -----------------------------------------------------
+        # Return DICTIONARY
+        #
+        # These names are required by the existing
+        # offline_market_simulator.py.
+        # -----------------------------------------------------
+
+        return {
+            "ltp": ltp,
+            "close": close,
+
+            "rsi": rsi,
+            "atr": atr,
+
+            "ema_9": ema_9,
+            "ema_21": ema_21,
+            "ema_50": ema_50,
+
+            "adx": adx,
+            "vwap": vwap,
+
+            "macd": macd,
+            "macd_signal": macd_signal,
+            "macd_hist": macd_hist,
+
+            "price_vs_vwap": price_vs_vwap,
+            "ema_trend": ema_trend,
+            "supertrend": supertrend,
+            "market_regime": market_regime,
+
+            "recent_candles": recent_candles,
+        }
 
     # =========================================================
     # BUILD PAYLOAD
     # =========================================================
 
     @staticmethod
-    def build_payload(
-        df,
-    ):
-        if (
-            df is None
-            or df.empty
-        ):
-            return {}
+    def build_payload(df):
 
         indicators = (
-            TelemetryEngine
-            .calculate_indicators(
+            TelemetryEngine.calculate_indicators(
                 df
             )
         )
 
-        if indicators.empty:
+        if not indicators:
             return {}
 
-        last = indicators.iloc[-1]
-
-        def value(column):
-            try:
-                result = float(
-                    last.get(column)
-                )
-
-                if pd.isna(result):
-                    return None
-
-                return result
-
-            except Exception:
-                return None
-
         return {
-            "timestamp": str(
-                last.get(
-                    "timestamp",
-                    "",
+            "timestamp": (
+                str(
+                    df.iloc[-1].get(
+                        "timestamp",
+                        ""
+                    )
                 )
+                if isinstance(
+                    df,
+                    pd.DataFrame
+                )
+                and not df.empty
+                else ""
             ),
-            "ltp": value("ltp"),
-            "open": value("open"),
-            "high": value("high"),
-            "low": value("low"),
-            "close": value("close"),
-            "volume": value("volume"),
-            "ema9": value("ema9"),
-            "ema20": value("ema20"),
-            "ema50": value("ema50"),
-            "rsi": value("rsi"),
-            "atr": value("atr"),
-            "adx": value("adx"),
-            "vwap": value("vwap"),
-            "macd": value("macd"),
-            "macd_signal": value(
+
+            "ltp": indicators.get(
+                "ltp"
+            ),
+
+            "open": (
+                TelemetryEngine._number(
+                    df.iloc[-1].get("open")
+                )
+                if not df.empty
+                else None
+            ),
+
+            "high": (
+                TelemetryEngine._number(
+                    df.iloc[-1].get("high")
+                )
+                if not df.empty
+                else None
+            ),
+
+            "low": (
+                TelemetryEngine._number(
+                    df.iloc[-1].get("low")
+                )
+                if not df.empty
+                else None
+            ),
+
+            "close": indicators.get(
+                "close"
+            ),
+
+            "volume": (
+                TelemetryEngine._number(
+                    df.iloc[-1].get(
+                        "volume"
+                    ),
+                    0
+                )
+                if not df.empty
+                else 0
+            ),
+
+            "ema9": indicators.get(
+                "ema_9"
+            ),
+
+            "ema20": indicators.get(
+                "ema_21"
+            ),
+
+            "ema50": indicators.get(
+                "ema_50"
+            ),
+
+            "rsi": indicators.get(
+                "rsi"
+            ),
+
+            "atr": indicators.get(
+                "atr"
+            ),
+
+            "adx": indicators.get(
+                "adx"
+            ),
+
+            "vwap": indicators.get(
+                "vwap"
+            ),
+
+            "macd": indicators.get(
+                "macd"
+            ),
+
+            "macd_signal": indicators.get(
                 "macd_signal"
             ),
-            "macd_hist": value(
+
+            "macd_hist": indicators.get(
                 "macd_hist"
+            ),
+
+            "price_vs_vwap": indicators.get(
+                "price_vs_vwap"
+            ),
+
+            "ema_trend": indicators.get(
+                "ema_trend"
+            ),
+
+            "supertrend": indicators.get(
+                "supertrend"
+            ),
+
+            "market_regime": indicators.get(
+                "market_regime"
             ),
         }
