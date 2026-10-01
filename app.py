@@ -29,26 +29,31 @@ st.markdown("""
     padding-right:.7rem!important;
     max-width:100%!important;
 }
+
 @media(max-width:768px){
     [data-testid="stHorizontalBlock"]{
         flex-wrap:wrap!important;
         gap:.4rem!important;
     }
+
     [data-testid="column"]{
         min-width:48%!important;
         flex:1 1 48%!important;
     }
+
     [data-testid="stMetric"]{
         width:100%!important;
         min-width:0!important;
         overflow:visible!important;
     }
+
     [data-testid="stMetricLabel"]{
         font-size:11px!important;
         line-height:1.2!important;
         white-space:normal!important;
         overflow:visible!important;
     }
+
     [data-testid="stMetricValue"]{
         font-size:18px!important;
         line-height:1.2!important;
@@ -56,21 +61,28 @@ st.markdown("""
         overflow:visible!important;
         text-overflow:clip!important;
     }
+
     h1{font-size:25px!important}
     h2{font-size:21px!important}
     h3{font-size:18px!important}
-    .trade-card{padding:.75rem!important}
+
+    .trade-card{
+        padding:.75rem!important;
+    }
 }
+
 .trade-card{
     border:1px solid rgba(128,128,128,.30);
     border-radius:12px;
     padding:1rem;
     margin:.5rem 0;
 }
+
 .small{
     font-size:.88rem;
     opacity:.85;
 }
+
 .reason{
     line-height:1.5;
 }
@@ -97,8 +109,8 @@ except Exception:
 
 def secret(name):
     try:
-        v = st.secrets.get(name)
-        return str(v).strip() if v else ""
+        value = st.secrets.get(name)
+        return str(value).strip() if value else ""
     except Exception:
         return ""
 
@@ -107,8 +119,10 @@ def num(x, default=None):
     try:
         if x is None:
             return default
+
         if isinstance(x, str):
             x = x.replace(",", "").strip()
+
         return float(x)
     except Exception:
         return default
@@ -116,8 +130,10 @@ def num(x, default=None):
 
 def fmt(x, digits=2):
     x = num(x)
-    if x is None:
+
+    if x is None or not np.isfinite(x):
         return "-"
+
     return f"{x:,.{digits}f}"
 
 
@@ -127,6 +143,7 @@ def safe_text(x):
 
 def market_open():
     now = datetime.now()
+
     return (
         now.weekday() < 5
         and time(9, 15) <= now.time() <= time(15, 30)
@@ -155,7 +172,10 @@ def expiry_norm(x):
 
     for f in formats:
         try:
-            return datetime.strptime(s, f).strftime("%Y-%m-%d")
+            return datetime.strptime(
+                s,
+                f
+            ).strftime("%Y-%m-%d")
         except Exception:
             pass
 
@@ -191,24 +211,31 @@ def clean_df(df):
 
 
 def first_value(row, names, default=None):
-    for n in names:
+    for name in names:
 
-        if isinstance(row, dict) and n in row:
-            v = row.get(n)
+        if isinstance(row, dict) and name in row:
+            value = row.get(name)
 
-            if v is not None and str(v) != "":
-                return v
+            if value is not None and str(value) != "":
+                return value
 
         try:
-            if n in row.index:
-                v = row[n]
+            if name in row.index:
+                value = row[name]
 
-                if pd.notna(v):
-                    return v
+                if pd.notna(value):
+                    return value
         except Exception:
             pass
 
     return default
+
+
+def find_column(df, names):
+    for name in names:
+        if name in df.columns:
+            return name
+    return None
 
 
 # =========================================================
@@ -389,6 +416,7 @@ def parse_fii_dii_record(record):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_fii_dii():
+
     empty = {
         "available": False,
         "source": "Unavailable",
@@ -404,6 +432,7 @@ def fetch_fii_dii():
         "dii_3d": None,
         "institutional_score": 0,
         "bias": "UNAVAILABLE",
+        "bias_score": "NEUTRAL",
         "status": "Data unavailable",
     }
 
@@ -435,10 +464,6 @@ def fetch_fii_dii():
     if fii_net is None and dii_net is None:
         return empty
 
-    # -----------------------------------------------------
-    # HISTORY
-    # -----------------------------------------------------
-
     history = []
 
     try:
@@ -454,6 +479,7 @@ def fetch_fii_dii():
             history_data = response.json()
 
             if isinstance(history_data, dict):
+
                 for key in [
                     "data",
                     "history",
@@ -480,25 +506,22 @@ def fetch_fii_dii():
         row = parse_fii_dii_record(item)
 
         if row["fii_net"] is not None:
-            fii_history.append(
-                row["fii_net"]
-            )
+            fii_history.append(row["fii_net"])
 
         if row["dii_net"] is not None:
-            dii_history.append(
-                row["dii_net"]
-            )
+            dii_history.append(row["dii_net"])
 
-    # Include current if history doesn't already contain it.
-    if fii_net is not None:
-        fii_values = [fii_net] + fii_history[:2]
-    else:
-        fii_values = fii_history[:3]
+    fii_values = (
+        [fii_net] + fii_history[:2]
+        if fii_net is not None
+        else fii_history[:3]
+    )
 
-    if dii_net is not None:
-        dii_values = [dii_net] + dii_history[:2]
-    else:
-        dii_values = dii_history[:3]
+    dii_values = (
+        [dii_net] + dii_history[:2]
+        if dii_net is not None
+        else dii_history[:3]
+    )
 
     fii_3d = (
         sum(fii_values)
@@ -511,10 +534,6 @@ def fetch_fii_dii():
         if dii_values
         else None
     )
-
-    # -----------------------------------------------------
-    # INSTITUTIONAL SCORE
-    # -----------------------------------------------------
 
     score = 0
 
@@ -540,14 +559,12 @@ def fetch_fii_dii():
         elif dii_net <= -500:
             score -= 1
 
-    # 3-day institutional trend confirmation
     if fii_3d is not None and fii_3d >= 5000:
         score += 1
 
     elif fii_3d is not None and fii_3d <= -5000:
         score -= 1
 
-    # Agreement / divergence
     bias = "MIXED"
 
     if fii_net is not None and dii_net is not None:
@@ -571,6 +588,7 @@ def fetch_fii_dii():
 
         if fii_net > 500:
             bias = "FII POSITIVE"
+
         elif fii_net < -500:
             bias = "FII NEGATIVE"
 
@@ -585,7 +603,7 @@ def fetch_fii_dii():
         "available": True,
         "source": "Free NSE-sourced FII/DII API",
         "date": parsed["date"],
-        "fii_buy": fii_net if fii_net is None else parsed["fii_buy"],
+        "fii_buy": parsed["fii_buy"],
         "fii_sell": parsed["fii_sell"],
         "fii_net": fii_net,
         "dii_buy": parsed["dii_buy"],
@@ -593,7 +611,8 @@ def fetch_fii_dii():
         "dii_net": dii_net,
         "combined_net": (
             fii_net + dii_net
-            if fii_net is not None and dii_net is not None
+            if fii_net is not None
+            and dii_net is not None
             else None
         ),
         "fii_3d": fii_3d,
@@ -759,7 +778,6 @@ def get_spot(symbol):
     except Exception:
         return None
 
-
 # =========================================================
 # EXPIRIES
 # =========================================================
@@ -816,16 +834,12 @@ def load_expiries(symbol):
     except Exception:
         return []
 
-
 # =========================================================
 # CONTRACTS
 # =========================================================
 
 @st.cache_data(ttl=120, show_spinner=False)
-def load_contracts(
-    symbol,
-    expiry
-):
+def load_contracts(symbol, expiry):
 
     if options is None or not expiry:
         return pd.DataFrame()
@@ -843,11 +857,7 @@ def load_contracts(
         return pd.DataFrame()
 
 
-def get_chain(
-    symbol,
-    expiry,
-    spot
-):
+def get_chain(symbol, expiry, spot):
 
     contracts = load_contracts(
         symbol,
@@ -892,6 +902,36 @@ def get_chain(
 
     return contracts.copy(), contracts
 
+# =========================================================
+# OPTION TYPE NORMALIZATION
+# =========================================================
+
+def normalize_option_type(value):
+
+    if value is None:
+        return ""
+
+    x = str(value).strip().upper()
+
+    if x in ["CE", "CALL", "C"]:
+        return "CE"
+
+    if x in ["PE", "PUT", "P"]:
+        return "PE"
+
+    if "CALL" in x:
+        return "CE"
+
+    if "PUT" in x:
+        return "PE"
+
+    if x.endswith("CE"):
+        return "CE"
+
+    if x.endswith("PE"):
+        return "PE"
+
+    return ""
 
 # =========================================================
 # PCR
@@ -902,62 +942,299 @@ def calculate_pcr(df):
     if df.empty:
         return None
 
-    oi_col = None
+    oi_col = find_column(
+        df,
+        [
+            "opnInterest",
+            "openInterest",
+            "oi",
+            "open_interest",
+        ]
+    )
 
-    for c in [
-        "opnInterest",
-        "openInterest",
-        "oi",
-        "open_interest",
-    ]:
-
-        if c in df.columns:
-            oi_col = c
-            break
-
-    type_col = None
-
-    for c in [
-        "option_type",
-        "optionType",
-        "optionTypeName",
-    ]:
-
-        if c in df.columns:
-            type_col = c
-            break
+    type_col = find_column(
+        df,
+        [
+            "option_type",
+            "optionType",
+            "optionTypeName",
+            "option_type_name",
+            "type",
+        ]
+    )
 
     if oi_col is None or type_col is None:
         return None
 
     work = df.copy()
 
-    work[oi_col] = pd.to_numeric(
-        work[oi_col],
+    work["_oi"] = pd.to_numeric(
+        work[oi_col]
+        .astype(str)
+        .str.replace(",", "", regex=False),
         errors="coerce"
     ).fillna(0)
 
-    types = (
+    work["_option_type"] = (
         work[type_col]
-        .astype(str)
-        .str.upper()
+        .map(normalize_option_type)
     )
 
-    ce = work.loc[
-        types.str.contains("CE"),
-        oi_col
+    ce_oi = work.loc[
+        work["_option_type"] == "CE",
+        "_oi"
     ].sum()
 
-    pe = work.loc[
-        types.str.contains("PE"),
-        oi_col
+    pe_oi = work.loc[
+        work["_option_type"] == "PE",
+        "_oi"
     ].sum()
 
-    if ce <= 0:
+    if ce_oi <= 0 or pe_oi < 0:
         return None
 
-    return pe / ce
+    pcr = pe_oi / ce_oi
 
+    # Sanity check.
+    # Extremely abnormal values are not shown as valid PCR.
+    if not np.isfinite(pcr):
+        return None
+
+    if pcr <= 0 or pcr > 10:
+        return None
+
+    return float(pcr)
+
+# =========================================================
+# LIVE DERIVATIVES / OPTION-CHAIN PROXY
+# =========================================================
+
+def calculate_live_derivatives_proxy(chain, pcr):
+
+    result = {
+        "available": False,
+        "score": 0,
+        "bias": "UNAVAILABLE",
+        "source": "Live option-chain positioning proxy",
+        "status": "No usable derivatives positioning",
+        "reasons": [],
+        "pcr": pcr,
+    }
+
+    if chain.empty:
+        return result
+
+    type_col = find_column(
+        chain,
+        [
+            "option_type",
+            "optionType",
+            "optionTypeName",
+            "option_type_name",
+            "type",
+        ]
+    )
+
+    oi_col = find_column(
+        chain,
+        [
+            "opnInterest",
+            "openInterest",
+            "oi",
+            "open_interest",
+        ]
+    )
+
+    chg_oi_col = find_column(
+        chain,
+        [
+            "changeinOpenInterest",
+            "changeInOpenInterest",
+            "change_in_open_interest",
+            "change_oi",
+            "chg_oi",
+            "oi_change",
+        ]
+    )
+
+    score = 0
+    reasons = []
+    usable = False
+
+    # -----------------------------------------------------
+    # PCR component
+    # -----------------------------------------------------
+
+    if pcr is not None:
+
+        usable = True
+
+        if 1.10 <= pcr <= 1.80:
+
+            score += 2
+
+            reasons.append(
+                f"PCR {pcr:.2f} supportive hai."
+            )
+
+        elif 0.90 <= pcr < 1.10:
+
+            score += 1
+
+            reasons.append(
+                f"PCR {pcr:.2f} mildly supportive hai."
+            )
+
+        elif 0.70 <= pcr < 0.90:
+
+            reasons.append(
+                f"PCR {pcr:.2f} neutral-to-cautious zone mein hai."
+            )
+
+        elif 0.40 <= pcr < 0.70:
+
+            score -= 1
+
+            reasons.append(
+                f"PCR {pcr:.2f} bearish pressure indicate karta hai."
+            )
+
+        elif pcr < 0.40:
+
+            score -= 2
+
+            reasons.append(
+                f"PCR {pcr:.2f} strong caution zone mein hai."
+            )
+
+    # -----------------------------------------------------
+    # Change in OI component
+    # -----------------------------------------------------
+
+    if type_col is not None and chg_oi_col is not None:
+
+        work = chain.copy()
+
+        work["_type"] = (
+            work[type_col]
+            .map(normalize_option_type)
+        )
+
+        work["_chg_oi"] = pd.to_numeric(
+            work[chg_oi_col]
+            .astype(str)
+            .str.replace(",", "", regex=False),
+            errors="coerce"
+        ).fillna(0)
+
+        ce_change = work.loc[
+            work["_type"] == "CE",
+            "_chg_oi"
+        ].sum()
+
+        pe_change = work.loc[
+            work["_type"] == "PE",
+            "_chg_oi"
+        ].sum()
+
+        if (
+            work["_type"].isin(
+                ["CE", "PE"]
+            ).any()
+        ):
+            usable = True
+
+            # This is deliberately only a small supporting weight.
+            # It is not treated as a guaranteed directional signal.
+
+            if pe_change > 0 and ce_change < 0:
+
+                score += 1
+
+                reasons.append(
+                    "Option-chain change in OI mildly bullish side par hai."
+                )
+
+            elif ce_change > 0 and pe_change < 0:
+
+                score -= 1
+
+                reasons.append(
+                    "Option-chain change in OI mildly bearish side par hai."
+                )
+
+    # -----------------------------------------------------
+    # OI availability
+    # -----------------------------------------------------
+
+    if type_col is not None and oi_col is not None:
+
+        work = chain.copy()
+
+        work["_type"] = (
+            work[type_col]
+            .map(normalize_option_type)
+        )
+
+        work["_oi"] = pd.to_numeric(
+            work[oi_col]
+            .astype(str)
+            .str.replace(",", "", regex=False),
+            errors="coerce"
+        ).fillna(0)
+
+        ce_oi = work.loc[
+            work["_type"] == "CE",
+            "_oi"
+        ].sum()
+
+        pe_oi = work.loc[
+            work["_type"] == "PE",
+            "_oi"
+        ].sum()
+
+        if ce_oi > 0 or pe_oi > 0:
+            usable = True
+
+    if not usable:
+        return result
+
+    score = max(
+        -2,
+        min(
+            2,
+            score
+        )
+    )
+
+    if score >= 2:
+        bias = "BULLISH PROXY"
+
+    elif score == 1:
+        bias = "MILD BULLISH PROXY"
+
+    elif score == -1:
+        bias = "MILD BEARISH PROXY"
+
+    elif score <= -2:
+        bias = "BEARISH PROXY"
+
+    else:
+        bias = "NEUTRAL PROXY"
+
+    result.update({
+        "available": True,
+        "score": score,
+        "bias": bias,
+        "status": (
+            "Live broker option-chain positioning"
+            if market_open()
+            else "Latest broker option-chain positioning"
+        ),
+        "reasons": reasons,
+    })
+
+    return result
 
 # =========================================================
 # OHLCV
@@ -1052,7 +1329,6 @@ def fetch_ohlcv(
     except Exception:
         return pd.DataFrame()
 
-
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -1125,6 +1401,7 @@ def add_indicators(df):
     ).mean()
 
     tr1 = high - low
+
     tr2 = (
         high - close.shift()
     ).abs()
@@ -1216,12 +1493,14 @@ def add_indicators(df):
 
     return df
 
-
 # =========================================================
 # MARKET ANALYSIS
 # =========================================================
 
-def analyze_market(symbol):
+def analyze_market(
+    symbol,
+    derivatives_proxy=None
+):
 
     result = {
         "symbol": symbol,
@@ -1239,6 +1518,9 @@ def analyze_market(symbol):
         "resistance": None,
         "last": None,
         "technical_score": 0,
+        "institutional_score": 0,
+        "institutional_bias": "UNAVAILABLE",
+        "institutional_source": "NONE",
         "score": 0,
         "reasons": [],
     }
@@ -1261,24 +1543,31 @@ def analyze_market(symbol):
     )
 
     result["last"] = last
+
     result["rsi"] = num(
         row.get("RSI")
     )
+
     result["adx"] = num(
         row.get("ADX")
     )
+
     result["ema20"] = num(
         row.get("EMA20")
     )
+
     result["ema50"] = num(
         row.get("EMA50")
     )
+
     result["macd"] = num(
         row.get("MACD")
     )
+
     result["macd_signal"] = num(
         row.get("MACD_SIGNAL")
     )
+
     result["vwap"] = num(
         row.get("VWAP")
     )
@@ -1309,9 +1598,14 @@ def analyze_market(symbol):
 
     score = 0
 
+    # -----------------------------------------------------
+    # EMA
+    # -----------------------------------------------------
+
     if (
         result["ema20"] is not None
         and result["ema50"] is not None
+        and last is not None
     ):
 
         if (
@@ -1338,7 +1632,14 @@ def analyze_market(symbol):
                 "Price EMA20 aur EMA50 ke neeche hai."
             )
 
-    if result["vwap"] is not None:
+    # -----------------------------------------------------
+    # VWAP
+    # -----------------------------------------------------
+
+    if (
+        result["vwap"] is not None
+        and last is not None
+    ):
 
         if last > result["vwap"]:
 
@@ -1355,6 +1656,10 @@ def analyze_market(symbol):
             result["reasons"].append(
                 "Price VWAP ke neeche hai."
             )
+
+    # -----------------------------------------------------
+    # MACD
+    # -----------------------------------------------------
 
     if (
         result["macd"] is not None
@@ -1380,17 +1685,27 @@ def analyze_market(symbol):
                 "MACD bearish side par hai."
             )
 
+    # -----------------------------------------------------
+    # RSI
+    # -----------------------------------------------------
+
     if result["rsi"] is not None:
 
         if result["rsi"] >= 60:
 
             score += 1
+
             result["momentum"] = "BULLISH"
 
         elif result["rsi"] <= 40:
 
             score -= 1
+
             result["momentum"] = "BEARISH"
+
+    # -----------------------------------------------------
+    # ADX
+    # -----------------------------------------------------
 
     if (
         result["adx"] is not None
@@ -1400,6 +1715,10 @@ def analyze_market(symbol):
         result["reasons"].append(
             f"ADX {result['adx']:.1f}, trend strength active."
         )
+
+    # -----------------------------------------------------
+    # VOLUME
+    # -----------------------------------------------------
 
     if result["volume_ratio"] is not None:
 
@@ -1411,52 +1730,110 @@ def analyze_market(symbol):
 
     result["technical_score"] = score
 
-    # -----------------------------------------------------
-    # FII / DII DECISION INPUT
-    # -----------------------------------------------------
-
-    institutional_score = (
-        fii_dii.get(
-            "institutional_score",
-            0
-        )
-        if fii_dii.get("available")
-        else 0
-    )
-
-    result["institutional_score"] = (
-        institutional_score
-    )
-
-    result["score"] = (
-        score
-        + institutional_score
-    )
+    # =====================================================
+    # INSTITUTIONAL DECISION ENGINE
+    # =====================================================
 
     if fii_dii.get("available"):
 
-        bias = fii_dii.get(
+        institutional_score = int(
+            fii_dii.get(
+                "institutional_score",
+                0
+            )
+        )
+
+        result["institutional_score"] = institutional_score
+
+        result["institutional_bias"] = fii_dii.get(
             "bias",
             "MIXED"
+        )
+
+        result["institutional_source"] = (
+            "ACTUAL FII/DII"
         )
 
         if institutional_score > 0:
 
             result["reasons"].append(
-                f"FII/DII institutional flow support: {bias}."
+                "Actual FII/DII flow market direction ko support kar raha hai."
             )
 
         elif institutional_score < 0:
 
             result["reasons"].append(
-                f"FII/DII institutional pressure: {bias}."
+                "Actual FII/DII flow market direction par pressure daal raha hai."
             )
 
         else:
 
             result["reasons"].append(
-                f"FII/DII flow mixed/neutral: {bias}."
+                "Actual FII/DII flow mixed/neutral hai."
             )
+
+    elif (
+        derivatives_proxy is not None
+        and derivatives_proxy.get("available")
+    ):
+
+        institutional_score = int(
+            derivatives_proxy.get(
+                "score",
+                0
+            )
+        )
+
+        result["institutional_score"] = institutional_score
+
+        result["institutional_bias"] = derivatives_proxy.get(
+            "bias",
+            "DERIVATIVES PROXY"
+        )
+
+        result["institutional_source"] = (
+            "LIVE DERIVATIVES PROXY"
+        )
+
+        result["reasons"].append(
+            "Actual FII/DII cash data pending hai; "
+            "live option-chain positioning ko temporary institutional proxy "
+            "ke roop mein use kiya gaya hai."
+        )
+
+        for reason in derivatives_proxy.get(
+            "reasons",
+            []
+        ):
+            result["reasons"].append(
+                reason
+            )
+
+    else:
+
+        result["institutional_score"] = 0
+
+        result["institutional_bias"] = (
+            "FII/DII PENDING"
+        )
+
+        result["institutional_source"] = (
+            "NONE"
+        )
+
+        result["reasons"].append(
+            "FII/DII aur usable derivatives positioning "
+            "dono unavailable hain; institutional weight 0 rakha gaya hai."
+        )
+
+    result["score"] = (
+        score
+        + result["institutional_score"]
+    )
+
+    # -----------------------------------------------------
+    # FINAL TREND
+    # -----------------------------------------------------
 
     if result["score"] >= 4:
 
@@ -1472,9 +1849,8 @@ def analyze_market(symbol):
 
     return result
 
-
 # =========================================================
-# OPTION IDEA
+# OPTION SELECTION
 # =========================================================
 
 def nearest_option(
@@ -1486,50 +1862,47 @@ def nearest_option(
     if chain.empty or spot is None:
         return None
 
-    type_col = None
+    type_col = find_column(
+        chain,
+        [
+            "option_type",
+            "optionType",
+            "optionTypeName",
+            "option_type_name",
+            "type",
+        ]
+    )
 
-    for c in [
-        "option_type",
-        "optionType",
-        "optionTypeName",
-    ]:
-
-        if c in chain.columns:
-            type_col = c
-            break
-
-    strike_col = None
-
-    for c in [
-        "strike",
-        "strikePrice",
-        "strike_price",
-    ]:
-
-        if c in chain.columns:
-            strike_col = c
-            break
+    strike_col = find_column(
+        chain,
+        [
+            "strike",
+            "strikePrice",
+            "strike_price",
+        ]
+    )
 
     if type_col is None or strike_col is None:
         return None
 
     work = chain.copy()
 
-    types = (
+    work["_type"] = (
         work[type_col]
-        .astype(str)
-        .str.upper()
+        .map(normalize_option_type)
     )
 
     work = work[
-        types.str.contains(side)
+        work["_type"] == side
     ].copy()
 
     if work.empty:
         return None
 
     work["_strike"] = pd.to_numeric(
-        work[strike_col],
+        work[strike_col]
+        .astype(str)
+        .str.replace(",", "", regex=False),
         errors="coerce"
     )
 
@@ -1563,7 +1936,6 @@ def option_ltp(row):
         )
     )
 
-
 # =========================================================
 # TRADE IDEA
 # =========================================================
@@ -1582,8 +1954,15 @@ def make_trade_idea(
     if last is None:
         return None
 
-    bullish = market["score"] >= 4
-    bearish = market["score"] <= -4
+    bullish = market.get(
+        "score",
+        0
+    ) >= 4
+
+    bearish = market.get(
+        "score",
+        0
+    ) <= -4
 
     if not bullish and not bearish:
         return None
@@ -1594,15 +1973,19 @@ def make_trade_idea(
         else "SELL"
     )
 
+    # -----------------------------------------------------
+    # SPOT ENTRY
+    # -----------------------------------------------------
+
+    entry = last
+
     if bullish:
 
-        entry = last
-
         sl = (
-            market["support"]
+            market.get("support")
             if (
-                market["support"]
-                and market["support"] < entry
+                market.get("support")
+                and market.get("support") < entry
             )
             else entry * 0.997
         )
@@ -1619,13 +2002,11 @@ def make_trade_idea(
 
     else:
 
-        entry = last
-
         sl = (
-            market["resistance"]
+            market.get("resistance")
             if (
-                market["resistance"]
-                and market["resistance"] > entry
+                market.get("resistance")
+                and market.get("resistance") > entry
             )
             else entry * 1.003
         )
@@ -1674,9 +2055,14 @@ def make_trade_idea(
         )
     )
 
-    institutional_bias = fii_dii.get(
-        "bias",
+    institutional_bias = market.get(
+        "institutional_bias",
         "UNAVAILABLE"
+    )
+
+    institutional_source = market.get(
+        "institutional_source",
+        "NONE"
     )
 
     idea = {
@@ -1697,15 +2083,17 @@ def make_trade_idea(
         "expiry": expiry,
         "option": None,
         "technical_score": technical_score,
-        "institutional_score": (
-            market.get(
-                "institutional_score",
-                0
-            )
+        "institutional_score": market.get(
+            "institutional_score",
+            0
         ),
         "institutional_bias": institutional_bias,
+        "institutional_source": institutional_source,
         "why": " ".join(
-            market["reasons"][:7]
+            market.get(
+                "reasons",
+                []
+            )[:8]
         ),
         "invalidation": (
             f"Price {'below' if bullish else 'above'} "
@@ -1714,7 +2102,7 @@ def make_trade_idea(
     }
 
     # -----------------------------------------------------
-    # OPTION
+    # INDEX OPTION
     # -----------------------------------------------------
 
     if (
@@ -1769,7 +2157,6 @@ def make_trade_idea(
 
     return idea
 
-
 # =========================================================
 # GEMINI
 # =========================================================
@@ -1801,23 +2188,39 @@ You are an Indian market research assistant for a
 PAPER TRADING ONLY application.
 
 Use ONLY supplied data.
-Do NOT invent prices, OI, news, Greeks, FII/DII values
-or any other missing information.
 
-FII/DII is an institutional confirmation factor.
-It must NOT be treated as a guaranteed predictor.
+Do NOT invent:
+- prices
+- OI
+- news
+- Greeks
+- FII/DII values
+- option data
+- support/resistance
+
+IMPORTANT:
+
+Actual FII/DII data has priority when available.
+
+If actual FII/DII is unavailable, the supplied
+LIVE DERIVATIVES PROXY may be used only as a
+clearly-labelled proxy.
+
+Never call the derivatives proxy actual FII/DII.
 
 For every supplied trade idea explain:
 
 1. Technical setup
-2. FII/DII institutional-flow confirmation
-3. Whether FII and DII agree or diverge
+2. Institutional input
+3. Whether actual FII/DII or derivatives proxy was used
 4. Options context if available
 5. Risk
 6. Invalidation
 7. Intraday or next-session context
 
-If FII/DII data is unavailable, explicitly say so.
+If the setup is weak, say that clearly.
+
+Do not manufacture a trade.
 
 Return concise professional analysis.
 
@@ -1841,7 +2244,6 @@ DATA:
         return (
             f"AI explanation unavailable: {e}"
         )
-
 
 # =========================================================
 # HEADER
@@ -2016,11 +2418,45 @@ with m4:
     )
 
 # =========================================================
+# OPTIONS DATA FIRST
+# =========================================================
+
+chain = pd.DataFrame()
+
+if selected_expiry:
+
+    chain, all_contracts = get_chain(
+        underlying,
+        selected_expiry,
+        spot
+    )
+
+pcr = calculate_pcr(
+    chain
+)
+
+derivatives_proxy = (
+    calculate_live_derivatives_proxy(
+        chain,
+        pcr
+    )
+)
+
+# =========================================================
+# MARKET ANALYSIS
+# =========================================================
+
+market = analyze_market(
+    underlying,
+    derivatives_proxy
+)
+
+# =========================================================
 # FII / DII
 # =========================================================
 
 st.subheader(
-    "🏦 FII / DII Institutional Flow"
+    "🏦 Institutional Flow"
 )
 
 if fii_dii["available"]:
@@ -2093,8 +2529,8 @@ if fii_dii["available"]:
 
     with f8:
         st.metric(
-            "Status",
-            "LATEST"
+            "Source",
+            "ACTUAL"
         )
 
     st.caption(
@@ -2103,26 +2539,75 @@ if fii_dii["available"]:
         f"Date: {safe_text(fii_dii['date'])}"
     )
 
-    st.info(
-        "FII/DII institutional flow prediction ka "
-        "supporting factor hai. Ye अकेला BUY/SELL trigger nahi hai."
-    )
-
 else:
 
     st.warning(
-        "FII/DII data unavailable. "
-        "Trade scoring me FII/DII ka weight = 0 rakha gaya hai. "
-        "Koi fake value use nahi ki gayi."
+        "Actual FII/DII cash-flow data abhi unavailable hai. "
+        "AI analysis rukega nahi — live/latest option-chain positioning "
+        "available hone par institutional proxy use hoga."
     )
 
 # =========================================================
-# MARKET ANALYSIS
+# DERIVATIVES PROXY
 # =========================================================
 
-market = analyze_market(
-    underlying
+st.subheader(
+    "🧮 Derivatives Institutional Proxy"
 )
+
+if derivatives_proxy.get("available"):
+
+    d1, d2, d3 = st.columns(3)
+
+    with d1:
+        st.metric(
+            "Proxy Score",
+            f"{derivatives_proxy['score']:+d}"
+        )
+
+    with d2:
+        st.metric(
+            "Proxy Bias",
+            derivatives_proxy["bias"]
+        )
+
+    with d3:
+        st.metric(
+            "PCR",
+            (
+                fmt(
+                    derivatives_proxy.get("pcr"),
+                    2
+                )
+                if derivatives_proxy.get("pcr") is not None
+                else "-"
+            )
+        )
+
+    st.caption(
+        f"Source: {derivatives_proxy['source']} • "
+        f"{derivatives_proxy['status']} • "
+        f"Actual FII/DII available hone par proxy automatically replace hota hai."
+    )
+
+    for reason in derivatives_proxy.get(
+        "reasons",
+        []
+    ):
+        st.write(
+            "• " + reason
+        )
+
+else:
+
+    st.info(
+        "Usable derivatives positioning bhi unavailable hai. "
+        "Institutional score ko 0 rakha gaya hai — koi fake value nahi."
+    )
+
+# =========================================================
+# MARKET INTELLIGENCE
+# =========================================================
 
 st.subheader(
     "📈 Market Intelligence"
@@ -2195,7 +2680,7 @@ with a8:
         )
     )
 
-a9, a10, a11 = st.columns(3)
+a9, a10, a11, a12 = st.columns(4)
 
 with a9:
     st.metric(
@@ -2205,7 +2690,7 @@ with a9:
 
 with a10:
     st.metric(
-        "FII/DII Score",
+        "Institutional Score",
         f"{market.get('institutional_score', 0):+d}"
     )
 
@@ -2213,6 +2698,15 @@ with a11:
     st.metric(
         "Combined Score",
         f"{market.get('score', 0):+d}"
+    )
+
+with a12:
+    st.metric(
+        "Institutional Source",
+        market.get(
+            "institutional_source",
+            "NONE"
+        )
     )
 
 # =========================================================
@@ -2237,6 +2731,11 @@ with r2:
         )
     )
 
+st.caption(
+    f"Institutional input: "
+    f"{market.get('institutional_bias', 'UNAVAILABLE')}"
+)
+
 if market["reasons"]:
 
     st.markdown(
@@ -2249,22 +2748,8 @@ if market["reasons"]:
         )
 
 # =========================================================
-# OPTIONS
+# OPTIONS INTELLIGENCE
 # =========================================================
-
-chain = pd.DataFrame()
-
-if selected_expiry:
-
-    chain, all_contracts = get_chain(
-        underlying,
-        selected_expiry,
-        spot
-    )
-
-pcr = calculate_pcr(
-    chain
-)
 
 st.subheader(
     "🧮 Options Intelligence"
@@ -2304,11 +2789,15 @@ if not chain.empty:
     display_cols = [
         "symbol",
         "strike",
+        "strikePrice",
         "option_type",
+        "optionType",
         "expiry_normalized",
         "ltp",
+        "LTP",
         "tradeVolume",
         "opnInterest",
+        "openInterest",
     ]
 
     cols = [
@@ -2317,34 +2806,29 @@ if not chain.empty:
         if c in chain.columns
     ]
 
+    view = chain.copy()
+
+    type_col = find_column(
+        view,
+        [
+            "option_type",
+            "optionType",
+            "optionTypeName",
+        ]
+    )
+
     if option_type in [
         "CE",
         "PE"
-    ]:
+    ] and type_col:
 
-        type_col = (
-            "option_type"
-            if "option_type"
-            in chain.columns
-            else None
-        )
+        view = view[
+            view[type_col]
+            .map(normalize_option_type)
+            .eq(option_type)
+        ]
 
-        if type_col:
-
-            view = chain[
-                chain[type_col]
-                .astype(str)
-                .str.upper()
-                .eq(option_type)
-            ]
-
-        else:
-            view = chain
-
-    else:
-        view = chain
-
-    if cols:
+    if cols and not view.empty:
 
         st.dataframe(
             view[cols],
@@ -2362,10 +2846,20 @@ st.subheader(
     "🎯 AI Trade Ideas"
 )
 
-st.write(
-    "Technical + Options + FII/DII institutional flow "
-    "ko combine karke valid setups generate kiye jayenge."
-)
+if market_open():
+
+    st.write(
+        "Live market mode: Technical + Options + "
+        "Institutional input se paper-trading setup generate hoga."
+    )
+
+else:
+
+    st.write(
+        "After-market mode: Available data ke basis par "
+        "**NEXT SESSION planned paper-trade idea** generate hoga. "
+        "Weak setup hone par NO TRADE / WAIT rahega."
+    )
 
 if st.button(
     "🚀 GENERATE TRADE IDEAS",
@@ -2374,13 +2868,13 @@ if st.button(
 ):
 
     with st.spinner(
-        "Market + Options + FII/DII data analyze ho raha hai..."
+        "Market + Options + Institutional data analyze ho raha hai..."
     ):
 
         ideas = []
 
         # -------------------------------------------------
-        # 1. INDEX SPOT
+        # 1. SELECTED INDEX SPOT
         # -------------------------------------------------
 
         base_idea = make_trade_idea(
@@ -2397,7 +2891,7 @@ if st.button(
             )
 
         # -------------------------------------------------
-        # 2. INDEX OPTION
+        # 2. SELECTED INDEX OPTION
         # -------------------------------------------------
 
         option_idea = make_trade_idea(
@@ -2420,7 +2914,8 @@ if st.button(
         if underlying != "BANKNIFTY":
 
             bank_market = analyze_market(
-                "BANKNIFTY"
+                "BANKNIFTY",
+                derivatives_proxy
             )
 
             bank_idea = make_trade_idea(
@@ -2441,7 +2936,8 @@ if st.button(
         if underlying != "NIFTY":
 
             nifty_market = analyze_market(
-                "NIFTY"
+                "NIFTY",
+                derivatives_proxy
             )
 
             nifty_idea = make_trade_idea(
@@ -2459,20 +2955,23 @@ if st.button(
         # 5. SENSEX
         # -------------------------------------------------
 
-        sensex_market = analyze_market(
-            "SENSEX"
-        )
+        if underlying != "SENSEX":
 
-        sensex_idea = make_trade_idea(
-            sensex_market,
-            "SENSEX",
-            "INDEX",
-        )
-
-        if sensex_idea:
-            ideas.append(
-                sensex_idea
+            sensex_market = analyze_market(
+                "SENSEX",
+                derivatives_proxy
             )
+
+            sensex_idea = make_trade_idea(
+                sensex_market,
+                "SENSEX",
+                "INDEX",
+            )
+
+            if sensex_idea:
+                ideas.append(
+                    sensex_idea
+                )
 
         # -------------------------------------------------
         # REMOVE DUPLICATES
@@ -2496,11 +2995,16 @@ if st.button(
             if key not in seen:
 
                 seen.add(key)
+
                 unique.append(
                     idea
                 )
 
         ideas = unique[:5]
+
+    # =====================================================
+    # NO TRADE
+    # =====================================================
 
     if not ideas:
 
@@ -2509,15 +3013,23 @@ if st.button(
             "confirm nahi hua. Fake trade generate nahi kiya gaya."
         )
 
+        if not market_open():
+
+            st.info(
+                "After-market mein iska matlab hai: "
+                "NEXT SESSION ke liye abhi reliable setup confirm nahi hua. "
+                "Wait / fresh confirmation preferred."
+            )
+
+    # =====================================================
+    # VALID IDEAS
+    # =====================================================
+
     else:
 
         st.success(
-            f"{len(ideas)} valid setup(s) generated."
+            f"{len(ideas)} valid paper-trading setup(s) generated."
         )
-
-        # -------------------------------------------------
-        # DISPLAY
-        # -------------------------------------------------
 
         for i, idea in enumerate(
             ideas,
@@ -2530,7 +3042,8 @@ if st.button(
                 <h3>Trade Idea {i} — {idea['symbol']}</h3>
                 <div class="small">
                 Segment: {idea['segment']} |
-                Holding: {idea['holding']}
+                Holding: {idea['holding']} |
+                Institutional Source: {idea.get('institutional_source', 'NONE')}
                 </div>
                 </div>
                 """,
@@ -2601,6 +3114,7 @@ if st.button(
                     )
 
                 else:
+
                     label = "SPOT"
 
                 st.metric(
@@ -2618,13 +3132,13 @@ if st.button(
 
             with s2:
                 st.metric(
-                    "FII/DII Score",
+                    "Institutional Score",
                     f"{idea.get('institutional_score', 0):+.0f}"
                 )
 
             with s3:
                 st.metric(
-                    "Institutional Flow",
+                    "Institutional Input",
                     idea.get(
                         "institutional_bias",
                         "Unavailable"
@@ -2656,7 +3170,12 @@ if st.button(
             )
 
             st.write(
-                f"**Institutional confirmation:** "
+                f"**Institutional source:** "
+                f"{idea.get('institutional_source', 'NONE')}"
+            )
+
+            st.write(
+                f"**Institutional view:** "
                 f"{idea.get('institutional_bias', 'Unavailable')}"
             )
 
@@ -2672,9 +3191,9 @@ if st.button(
 
             st.divider()
 
-        # -------------------------------------------------
+        # =================================================
         # GEMINI
-        # -------------------------------------------------
+        # =================================================
 
         if GEMINI_API_KEY:
 
@@ -2697,6 +3216,11 @@ if st.button(
                         "vwap": market["vwap"],
                         "pcr": pcr,
                         "fii_dii": fii_dii,
+                        "derivatives_proxy": derivatives_proxy,
+                        "institutional_source": market.get(
+                            "institutional_source",
+                            "NONE"
+                        ),
                     }
                 )
 
@@ -2714,9 +3238,9 @@ if st.button(
 
             st.info(
                 "Gemini API key available nahi hai. "
-                "Current trade ideas real market-data, "
-                "technical analysis aur FII/DII flow "
-                "par based hain."
+                "Current trade ideas market-data, "
+                "technical analysis, options aur "
+                "institutional input par based hain."
             )
 
 # =========================================================
@@ -2727,6 +3251,7 @@ st.divider()
 
 st.caption(
     "Paper Trading Only • No real orders • "
-    "FII/DII latest available institutional data • "
-    "Data unavailable hone par fabricated value nahi banayi jati."
+    "Actual FII/DII gets priority • "
+    "Otherwise clearly-labelled derivatives proxy • "
+    "No fabricated institutional values."
 )
