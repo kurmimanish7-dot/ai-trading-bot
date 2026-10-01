@@ -4,12 +4,16 @@ import pandas as pd
 
 class TelemetryEngine:
     """
-    Angel One SmartAPI market-data engine.
+    Angel One SmartAPI telemetry engine.
 
     PAPER TRADING ONLY.
-    This class only reads market data.
-    It does NOT place orders.
+    Market data / indicators only.
+    No real orders.
     """
+
+    # =========================================================
+    # INIT
+    # =========================================================
 
     def __init__(
         self,
@@ -53,7 +57,27 @@ class TelemetryEngine:
             self.feed_token = None
 
     # =========================================================
-    # LIVE / LAST AVAILABLE PRICE
+    # NUMBER HELPER
+    # =========================================================
+
+    @staticmethod
+    def _number(value):
+        try:
+            if value is None:
+                return None
+
+            value = float(value)
+
+            if pd.isna(value):
+                return None
+
+            return value
+
+        except Exception:
+            return None
+
+    # =========================================================
+    # LIVE LTP
     # =========================================================
 
     def get_live_ltp(
@@ -107,7 +131,9 @@ class TelemetryEngine:
                         "status": True,
                         "exchange": exchange,
                         "tradingsymbol": tradingsymbol,
-                        "symboltoken": str(symboltoken),
+                        "symboltoken": str(
+                            symboltoken
+                        ),
                         "ltp": ltp,
                         "open": open_price,
                         "high": high_price,
@@ -124,7 +150,9 @@ class TelemetryEngine:
                         "status": True,
                         "exchange": exchange,
                         "tradingsymbol": tradingsymbol,
-                        "symboltoken": str(symboltoken),
+                        "symboltoken": str(
+                            symboltoken
+                        ),
                         "ltp": close_price,
                         "open": open_price,
                         "high": high_price,
@@ -160,17 +188,10 @@ class TelemetryEngine:
         interval="FIVE_MINUTE",
         days=5,
     ):
-        """
-        Fetch historical OHLCV.
-
-        Does NOT require 30 candles.
-        This is important for after-market operation.
-        """
-
-        if not token:
-            return pd.DataFrame()
-
         try:
+            if not token:
+                return pd.DataFrame()
+
             now = datetime.datetime.now()
 
             days = max(
@@ -185,20 +206,16 @@ class TelemetryEngine:
                 )
             )
 
-            from_date = start.strftime(
-                "%Y-%m-%d 09:15"
-            )
-
-            to_date = now.strftime(
-                "%Y-%m-%d %H:%M"
-            )
-
             params = {
                 "exchange": str(exchange),
                 "symboltoken": str(token),
                 "interval": str(interval),
-                "fromdate": from_date,
-                "todate": to_date,
+                "fromdate": start.strftime(
+                    "%Y-%m-%d 09:15"
+                ),
+                "todate": now.strftime(
+                    "%Y-%m-%d %H:%M"
+                ),
             }
 
             response = (
@@ -221,7 +238,7 @@ class TelemetryEngine:
             df = pd.DataFrame(rows)
 
             if df.empty:
-                return df
+                return pd.DataFrame()
 
             if len(df.columns) < 6:
                 return pd.DataFrame()
@@ -262,7 +279,7 @@ class TelemetryEngine:
                     "low",
                     "close",
                 ]
-            ).copy()
+            )
 
             if df.empty:
                 return pd.DataFrame()
@@ -312,7 +329,6 @@ class TelemetryEngine:
             if (
                 df is None
                 or df.empty
-                or "close" not in df.columns
             ):
                 return None
 
@@ -448,9 +464,7 @@ class TelemetryEngine:
             close.shift(1)
         )
 
-        tr1 = (
-            high - low
-        )
+        tr1 = high - low
 
         tr2 = (
             high - previous_close
@@ -498,13 +512,16 @@ class TelemetryEngine:
             errors="coerce",
         )
 
-        volume = pd.to_numeric(
-            df.get(
-                "volume",
+        if "volume" in df.columns:
+            volume = pd.to_numeric(
+                df["volume"],
+                errors="coerce",
+            ).fillna(0)
+        else:
+            volume = pd.Series(
                 0,
-            ),
-            errors="coerce",
-        ).fillna(0)
+                index=df.index,
+            )
 
         typical_price = (
             high + low + close
@@ -582,12 +599,10 @@ class TelemetryEngine:
             [
                 high - low,
                 (
-                    high
-                    - previous_close
+                    high - previous_close
                 ).abs(),
                 (
-                    low
-                    - previous_close
+                    low - previous_close
                 ).abs(),
             ],
             axis=1,
@@ -669,9 +684,7 @@ class TelemetryEngine:
             adjust=False,
         ).mean()
 
-        macd = (
-            ema12 - ema26
-        )
+        macd = ema12 - ema26
 
         signal = macd.ewm(
             span=9,
@@ -689,7 +702,7 @@ class TelemetryEngine:
         )
 
     # =========================================================
-    # FULL INDICATORS
+    # INDICATORS
     # =========================================================
 
     @staticmethod
@@ -697,15 +710,13 @@ class TelemetryEngine:
         df,
     ):
         """
-        Static method intentionally.
+        Compatible with existing offline_market_simulator.py.
 
-        This supports both:
+        The simulator expects:
+            indicators["ltp"]
 
-            TelemetryEngine.calculate_indicators(df)
-
-        and:
-
-            telemetry.calculate_indicators(df)
+        Therefore this method explicitly creates
+        the ltp column from the latest close.
         """
 
         if (
@@ -716,6 +727,82 @@ class TelemetryEngine:
 
         work = df.copy()
 
+        # -----------------------------------------------------
+        # Normalize column names
+        # -----------------------------------------------------
+
+        rename = {}
+
+        for column in work.columns:
+
+            name = str(
+                column
+            ).strip().lower()
+
+            if name in [
+                "timestamp",
+                "time",
+                "datetime",
+                "date",
+            ]:
+                rename[column] = (
+                    "timestamp"
+                )
+
+            elif name in [
+                "open",
+                "o",
+            ]:
+                rename[column] = "open"
+
+            elif name in [
+                "high",
+                "h",
+            ]:
+                rename[column] = "high"
+
+            elif name in [
+                "low",
+                "l",
+            ]:
+                rename[column] = "low"
+
+            elif name in [
+                "close",
+                "c",
+            ]:
+                rename[column] = "close"
+
+            elif name in [
+                "ltp",
+                "lastprice",
+                "last_price",
+            ]:
+                rename[column] = "ltp"
+
+            elif name in [
+                "volume",
+                "vol",
+            ]:
+                rename[column] = "volume"
+
+        work = work.rename(
+            columns=rename
+        )
+
+        # -----------------------------------------------------
+        # If LTP exists but close doesn't,
+        # use LTP as close.
+        # -----------------------------------------------------
+
+        if (
+            "close" not in work.columns
+            and "ltp" in work.columns
+        ):
+            work["close"] = (
+                work["ltp"]
+            )
+
         required = [
             "open",
             "high",
@@ -724,8 +811,91 @@ class TelemetryEngine:
         ]
 
         for column in required:
+
             if column not in work.columns:
-                return pd.DataFrame()
+
+                # Graceful fallback for
+                # simple close/ltp datasets.
+                if (
+                    column == "open"
+                    and "close" in work.columns
+                ):
+                    work["open"] = (
+                        work["close"]
+                    )
+
+                elif (
+                    column == "high"
+                    and "close" in work.columns
+                ):
+                    work["high"] = (
+                        work["close"]
+                    )
+
+                elif (
+                    column == "low"
+                    and "close" in work.columns
+                ):
+                    work["low"] = (
+                        work["close"]
+                    )
+
+                else:
+                    return pd.DataFrame()
+
+        # -----------------------------------------------------
+        # Numeric conversion
+        # -----------------------------------------------------
+
+        for column in [
+            "open",
+            "high",
+            "low",
+            "close",
+            "ltp",
+            "volume",
+        ]:
+
+            if column in work.columns:
+                work[column] = pd.to_numeric(
+                    work[column],
+                    errors="coerce",
+                )
+
+        # -----------------------------------------------------
+        # LTP compatibility
+        # -----------------------------------------------------
+
+        if "ltp" not in work.columns:
+
+            work["ltp"] = (
+                work["close"]
+            )
+
+        else:
+
+            work["ltp"] = (
+                work["ltp"]
+                .fillna(
+                    work["close"]
+                )
+            )
+
+        # -----------------------------------------------------
+        # Volume
+        # -----------------------------------------------------
+
+        if "volume" not in work.columns:
+            work["volume"] = 0
+
+        work["volume"] = (
+            work["volume"]
+            .fillna(0)
+        )
+
+        # -----------------------------------------------------
+        # EMA
+        # -----------------------------------------------------
 
         work["ema9"] = (
             TelemetryEngine.calculate_ema(
@@ -748,12 +918,20 @@ class TelemetryEngine:
             )
         )
 
+        # -----------------------------------------------------
+        # RSI
+        # -----------------------------------------------------
+
         work["rsi"] = (
             TelemetryEngine.calculate_rsi(
                 work["close"],
                 14,
             )
         )
+
+        # -----------------------------------------------------
+        # ATR
+        # -----------------------------------------------------
 
         work["atr"] = (
             TelemetryEngine.calculate_atr(
@@ -762,6 +940,10 @@ class TelemetryEngine:
             )
         )
 
+        # -----------------------------------------------------
+        # ADX
+        # -----------------------------------------------------
+
         work["adx"] = (
             TelemetryEngine.calculate_adx(
                 work,
@@ -769,11 +951,19 @@ class TelemetryEngine:
             )
         )
 
+        # -----------------------------------------------------
+        # VWAP
+        # -----------------------------------------------------
+
         work["vwap"] = (
             TelemetryEngine.calculate_vwap(
-                work,
+                work
             )
         )
+
+        # -----------------------------------------------------
+        # MACD
+        # -----------------------------------------------------
 
         macd, signal, histogram = (
             TelemetryEngine.calculate_macd(
@@ -782,13 +972,19 @@ class TelemetryEngine:
         )
 
         work["macd"] = macd
-        work["macd_signal"] = signal
-        work["macd_hist"] = histogram
+
+        work["macd_signal"] = (
+            signal
+        )
+
+        work["macd_hist"] = (
+            histogram
+        )
 
         return work
 
     # =========================================================
-    # MARKET PAYLOAD
+    # BUILD PAYLOAD
     # =========================================================
 
     @staticmethod
@@ -801,15 +997,17 @@ class TelemetryEngine:
         ):
             return {}
 
-        work = (
+        indicators = (
             TelemetryEngine
-            .calculate_indicators(df)
+            .calculate_indicators(
+                df
+            )
         )
 
-        if work.empty:
+        if indicators.empty:
             return {}
 
-        last = work.iloc[-1]
+        last = indicators.iloc[-1]
 
         def value(column):
             try:
@@ -832,6 +1030,7 @@ class TelemetryEngine:
                     "",
                 )
             ),
+            "ltp": value("ltp"),
             "open": value("open"),
             "high": value("high"),
             "low": value("low"),
@@ -852,25 +1051,3 @@ class TelemetryEngine:
                 "macd_hist"
             ),
         }
-
-    # =========================================================
-    # NUMBER HELPER
-    # =========================================================
-
-    @staticmethod
-    def _number(
-        value,
-    ):
-        try:
-            if value is None:
-                return None
-
-            result = float(value)
-
-            if pd.isna(result):
-                return None
-
-            return result
-
-        except Exception:
-            return None
