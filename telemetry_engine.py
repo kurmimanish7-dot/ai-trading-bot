@@ -45,8 +45,6 @@ class TelemetryEngine:
                 f"Angel One login failed: {session}"
             )
 
-        self.feed_token = None
-
         try:
             self.feed_token = (
                 self.smart_api.getfeedToken()
@@ -64,14 +62,6 @@ class TelemetryEngine:
         tradingsymbol,
         symboltoken,
     ):
-        """
-        Gets current/last available LTP from Angel One.
-
-        After market hours, Angel One may still return
-        the latest available price. If not, the caller
-        can use historical candles.
-        """
-
         try:
             response = self.smart_api.ltpData(
                 exchange,
@@ -88,6 +78,7 @@ class TelemetryEngine:
             data = response.get("data")
 
             if isinstance(data, dict):
+
                 ltp = self._number(
                     data.get("ltp")
                 )
@@ -108,7 +99,10 @@ class TelemetryEngine:
                     data.get("close")
                 )
 
-                if ltp is not None and ltp > 0:
+                if (
+                    ltp is not None
+                    and ltp > 0
+                ):
                     return {
                         "status": True,
                         "exchange": exchange,
@@ -122,8 +116,6 @@ class TelemetryEngine:
                         "source": "ANGEL_LTP",
                     }
 
-                # Sometimes close is available even if LTP
-                # is not usable.
                 if (
                     close_price is not None
                     and close_price > 0
@@ -158,7 +150,7 @@ class TelemetryEngine:
             }
 
     # =========================================================
-    # HISTORICAL CANDLES
+    # HISTORICAL OHLCV
     # =========================================================
 
     def fetch_ohlcv(
@@ -171,11 +163,8 @@ class TelemetryEngine:
         """
         Fetch historical OHLCV.
 
-        Important:
-        - Does NOT require 30 candles.
-        - After-market data remains usable.
-        - Caller decides whether enough candles exist
-          for a particular indicator.
+        Does NOT require 30 candles.
+        This is important for after-market operation.
         """
 
         if not token:
@@ -184,7 +173,6 @@ class TelemetryEngine:
         try:
             now = datetime.datetime.now()
 
-            # Keep a sensible minimum history window.
             days = max(
                 int(days or 1),
                 1,
@@ -197,7 +185,6 @@ class TelemetryEngine:
                 )
             )
 
-            # SmartAPI expects these strings.
             from_date = start.strftime(
                 "%Y-%m-%d 09:15"
             )
@@ -231,43 +218,29 @@ class TelemetryEngine:
             if not rows:
                 return pd.DataFrame()
 
-            # SmartAPI candle format:
-            # timestamp, open, high, low, close, volume
-
-            df = pd.DataFrame(
-                rows
-            )
+            df = pd.DataFrame(rows)
 
             if df.empty:
                 return df
 
-            # Handle normal 6-column response.
-            if len(df.columns) >= 6:
-                df = df.iloc[:, :6].copy()
-                df.columns = [
-                    "timestamp",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                ]
-
-            else:
+            if len(df.columns) < 6:
                 return pd.DataFrame()
 
-            # -------------------------------------------------
-            # CLEAN TIMESTAMP
-            # -------------------------------------------------
+            df = df.iloc[:, :6].copy()
+
+            df.columns = [
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ]
 
             df["timestamp"] = pd.to_datetime(
                 df["timestamp"],
                 errors="coerce",
             )
-
-            # -------------------------------------------------
-            # CLEAN NUMBERS
-            # -------------------------------------------------
 
             for column in [
                 "open",
@@ -294,15 +267,11 @@ class TelemetryEngine:
             if df.empty:
                 return pd.DataFrame()
 
-            # Volume can legitimately be zero/missing
-            # for some index data.
-            if "volume" in df.columns:
-                df["volume"] = (
-                    df["volume"]
-                    .fillna(0)
-                )
+            df["volume"] = (
+                df["volume"]
+                .fillna(0)
+            )
 
-            # Remove duplicate candles.
             df = (
                 df.drop_duplicates(
                     subset=["timestamp"],
@@ -322,7 +291,7 @@ class TelemetryEngine:
             return pd.DataFrame()
 
     # =========================================================
-    # LATEST HISTORICAL PRICE
+    # LAST HISTORICAL CANDLE
     # =========================================================
 
     def get_last_candle(
@@ -332,12 +301,6 @@ class TelemetryEngine:
         interval="ONE_DAY",
         days=15,
     ):
-        """
-        Reliable after-market fallback.
-
-        Returns the latest available historical candle.
-        """
-
         try:
             df = self.fetch_ohlcv(
                 exchange=exchange,
@@ -389,7 +352,7 @@ class TelemetryEngine:
             return None
 
     # =========================================================
-    # INDICATORS
+    # RSI
     # =========================================================
 
     @staticmethod
@@ -432,11 +395,13 @@ class TelemetryEngine:
             )
         )
 
-        rsi = 100 - (
+        return 100 - (
             100 / (1 + rs)
         )
 
-        return rsi
+    # =========================================================
+    # EMA
+    # =========================================================
 
     @staticmethod
     def calculate_ema(
@@ -454,6 +419,10 @@ class TelemetryEngine:
             )
             .mean()
         )
+
+    # =========================================================
+    # ATR
+    # =========================================================
 
     @staticmethod
     def calculate_atr(
@@ -506,6 +475,10 @@ class TelemetryEngine:
             min_periods=period,
         ).mean()
 
+    # =========================================================
+    # VWAP
+    # =========================================================
+
     @staticmethod
     def calculate_vwap(
         df,
@@ -545,7 +518,7 @@ class TelemetryEngine:
             typical_price * volume
         ).cumsum()
 
-        vwap = (
+        return (
             cumulative_value
             / cumulative_volume.replace(
                 0,
@@ -553,7 +526,9 @@ class TelemetryEngine:
             )
         )
 
-        return vwap
+    # =========================================================
+    # ADX
+    # =========================================================
 
     @staticmethod
     def calculate_adx(
@@ -575,13 +550,9 @@ class TelemetryEngine:
             errors="coerce",
         )
 
-        up_move = (
-            high.diff()
-        )
+        up_move = high.diff()
 
-        down_move = (
-            -low.diff()
-        )
+        down_move = -low.diff()
 
         plus_dm = pd.Series(
             0.0,
@@ -594,28 +565,20 @@ class TelemetryEngine:
         )
 
         plus_dm[
-            (
-                up_move > down_move
-            )
-            & (
-                up_move > 0
-            )
+            (up_move > down_move)
+            & (up_move > 0)
         ] = up_move
 
         minus_dm[
-            (
-                down_move > up_move
-            )
-            & (
-                down_move > 0
-            )
+            (down_move > up_move)
+            & (down_move > 0)
         ] = down_move
 
         previous_close = (
             close.shift(1)
         )
 
-        tr = pd.concat(
+        true_range = pd.concat(
             [
                 high - low,
                 (
@@ -630,7 +593,7 @@ class TelemetryEngine:
             axis=1,
         ).max(axis=1)
 
-        atr = tr.ewm(
+        atr = true_range.ewm(
             alpha=1 / period,
             adjust=False,
             min_periods=period,
@@ -677,13 +640,15 @@ class TelemetryEngine:
             )
         )
 
-        adx = dx.ewm(
+        return dx.ewm(
             alpha=1 / period,
             adjust=False,
             min_periods=period,
         ).mean()
 
-        return adx
+    # =========================================================
+    # MACD
+    # =========================================================
 
     @staticmethod
     def calculate_macd(
@@ -724,13 +689,25 @@ class TelemetryEngine:
         )
 
     # =========================================================
-    # FULL INDICATOR DATAFRAME
+    # FULL INDICATORS
     # =========================================================
 
+    @staticmethod
     def calculate_indicators(
-        self,
         df,
     ):
+        """
+        Static method intentionally.
+
+        This supports both:
+
+            TelemetryEngine.calculate_indicators(df)
+
+        and:
+
+            telemetry.calculate_indicators(df)
+        """
+
         if (
             df is None
             or df.empty
@@ -751,55 +728,55 @@ class TelemetryEngine:
                 return pd.DataFrame()
 
         work["ema9"] = (
-            self.calculate_ema(
+            TelemetryEngine.calculate_ema(
                 work["close"],
                 9,
             )
         )
 
         work["ema20"] = (
-            self.calculate_ema(
+            TelemetryEngine.calculate_ema(
                 work["close"],
                 20,
             )
         )
 
         work["ema50"] = (
-            self.calculate_ema(
+            TelemetryEngine.calculate_ema(
                 work["close"],
                 50,
             )
         )
 
         work["rsi"] = (
-            self.calculate_rsi(
+            TelemetryEngine.calculate_rsi(
                 work["close"],
                 14,
             )
         )
 
         work["atr"] = (
-            self.calculate_atr(
+            TelemetryEngine.calculate_atr(
                 work,
                 14,
             )
         )
 
         work["adx"] = (
-            self.calculate_adx(
+            TelemetryEngine.calculate_adx(
                 work,
                 14,
             )
         )
 
         work["vwap"] = (
-            self.calculate_vwap(
+            TelemetryEngine.calculate_vwap(
                 work,
             )
         )
 
         macd, signal, histogram = (
-            self.calculate_macd(
+            TelemetryEngine.calculate_macd(
                 work["close"]
             )
         )
@@ -814,8 +791,8 @@ class TelemetryEngine:
     # MARKET PAYLOAD
     # =========================================================
 
+    @staticmethod
     def build_payload(
-        self,
         df,
     ):
         if (
@@ -824,8 +801,9 @@ class TelemetryEngine:
         ):
             return {}
 
-        work = self.calculate_indicators(
-            df
+        work = (
+            TelemetryEngine
+            .calculate_indicators(df)
         )
 
         if work.empty:
@@ -880,7 +858,9 @@ class TelemetryEngine:
     # =========================================================
 
     @staticmethod
-    def _number(value):
+    def _number(
+        value,
+    ):
         try:
             if value is None:
                 return None
