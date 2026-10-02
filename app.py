@@ -836,79 +836,56 @@ SPOT_TOKENS = {
 # =========================================================
 
 def get_spot(symbol):
-    # 1) Market open: live LTP try karo
+    # 1. Try live LTP from Angel One
     if telemetry is not None:
-        exchange, token = SPOT_TOKENS.get(symbol, ("NSE", None))
+        try:
+            result = telemetry.get_ltp(symbol)
 
-        if token is not None:
-            try:
-                result = telemetry.get_live_ltp(
-                    exchange,
-                    symbol,
-                    token
-                )
-
-                if isinstance(result, dict):
-                    # Direct LTP
-                    for key in ["ltp", "LTP"]:
-                        value = num(result.get(key))
+            if isinstance(result, dict):
+                for key in (
+                    "ltp",
+                    "LTP",
+                    "lastTradedPrice",
+                    "lastTradedPriceValue",
+                    "close",
+                    "price",
+                ):
+                    if key in result:
+                        value = num(result[key])
                         if value is not None and value > 0:
                             return value
 
-                    # Nested data
-                    data = result.get("data")
+            value = num(result)
+            if value is not None and value > 0:
+                return value
 
-                    if isinstance(data, dict):
-                        for key in ["ltp", "LTP"]:
-                            value = num(data.get(key))
-                            if value is not None and value > 0:
-                                return value
+        except Exception:
+            pass
 
-                else:
-                    value = num(result)
-                    if value is not None and value > 0:
+    # 2. If live LTP fails, use latest OHLCV close
+    try:
+        df = fetch_ohlcv(
+            symbol,
+            interval="FIVE_MINUTE",
+            days=5,
+        )
+
+        if df is not None and not df.empty:
+            if "close" in df.columns:
+                close = pd.to_numeric(
+                    df["close"],
+                    errors="coerce"
+                ).dropna()
+
+                if not close.empty:
+                    value = float(close.iloc[-1])
+
+                    if value > 0:
                         return value
-
-            except Exception:
-                pass
-
-    # 2) Market closed / live LTP unavailable:
-    #    latest 5-minute candle ka CLOSE use karo
-    try:
-        df = fetch_ohlcv(
-            symbol,
-            "FIVE_MINUTE",
-            5
-        )
-
-        if not df.empty and "close" in df.columns:
-            value = num(df["close"].iloc[-1])
-
-            if value is not None and value > 0:
-                return value
-
     except Exception:
         pass
 
-    # 3) Final fallback:
-    #    latest available daily candle
-    try:
-        df = fetch_ohlcv(
-            symbol,
-            "ONE_DAY",
-            10
-        )
-
-        if not df.empty and "close" in df.columns:
-            value = num(df["close"].iloc[-1])
-
-            if value is not None and value > 0:
-                return value
-
-    except Exception:
-        pass
-
-    # 4) Kuch bhi reliable data nahi mila
+    # 3. No fake fallback number
     return None
 
 # =========================================================
