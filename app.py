@@ -977,15 +977,19 @@ def get_chain(symbol, expiry, spot):
     if contracts.empty:
         return pd.DataFrame(), contracts
 
+    # -----------------------------------------------------
+    # NEAR ATM CONTRACTS
+    # -----------------------------------------------------
+
     try:
 
-        if spot is not None:
+        if spot is not None and options is not None:
 
             near = options.get_near_atm_contracts(
                 underlying=symbol,
                 expiry_date=expiry,
                 spot_price=spot,
-                strikes_each_side=8,
+                strikes_each_side=10,
             )
 
             near = clean_df(near)
@@ -996,6 +1000,10 @@ def get_chain(symbol, expiry, spot):
     except Exception:
         pass
 
+    # -----------------------------------------------------
+    # LIVE / LATEST OI + LTP + VOLUME
+    # -----------------------------------------------------
+
     try:
 
         quoted = options.get_market_quote(
@@ -1005,13 +1013,208 @@ def get_chain(symbol, expiry, spot):
         quoted = clean_df(quoted)
 
         if not quoted.empty:
-            return quoted, contracts
+            chain = quoted
+        else:
+            chain = contracts.copy()
 
     except Exception:
+
+        chain = contracts.copy()
+
+    # -----------------------------------------------------
+    # NORMALIZE OPTION TYPE
+    # -----------------------------------------------------
+
+    type_col = find_column(
+        chain,
+        [
+            "option_type",
+            "optionType",
+            "optionTypeName",
+            "option_type_name",
+            "type",
+        ]
+    )
+
+    if type_col is not None:
+
+        chain["option_type"] = (
+            chain[type_col]
+            .map(normalize_option_type)
+        )
+
+    # -----------------------------------------------------
+    # NORMALIZE STRIKE
+    # -----------------------------------------------------
+
+    strike_col = find_column(
+        chain,
+        [
+            "strike",
+            "strikePrice",
+            "strike_price",
+        ]
+    )
+
+    if strike_col is not None:
+
+        chain["strikePrice"] = pd.to_numeric(
+            chain[strike_col],
+            errors="coerce"
+        )
+
+    # -----------------------------------------------------
+    # OI NORMALIZATION
+    # -----------------------------------------------------
+
+    oi_col = find_column(
+        chain,
+        [
+            "opnInterest",
+            "openInterest",
+            "oi",
+            "open_interest",
+        ]
+    )
+
+    if oi_col is not None:
+
+        chain["openInterest"] = pd.to_numeric(
+            chain[oi_col],
+            errors="coerce"
+        )
+
+    # -----------------------------------------------------
+    # CHANGE IN OI
+    # -----------------------------------------------------
+
+    chg_oi_col = find_column(
+        chain,
+        [
+            "changeinOpenInterest",
+            "changeInOpenInterest",
+            "change_in_open_interest",
+            "change_oi",
+            "chg_oi",
+            "oi_change",
+        ]
+    )
+
+    if chg_oi_col is not None:
+
+        chain["changeInOpenInterest"] = pd.to_numeric(
+            chain[chg_oi_col],
+            errors="coerce"
+        )
+
+    # -----------------------------------------------------
+    # GREEKS
+    # -----------------------------------------------------
+
+    try:
+
+        if options is not None:
+
+            greeks = clean_df(
+                options.greeks_dataframe(
+                    symbol,
+                    expiry
+                )
+            )
+
+            if not greeks.empty:
+
+                # Normalize Greek strike column
+                greek_strike = find_column(
+                    greeks,
+                    [
+                        "strikePrice",
+                        "strike",
+                        "strike_price",
+                    ]
+                )
+
+                if greek_strike is not None:
+
+                    greeks["strikePrice"] = pd.to_numeric(
+                        greeks[greek_strike],
+                        errors="coerce"
+                    )
+
+                    greek_cols = [
+                        "strikePrice",
+                        "delta",
+                        "gamma",
+                        "theta",
+                        "vega",
+                        "impliedVolatility",
+                    ]
+
+                    greek_cols = [
+                        c
+                        for c in greek_cols
+                        if c in greeks.columns
+                    ]
+
+                    if "strikePrice" in greek_cols:
+
+                        # Greek API can have CE/PE rows.
+                        # Merge by strike + option type when possible.
+                        greek_type = find_column(
+                            greeks,
+                            [
+                                "optionType",
+                                "option_type",
+                                "optionTypeName",
+                            ]
+                        )
+
+                        if greek_type is not None:
+
+                            greeks["option_type"] = (
+                                greeks[greek_type]
+                                .map(normalize_option_type)
+                            )
+
+                            chain = chain.merge(
+                                greeks[
+                                    greek_cols + [
+                                        "option_type"
+                                    ]
+                                ].drop_duplicates(),
+                                on=[
+                                    "strikePrice",
+                                    "option_type"
+                                ],
+                                how="left",
+                                suffixes=("", "_greek")
+                            )
+
+                        else:
+
+                            # Fallback: merge by strike only
+                            chain = chain.merge(
+                                greeks[
+                                    greek_cols
+                                ].drop_duplicates(
+                                    subset=[
+                                        "strikePrice"
+                                    ]
+                                ),
+                                on="strikePrice",
+                                how="left",
+                                suffixes=("", "_greek")
+                            )
+
+    except Exception:
+        # Greeks unavailable must never break
+        # the option-chain itself.
         pass
 
-    return contracts.copy(), contracts
-
+    return (
+        chain.reset_index(drop=True),
+        contracts.reset_index(drop=True)
+    )
 # =========================================================
 # OPTION TYPE NORMALIZATION
 # =========================================================
