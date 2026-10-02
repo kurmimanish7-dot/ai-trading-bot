@@ -23,6 +23,9 @@ PAPER_TRADING = True
 
 st.markdown("""
 <style>
+
+/* ---------- MAIN CONTAINER ---------- */
+
 .block-container{
     padding-top:1rem!important;
     padding-left:.7rem!important;
@@ -30,62 +33,166 @@ st.markdown("""
     max-width:100%!important;
 }
 
+
+/* ---------- MOBILE ---------- */
+
 @media(max-width:768px){
+
+    /* Columns */
     [data-testid="stHorizontalBlock"]{
         flex-wrap:wrap!important;
-        gap:.4rem!important;
+        gap:.45rem!important;
+        width:100%!important;
     }
 
     [data-testid="column"]{
         min-width:48%!important;
+        max-width:48%!important;
         flex:1 1 48%!important;
+        width:48%!important;
+        min-height:0!important;
     }
 
+    /* Metric box */
     [data-testid="stMetric"]{
         width:100%!important;
         min-width:0!important;
+        max-width:100%!important;
         overflow:visible!important;
     }
 
+    /* Metric label */
     [data-testid="stMetricLabel"]{
+        width:100%!important;
+        max-width:100%!important;
         font-size:11px!important;
-        line-height:1.2!important;
-        white-space:normal!important;
-        overflow:visible!important;
-    }
-
-    [data-testid="stMetricValue"]{
-        font-size:18px!important;
-        line-height:1.2!important;
+        line-height:1.25!important;
         white-space:normal!important;
         overflow:visible!important;
         text-overflow:clip!important;
+        overflow-wrap:anywhere!important;
+        word-break:break-word!important;
     }
 
-    h1{font-size:25px!important}
-    h2{font-size:21px!important}
-    h3{font-size:18px!important}
+    [data-testid="stMetricLabel"] > div{
+        width:100%!important;
+        max-width:100%!important;
+        white-space:normal!important;
+        overflow:visible!important;
+        text-overflow:clip!important;
+        overflow-wrap:anywhere!important;
+        word-break:break-word!important;
+    }
 
+    /* Metric value */
+    [data-testid="stMetricValue"]{
+        width:100%!important;
+        max-width:100%!important;
+        min-width:0!important;
+        font-size:clamp(14px,5vw,18px)!important;
+        line-height:1.25!important;
+        white-space:normal!important;
+        overflow:visible!important;
+        text-overflow:clip!important;
+        overflow-wrap:anywhere!important;
+        word-break:break-word!important;
+    }
+
+    [data-testid="stMetricValue"] > div{
+        width:100%!important;
+        max-width:100%!important;
+        min-width:0!important;
+        white-space:normal!important;
+        overflow:visible!important;
+        text-overflow:clip!important;
+        overflow-wrap:anywhere!important;
+        word-break:break-word!important;
+    }
+
+    /* Metric delta */
+    [data-testid="stMetricDelta"]{
+        max-width:100%!important;
+        white-space:normal!important;
+        overflow:visible!important;
+        overflow-wrap:anywhere!important;
+        word-break:break-word!important;
+    }
+
+    /* Headings */
+    h1{
+        font-size:25px!important;
+        line-height:1.2!important;
+        overflow-wrap:anywhere!important;
+    }
+
+    h2{
+        font-size:21px!important;
+        line-height:1.25!important;
+        overflow-wrap:anywhere!important;
+    }
+
+    h3{
+        font-size:18px!important;
+        line-height:1.3!important;
+        overflow-wrap:anywhere!important;
+    }
+
+    /* Tables / dataframes */
+    [data-testid="stDataFrame"]{
+        width:100%!important;
+        max-width:100%!important;
+        overflow-x:auto!important;
+    }
+
+    /* Text */
+    p, span, div{
+        overflow-wrap:anywhere;
+        word-break:normal;
+    }
+
+    /* Trade cards */
     .trade-card{
+        width:100%!important;
+        max-width:100%!important;
+        box-sizing:border-box!important;
         padding:.75rem!important;
+        overflow-wrap:anywhere!important;
+        word-break:break-word!important;
     }
 }
 
+
+/* ---------- TRADE CARD ---------- */
+
 .trade-card{
+    width:100%;
+    box-sizing:border-box;
     border:1px solid rgba(128,128,128,.30);
     border-radius:12px;
     padding:1rem;
     margin:.5rem 0;
+    overflow-wrap:anywhere;
 }
+
+
+/* ---------- SMALL TEXT ---------- */
 
 .small{
     font-size:.88rem;
     opacity:.85;
+    overflow-wrap:anywhere;
+    word-break:break-word;
 }
+
+
+/* ---------- REASON TEXT ---------- */
 
 .reason{
     line-height:1.5;
+    overflow-wrap:anywhere;
+    word-break:break-word;
 }
+
 </style>
 """, unsafe_allow_html=True)
 
