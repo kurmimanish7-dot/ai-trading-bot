@@ -3563,72 +3563,72 @@ if st.button(
                     f"**Option LTP:** "
                     f"{fmt(idea['option_ltp'])}"
                 )
-                if idea.get("option"):
+                            if idea.get("option"):
 
-    g1, g2, g3, g4 = st.columns(4)
+                g1, g2, g3, g4 = st.columns(4)
 
-    with g1:
-        st.metric(
-            "OI",
-            fmt(
-                idea.get("oi")
+                with g1:
+                    st.metric(
+                        "OI",
+                        fmt(
+                            idea.get("oi")
+                        )
+                    )
+
+                with g2:
+                    st.metric(
+                        "Change OI",
+                        fmt(
+                            idea.get("change_oi")
+                        )
+                    )
+
+                with g3:
+                    st.metric(
+                        "Delta",
+                        fmt(
+                            idea.get("delta"),
+                            3
+                        )
+                    )
+
+                with g4:
+                    st.metric(
+                        "Gamma",
+                        fmt(
+                            idea.get("gamma"),
+                            4
+                        )
+                    )
+
+                g5, g6, g7 = st.columns(3)
+
+                with g5:
+                    st.metric(
+                        "Theta",
+                        fmt(
+                            idea.get("theta"),
+                            3
+                        )
+                    )
+
+                with g6:
+                    st.metric(
+                        "Vega",
+                        fmt(
+                            idea.get("vega"),
+                            3
+                        )
+                    )
+
+                with g7:
+                    st.metric(
+                        "IV",
+                        fmt(
+                            idea.get("iv"),
+                            2
+                        )
             )
-        )
-
-    with g2:
-        st.metric(
-            "Change OI",
-            fmt(
-                idea.get("change_oi")
-            )
-        )
-
-    with g3:
-        st.metric(
-            "Delta",
-            fmt(
-                idea.get("delta"),
-                3
-            )
-        )
-
-    with g4:
-        st.metric(
-            "Gamma",
-            fmt(
-                idea.get("gamma"),
-                4
-            )
-        )
-
-    g5, g6, g7 = st.columns(3)
-
-    with g5:
-        st.metric(
-            "Theta",
-            fmt(
-                idea.get("theta"),
-                3
-            )
-        )
-
-    with g6:
-        st.metric(
-            "Vega",
-            fmt(
-                idea.get("vega"),
-                3
-            )
-        )
-
-    with g7:
-        st.metric(
-            "IV",
-            fmt(
-                idea.get("iv"),
-                2
-            )
-        )
 
             st.markdown(
                 f"""
