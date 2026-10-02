@@ -61,6 +61,128 @@ class OptionsEngine:
         self._scrip_master = None
 
     # ========================================================
+    # SAFE NUMBER HELPERS
+    # ========================================================
+
+    @staticmethod
+    def _to_float(value):
+        try:
+            if value is None:
+                return None
+
+            if isinstance(value, str):
+                value = value.strip()
+
+                if not value:
+                    return None
+
+            result = float(value)
+
+            if pd.isna(result):
+                return None
+
+            return result
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+    @staticmethod
+    def _normalize_token(value):
+        """
+        Keep Angel One token as a clean string.
+
+        Important:
+        Tokens are identifiers, NOT prices.
+        Never convert them to float.
+        """
+
+        if value is None:
+            return ""
+
+        try:
+            text = str(value).strip()
+
+            if text.lower() == "nan":
+                return ""
+
+            if text.endswith(".0"):
+                try:
+                    number = float(text)
+
+                    if number.is_integer():
+                        return str(
+                            int(number)
+                        )
+                except Exception:
+                    pass
+
+            return text
+
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _normalize_ltp(value):
+        """
+        Angel One SmartAPI market quote LTP is already
+        represented as the actual market price.
+
+        DO NOT divide by 100.
+        DO NOT divide by 1000.
+
+        Example:
+            156.95 -> 156.95
+            103.60 -> 103.60
+        """
+
+        result = OptionsEngine._to_float(
+            value
+        )
+
+        if result is None:
+            return None
+
+        if result < 0:
+            return None
+
+        return float(result)
+
+    @staticmethod
+    def _normalize_strike(value):
+        """
+        Normalize Angel One option-master strike.
+
+        Angel One scrip master commonly stores option
+        strikes in paise/scaled form.
+
+        Examples:
+            2600000 -> 26000
+            2500000 -> 25000
+
+        Already-normalized values are retained.
+        """
+
+        value_float = OptionsEngine._to_float(
+            value
+        )
+
+        if value_float is None:
+            return None
+
+        # Standard Angel One option-master scaling.
+        # Index strikes such as 26000 are commonly
+        # represented as 2600000.
+        if abs(value_float) >= 100000:
+            return float(
+                value_float / 100.0
+            )
+
+        return float(value_float)
+
+    # ========================================================
     # SCRIPT MASTER
     # ========================================================
 
@@ -78,7 +200,10 @@ class OptionsEngine:
 
         data = response.json()
 
-        if not isinstance(data, list):
+        if not isinstance(
+            data,
+            list,
+        ):
             return []
 
         self._scrip_master = data
@@ -195,9 +320,6 @@ class OptionsEngine:
                 )
             ).upper().strip()
 
-            # NFO = NSE derivatives
-            # BFO = BSE derivatives
-
             if segment not in self.OPTION_SEGMENTS:
                 continue
 
@@ -238,17 +360,34 @@ class OptionsEngine:
 
             row["exch_seg"] = segment
 
-            row["strike"] = pd.to_numeric(
-                row.get("strike"),
-                errors="coerce",
+            # ------------------------------------------------
+            # FIX 1:
+            # Normalize option-master strike.
+            # ------------------------------------------------
+
+            row["strike"] = (
+                self._normalize_strike(
+                    row.get("strike")
+                )
             )
 
-            row["token"] = str(
-                row.get(
-                    "token",
-                    "",
+            # ------------------------------------------------
+            # FIX 2:
+            # Token MUST remain string.
+            # ------------------------------------------------
+
+            row["token"] = (
+                self._normalize_token(
+                    row.get("token")
                 )
-            ).strip()
+            )
+
+            if not row["token"]:
+                continue
+
+            row["symbol"] = symbol
+
+            row["trading_symbol"] = symbol
 
             row["option_type"] = (
                 "CE"
@@ -264,7 +403,9 @@ class OptionsEngine:
 
             rows.append(row)
 
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(
+            rows
+        )
 
         if df.empty:
             return df
@@ -333,7 +474,6 @@ class OptionsEngine:
                     "%Y-%m-%d",
                 ).date()
 
-                # Current + all future expiries
                 if expiry_dt >= today:
 
                     expiries.append(
@@ -411,6 +551,9 @@ class OptionsEngine:
 
             return pd.DataFrame()
 
+        if spot <= 0:
+            return pd.DataFrame()
+
         df = df.dropna(
             subset=[
                 "strike"
@@ -485,14 +628,45 @@ class OptionsEngine:
             + "market/v1/quote/"
         )
 
+        working_contracts = (
+            contracts_df.copy()
+        )
+
+        # ----------------------------------------------------
+        # Always normalize contract tokens before API call.
+        # ----------------------------------------------------
+
+        working_contracts["token"] = (
+            working_contracts[
+                "token"
+            ]
+            .map(
+                self._normalize_token
+            )
+        )
+
+        working_contracts = (
+            working_contracts[
+                working_contracts[
+                    "token"
+                ] != ""
+            ]
+            .copy()
+        )
+
+        if working_contracts.empty:
+            return contracts_df.copy()
+
         all_quotes = []
 
-        grouped = contracts_df.groupby(
-            contracts_df[
-                "exch_seg"
-            ]
-            .astype(str)
-            .str.upper()
+        grouped = (
+            working_contracts.groupby(
+                working_contracts[
+                    "exch_seg"
+                ]
+                .astype(str)
+                .str.upper()
+            )
         )
 
         for segment, group in grouped:
@@ -502,16 +676,23 @@ class OptionsEngine:
                     "token"
                 ]
                 .astype(str)
+                .map(
+                    self._normalize_token
+                )
                 .drop_duplicates()
                 .tolist()
             )
 
+            tokens = [
+                token
+                for token in tokens
+                if token
+            ]
+
             if not tokens:
                 continue
 
-            # SmartAPI allows batches.
-            # Keep each request <= 50 tokens.
-
+            # SmartAPI batch size.
             for start in range(
                 0,
                 len(tokens),
@@ -529,16 +710,29 @@ class OptionsEngine:
                     },
                 }
 
-                response = requests.post(
-                    url,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=15,
-                )
+                try:
 
-                response.raise_for_status()
+                    response = requests.post(
+                        url,
+                        headers=self.headers,
+                        json=payload,
+                        timeout=15,
+                    )
 
-                result = response.json()
+                    response.raise_for_status()
+
+                    result = response.json()
+
+                except Exception:
+
+                    # Keep processing other batches.
+                    continue
+
+                if not isinstance(
+                    result,
+                    dict,
+                ):
+                    continue
 
                 if not result.get(
                     "status"
@@ -559,38 +753,106 @@ class OptionsEngine:
                     or []
                 )
 
-                if fetched:
+                if not isinstance(
+                    fetched,
+                    list,
+                ):
+                    continue
 
-                    quote_df = pd.DataFrame(
-                        fetched
+                if not fetched:
+                    continue
+
+                quote_df = pd.DataFrame(
+                    fetched
+                )
+
+                if quote_df.empty:
+                    continue
+
+                # ------------------------------------------------
+                # FIX 3:
+                # Angel response can expose token using
+                # symbolToken. Normalize all possible forms.
+                # ------------------------------------------------
+
+                token_source = None
+
+                for candidate in [
+                    "symbolToken",
+                    "symboltoken",
+                    "token",
+                ]:
+
+                    if candidate in quote_df.columns:
+
+                        token_source = candidate
+                        break
+
+                if token_source is None:
+                    continue
+
+                quote_df[
+                    "symboltoken"
+                ] = (
+                    quote_df[
+                        token_source
+                    ]
+                    .map(
+                        self._normalize_token
                     )
+                )
 
-                    if (
-                        "symbolToken"
-                        in quote_df.columns
-                    ):
+                # Preserve Angel symbol if available.
+                if "tradingSymbol" in quote_df.columns:
 
+                    quote_df[
+                        "trading_symbol_quote"
+                    ] = (
                         quote_df[
-                            "symboltoken"
-                        ] = (
-                            quote_df[
-                                "symbolToken"
-                            ]
-                            .astype(str)
-                        )
-
-                    all_quotes.append(
-                        quote_df
+                            "tradingSymbol"
+                        ]
+                        .astype(str)
+                        .str.upper()
+                        .str.strip()
                     )
+
+                elif "tradingsymbol" in quote_df.columns:
+
+                    quote_df[
+                        "trading_symbol_quote"
+                    ] = (
+                        quote_df[
+                            "tradingsymbol"
+                        ]
+                        .astype(str)
+                        .str.upper()
+                        .str.strip()
+                    )
+
+                all_quotes.append(
+                    quote_df
+                )
 
         if not all_quotes:
 
-            return contracts_df.copy()
+            # No quote returned.
+            # Return contracts rather than inventing prices.
+            result_df = (
+                working_contracts.copy()
+            )
+
+            result_df["ltp"] = None
+
+            return result_df
 
         quote_df = pd.concat(
             all_quotes,
             ignore_index=True,
         )
+
+        # --------------------------------------------------------
+        # Numeric quote fields.
+        # --------------------------------------------------------
 
         numeric_columns = [
             "ltp",
@@ -615,11 +877,65 @@ class OptionsEngine:
                     )
                 )
 
-        merged = contracts_df.merge(
+        # --------------------------------------------------------
+        # FIX 4:
+        # Normalize LTP only as numeric.
+        #
+        # NEVER divide by 100/1000.
+        # --------------------------------------------------------
+
+        if "ltp" in quote_df.columns:
+
+            quote_df["ltp"] = (
+                quote_df["ltp"].map(
+                    self._normalize_ltp
+                )
+            )
+
+        # --------------------------------------------------------
+        # Remove duplicate quote tokens before merge.
+        # This prevents one contract becoming multiple rows.
+        # --------------------------------------------------------
+
+        quote_df = (
+            quote_df.drop_duplicates(
+                subset=[
+                    "symboltoken"
+                ],
+                keep="last",
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+        # --------------------------------------------------------
+        # Merge strictly by Angel One token.
+        # --------------------------------------------------------
+
+        merged = working_contracts.merge(
             quote_df,
             left_on="token",
             right_on="symboltoken",
             how="left",
+            suffixes=(
+                "",
+                "_quote",
+            ),
+        )
+
+        # --------------------------------------------------------
+        # Ensure LTP column exists even if API did not return it.
+        # --------------------------------------------------------
+
+        if "ltp" not in merged.columns:
+            merged["ltp"] = None
+
+        # Final LTP normalization.
+        merged["ltp"] = (
+            merged["ltp"].map(
+                self._normalize_ltp
+            )
         )
 
         return merged
@@ -729,16 +1045,28 @@ class OptionsEngine:
             "expirydate": normalized,
         }
 
-        response = requests.post(
-            url,
-            headers=self.headers,
-            json=payload,
-            timeout=10,
-        )
+        try:
 
-        response.raise_for_status()
+            response = requests.post(
+                url,
+                headers=self.headers,
+                json=payload,
+                timeout=10,
+            )
 
-        data = response.json()
+            response.raise_for_status()
+
+            data = response.json()
+
+        except Exception:
+
+            return []
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            return []
 
         if not data.get(
             "status"
@@ -810,15 +1138,27 @@ class OptionsEngine:
             + "marketData/v1/putCallRatio"
         )
 
-        response = requests.get(
-            url,
-            headers=self.headers,
-            timeout=10,
-        )
+        try:
 
-        response.raise_for_status()
+            response = requests.get(
+                url,
+                headers=self.headers,
+                timeout=10,
+            )
 
-        data = response.json()
+            response.raise_for_status()
+
+            data = response.json()
+
+        except Exception:
+
+            return []
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            return []
 
         if not data.get(
             "status"
@@ -882,16 +1222,28 @@ class OptionsEngine:
             "datatype": data_type,
         }
 
-        response = requests.post(
-            url,
-            headers=self.headers,
-            json=payload,
-            timeout=10,
-        )
+        try:
 
-        response.raise_for_status()
+            response = requests.post(
+                url,
+                headers=self.headers,
+                json=payload,
+                timeout=10,
+            )
 
-        data = response.json()
+            response.raise_for_status()
+
+            data = response.json()
+
+        except Exception:
+
+            return []
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            return []
 
         if not data.get(
             "status"
@@ -959,11 +1311,40 @@ class OptionsEngine:
 
             return {}
 
+        try:
+
+            spot = float(
+                spot_price
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
+            return {}
+
         work = df.copy()
+
+        work["strike"] = (
+            pd.to_numeric(
+                work["strike"],
+                errors="coerce",
+            )
+        )
+
+        work = work.dropna(
+            subset=[
+                "strike"
+            ]
+        )
+
+        if work.empty:
+            return {}
 
         work["distance"] = (
             work["strike"]
-            - float(spot_price)
+            - spot
         ).abs()
 
         work = work.sort_values(
