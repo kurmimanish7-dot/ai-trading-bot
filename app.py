@@ -978,6 +978,60 @@ def get_chain(symbol, expiry, spot):
         return pd.DataFrame(), contracts
 
     # -----------------------------------------------------
+    # STRIKE NORMALIZER
+    # -----------------------------------------------------
+
+    def normalize_strike_value(value):
+
+        try:
+
+            value = float(value)
+
+            # Angel One contract-master raw strike
+            # example: 2045000 -> 20450
+            if abs(value) >= 100000:
+                value = value / 100.0
+
+            return value
+
+        except Exception:
+            return None
+
+    # -----------------------------------------------------
+    # NORMALIZE CONTRACT STRIKES
+    # -----------------------------------------------------
+
+    try:
+
+        contract_strike_col = find_column(
+            contracts,
+            [
+                "strike",
+                "strikePrice",
+                "strike_price",
+            ]
+        )
+
+        if contract_strike_col is not None:
+
+            contracts["strikePrice"] = (
+                pd.to_numeric(
+                    contracts[contract_strike_col],
+                    errors="coerce"
+                )
+                .apply(normalize_strike_value)
+            )
+
+            # Keep strike column consistent too
+            if "strike" in contracts.columns:
+                contracts["strike"] = contracts[
+                    "strikePrice"
+                ]
+
+    except Exception:
+        pass
+
+    # -----------------------------------------------------
     # NEAR ATM CONTRACTS
     # -----------------------------------------------------
 
@@ -996,6 +1050,31 @@ def get_chain(symbol, expiry, spot):
 
             if not near.empty:
                 contracts = near
+
+                # Normalize newly selected contracts
+                near_strike_col = find_column(
+                    contracts,
+                    [
+                        "strike",
+                        "strikePrice",
+                        "strike_price",
+                    ]
+                )
+
+                if near_strike_col is not None:
+
+                    contracts["strikePrice"] = (
+                        pd.to_numeric(
+                            contracts[near_strike_col],
+                            errors="coerce"
+                        )
+                        .apply(normalize_strike_value)
+                    )
+
+                    if "strike" in contracts.columns:
+                        contracts["strike"] = contracts[
+                            "strikePrice"
+                        ]
 
     except Exception:
         pass
@@ -1058,10 +1137,19 @@ def get_chain(symbol, expiry, spot):
 
     if strike_col is not None:
 
-        chain["strikePrice"] = pd.to_numeric(
-            chain[strike_col],
-            errors="coerce"
+        chain["strikePrice"] = (
+            pd.to_numeric(
+                chain[strike_col],
+                errors="coerce"
+            )
+            .apply(normalize_strike_value)
         )
+
+        # Keep strike column consistent
+        if "strike" in chain.columns:
+            chain["strike"] = chain[
+                "strikePrice"
+            ]
 
     # -----------------------------------------------------
     # OI NORMALIZATION
@@ -1136,9 +1224,12 @@ def get_chain(symbol, expiry, spot):
 
                 if greek_strike is not None:
 
-                    greeks["strikePrice"] = pd.to_numeric(
-                        greeks[greek_strike],
-                        errors="coerce"
+                    greeks["strikePrice"] = (
+                        pd.to_numeric(
+                            greeks[greek_strike],
+                            errors="coerce"
+                        )
+                        .apply(normalize_strike_value)
                     )
 
                     greek_cols = [
@@ -1214,7 +1305,8 @@ def get_chain(symbol, expiry, spot):
     return (
         chain.reset_index(drop=True),
         contracts.reset_index(drop=True)
-    )
+        )
+
 # =========================================================
 # OPTION TYPE NORMALIZATION
 # =========================================================
