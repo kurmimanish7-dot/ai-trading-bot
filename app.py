@@ -249,12 +249,46 @@ def safe_text(x):
 
 
 def market_open():
-    now = datetime.now()
+    """
+    NSE market status in IST.
 
-    return (
-        now.weekday() < 5
-        and time(9, 15) <= now.time() <= time(15, 30)
-    )
+    Normal equity/derivatives session:
+    Monday-Friday, 09:15 to 15:30.
+
+    NSE holidays are treated as CLOSED.
+    """
+
+    now = datetime.now(IST)
+
+    # Saturday / Sunday
+    if now.weekday() >= 5:
+        return False
+
+    # NSE trading holidays
+    NSE_HOLIDAYS = {
+        "2026-01-26",  # Republic Day
+        "2026-03-03",  # Holi
+        "2026-03-26",  # Ram Navami
+        "2026-03-31",  # Mahavir Jayanti
+        "2026-04-03",  # Good Friday
+        "2026-04-14",  # Ambedkar Jayanti
+        "2026-05-01",  # Maharashtra Day
+        "2026-06-26",  # Bakri Id
+        "2026-08-15",  # Independence Day
+        "2026-08-26",  # Janmashtami
+        "2026-09-14",  # Ganesh Chaturthi
+        "2026-10-02",  # Gandhi Jayanti
+        "2026-10-20",  # Dussehra
+        "2026-11-09",  # Diwali
+        "2026-11-10",  # Diwali Balipratipada
+        "2026-11-24",  # Guru Nanak Jayanti
+        "2026-12-25",  # Christmas
+    }
+
+    if now.strftime("%Y-%m-%d") in NSE_HOLIDAYS:
+        return False
+
+    return dtime(9, 15) <= now.time() <= dtime(15, 30)
 
 
 def expiry_norm(x):
