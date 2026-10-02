@@ -2299,115 +2299,98 @@ def make_trade_idea(
     if last is None:
         return None
 
-    bullish = market.get(
-        "score",
-        0
-    ) >= 4
+    score = float(
+        market.get("score", 0)
+    )
 
-    bearish = market.get(
-        "score",
-        0
-    ) <= -4
+    technical_score = float(
+        market.get("technical_score", 0)
+    )
 
-    if not bullish and not bearish:
-        return None
-
-    direction = (
-        "BUY"
-        if bullish
-        else "SELL"
+    institutional_score = float(
+        market.get("institutional_score", 0)
     )
 
     # -----------------------------------------------------
-    # SPOT ENTRY
+    # DIRECTION
     # -----------------------------------------------------
 
-    entry = last
+    if score >= 2:
+        direction = "BUY"
+        bullish = True
+
+    elif score <= -2:
+        direction = "SELL"
+        bullish = False
+
+    else:
+        # After-market planning:
+        # use technical direction if combined score
+        # is not strong enough for an immediate signal.
+        if technical_score > 0:
+            direction = "BUY"
+            bullish = True
+        elif technical_score < 0:
+            direction = "SELL"
+            bullish = False
+        else:
+            return None
+
+    # -----------------------------------------------------
+    # SPOT RISK MODEL
+    # -----------------------------------------------------
+
+    entry = float(last)
+
+    support = market.get("support")
+    resistance = market.get("resistance")
 
     if bullish:
 
-        sl = (
-            market.get("support")
-            if (
-                market.get("support")
-                and market.get("support") < entry
-            )
-            else entry * 0.997
-        )
+        if support is not None and support < entry:
+            sl = float(support)
+        else:
+            sl = entry * 0.997
 
         risk = entry - sl
 
-        target1 = (
-            entry + risk * 1.5
-        )
+        if risk <= 0:
+            return None
 
-        target2 = (
-            entry + risk * 2.5
-        )
+        target1 = entry + risk * 1.5
+        target2 = entry + risk * 2.5
 
     else:
 
-        sl = (
-            market.get("resistance")
-            if (
-                market.get("resistance")
-                and market.get("resistance") > entry
-            )
-            else entry * 1.003
-        )
+        if resistance is not None and resistance > entry:
+            sl = float(resistance)
+        else:
+            sl = entry * 1.003
 
         risk = sl - entry
 
-        target1 = (
-            entry - risk * 1.5
-        )
+        if risk <= 0:
+            return None
 
-        target2 = (
-            entry - risk * 2.5
-        )
+        target1 = entry - risk * 1.5
+        target2 = entry - risk * 2.5
 
-    if risk <= 0:
-        return None
+    # -----------------------------------------------------
+    # CONFIDENCE
+    # -----------------------------------------------------
 
-    technical_score = abs(
-        market.get(
-            "technical_score",
-            0
-        )
-    )
-
-    institutional_score = abs(
-        market.get(
-            "institutional_score",
-            0
-        )
-    )
-
-    total_score = abs(
-        market.get(
-            "score",
-            0
-        )
+    confidence = 65 + (
+        abs(score) * 4
+    ) + (
+        abs(institutional_score) * 2
     )
 
     confidence = min(
         95,
         max(
-            70,
-            70
-            + total_score * 3
-            + institutional_score * 2
+            65,
+            confidence
         )
-    )
-
-    institutional_bias = market.get(
-        "institutional_bias",
-        "UNAVAILABLE"
-    )
-
-    institutional_source = market.get(
-        "institutional_source",
-        "NONE"
     )
 
     idea = {
@@ -2423,17 +2406,29 @@ def make_trade_idea(
         "holding": (
             "Intraday"
             if market_open()
-            else "Next Session"
+            else "NEXT SESSION"
         ),
         "expiry": expiry,
         "option": None,
+        "strike": None,
+        "option_ltp": None,
+        "delta": None,
+        "gamma": None,
+        "theta": None,
+        "vega": None,
+        "iv": None,
+        "oi": None,
+        "change_oi": None,
         "technical_score": technical_score,
-        "institutional_score": market.get(
-            "institutional_score",
-            0
+        "institutional_score": institutional_score,
+        "institutional_bias": market.get(
+            "institutional_bias",
+            "UNAVAILABLE"
         ),
-        "institutional_bias": institutional_bias,
-        "institutional_source": institutional_source,
+        "institutional_source": market.get(
+            "institutional_source",
+            "NONE"
+        ),
         "why": " ".join(
             market.get(
                 "reasons",
@@ -2447,7 +2442,7 @@ def make_trade_idea(
     }
 
     # -----------------------------------------------------
-    # INDEX OPTION
+    # OPTION IDEA
     # -----------------------------------------------------
 
     if (
@@ -2487,6 +2482,71 @@ def make_trade_idea(
             idea["strike"] = strike
             idea["option_ltp"] = ltp
 
+            # OI
+            idea["oi"] = num(
+                first_value(
+                    selected,
+                    [
+                        "openInterest",
+                        "opnInterest",
+                        "oi",
+                    ]
+                )
+            )
+
+            # Change in OI
+            idea["change_oi"] = num(
+                first_value(
+                    selected,
+                    [
+                        "changeInOpenInterest",
+                        "changeinOpenInterest",
+                        "change_oi",
+                        "chg_oi",
+                    ]
+                )
+            )
+
+            # Greeks
+            idea["delta"] = num(
+                first_value(
+                    selected,
+                    ["delta"]
+                )
+            )
+
+            idea["gamma"] = num(
+                first_value(
+                    selected,
+                    ["gamma"]
+                )
+            )
+
+            idea["theta"] = num(
+                first_value(
+                    selected,
+                    ["theta"]
+                )
+            )
+
+            idea["vega"] = num(
+                first_value(
+                    selected,
+                    ["vega"]
+                )
+            )
+
+            idea["iv"] = num(
+                first_value(
+                    selected,
+                    [
+                        "impliedVolatility",
+                        "iv",
+                    ]
+                )
+            )
+
+            # Option price based targets
             if ltp is not None and ltp > 0:
 
                 idea["entry"] = ltp
@@ -2494,14 +2554,14 @@ def make_trade_idea(
                 idea["target1"] = ltp * 1.20
                 idea["target2"] = ltp * 1.35
 
+                idea["risk_reward"] = 1.35
+
             idea["why"] += (
-                f" Direction ke according {side} "
-                f"selection ki gayi hai, nearest ATM strike "
-                f"{strike}."
+                f" {side} selected near ATM "
+                f"strike {strike}."
             )
 
     return idea
-
 # =========================================================
 # GEMINI
 # =========================================================
