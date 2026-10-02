@@ -1049,71 +1049,103 @@ def normalize_option_type(value):
 
 def calculate_pcr(df):
 
-    if df.empty:
-        return None
+    # First priority: actual option-chain OI
+    if df is not None and not df.empty:
 
-    oi_col = find_column(
-        df,
-        [
-            "opnInterest",
-            "openInterest",
-            "oi",
-            "open_interest",
-        ]
-    )
+        oi_col = find_column(
+            df,
+            [
+                "opnInterest",
+                "openInterest",
+                "oi",
+                "open_interest",
+            ]
+        )
 
-    type_col = find_column(
-        df,
-        [
-            "option_type",
-            "optionType",
-            "optionTypeName",
-            "option_type_name",
-            "type",
-        ]
-    )
+        type_col = find_column(
+            df,
+            [
+                "option_type",
+                "optionType",
+                "optionTypeName",
+                "option_type_name",
+                "type",
+            ]
+        )
 
-    if oi_col is None or type_col is None:
-        return None
+        if oi_col is not None and type_col is not None:
 
-    work = df.copy()
+            work = df.copy()
 
-    work["_oi"] = pd.to_numeric(
-        work[oi_col]
-        .astype(str)
-        .str.replace(",", "", regex=False),
-        errors="coerce"
-    ).fillna(0)
+            work["_oi"] = pd.to_numeric(
+                work[oi_col]
+                .astype(str)
+                .str.replace(",", "", regex=False),
+                errors="coerce"
+            ).fillna(0)
 
-    work["_option_type"] = (
-        work[type_col]
-        .map(normalize_option_type)
-    )
+            work["_option_type"] = (
+                work[type_col]
+                .map(normalize_option_type)
+            )
 
-    ce_oi = work.loc[
-        work["_option_type"] == "CE",
-        "_oi"
-    ].sum()
+            ce_oi = work.loc[
+                work["_option_type"] == "CE",
+                "_oi"
+            ].sum()
 
-    pe_oi = work.loc[
-        work["_option_type"] == "PE",
-        "_oi"
-    ].sum()
+            pe_oi = work.loc[
+                work["_option_type"] == "PE",
+                "_oi"
+            ].sum()
 
-    if ce_oi <= 0 or pe_oi < 0:
-        return None
+            if ce_oi > 0 and pe_oi >= 0:
 
-    pcr = pe_oi / ce_oi
+                pcr = pe_oi / ce_oi
 
-    # Sanity check.
-    # Extremely abnormal values are not shown as valid PCR.
-    if not np.isfinite(pcr):
-        return None
+                if np.isfinite(pcr) and 0 < pcr <= 10:
+                    return float(pcr)
 
-    if pcr <= 0 or pcr > 10:
-        return None
+    # Second priority: Angel One official PCR API
+    try:
 
-    return float(pcr)
+        if options is not None:
+
+            pcr_df = clean_df(
+                options.pcr_dataframe()
+            )
+
+            if not pcr_df.empty:
+
+                for col in [
+                    "pcr",
+                    "putCallRatio",
+                    "put_call_ratio",
+                ]:
+
+                    if col in pcr_df.columns:
+
+                        values = pd.to_numeric(
+                            pcr_df[col],
+                            errors="coerce"
+                        ).dropna()
+
+                        if not values.empty:
+
+                            value = float(
+                                values.iloc[-1]
+                            )
+
+                            if (
+                                np.isfinite(value)
+                                and 0 < value <= 10
+                            ):
+                                return value
+
+    except Exception:
+        pass
+
+    return None
 
 # =========================================================
 # LIVE DERIVATIVES / OPTION-CHAIN PROXY
