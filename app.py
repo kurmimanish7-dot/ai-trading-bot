@@ -4,6 +4,9 @@ import numpy as np
 from datetime import datetime, date, time
 import json
 import requests
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 # =========================================================
 # PAGE
