@@ -2416,6 +2416,635 @@ def option_ltp(row):
             ]
         )
     )
+# =========================================================
+# MULTI-TIMEFRAME TRADE CONFIRMATION ENGINE
+# =========================================================
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_confirmation_timeframe(
+    symbol,
+    interval,
+    days
+):
+    try:
+        df = fetch_ohlcv(
+            symbol,
+            interval,
+            days
+        )
+
+        if df.empty:
+            return pd.DataFrame()
+
+        return add_indicators(df)
+
+    except Exception:
+        return pd.DataFrame()
+
+
+def analyze_confirmation_timeframe(
+    df,
+    label
+):
+    result = {
+        "label": label,
+        "available": False,
+        "trend": "UNKNOWN",
+        "score": 0,
+        "last": None,
+        "ema20": None,
+        "ema50": None,
+        "rsi": None,
+        "adx": None,
+        "vwap": None,
+        "volume_ratio": None,
+        "structure": "UNKNOWN",
+        "reasons": [],
+    }
+
+    if df is None or df.empty:
+        return result
+
+    try:
+        row = df.iloc[-1]
+    except Exception:
+        return result
+
+    last = num(row.get("close"))
+
+    if last is None:
+        return result
+
+    result["available"] = True
+    result["last"] = last
+
+    result["ema20"] = num(
+        row.get("EMA20")
+    )
+
+    result["ema50"] = num(
+        row.get("EMA50")
+    )
+
+    result["rsi"] = num(
+        row.get("RSI")
+    )
+
+    result["adx"] = num(
+        row.get("ADX")
+    )
+
+    result["vwap"] = num(
+        row.get("VWAP")
+    )
+
+    if (
+        "volume" in df.columns
+        and num(row.get("volume")) is not None
+        and num(row.get("VOL_AVG20")) not in [
+            None,
+            0
+        ]
+    ):
+        result["volume_ratio"] = (
+            num(row.get("volume"))
+            / num(row.get("VOL_AVG20"))
+        )
+
+    score = 0
+
+    # -----------------------------------------------------
+    # EMA TREND
+    # -----------------------------------------------------
+
+    if (
+        result["ema20"] is not None
+        and result["ema50"] is not None
+    ):
+
+        if (
+            last > result["ema20"]
+            and result["ema20"] > result["ema50"]
+        ):
+
+            score += 2
+
+            result["reasons"].append(
+                f"{label}: EMA structure bullish."
+            )
+
+        elif (
+            last < result["ema20"]
+            and result["ema20"] < result["ema50"]
+        ):
+
+            score -= 2
+
+            result["reasons"].append(
+                f"{label}: EMA structure bearish."
+            )
+
+    # -----------------------------------------------------
+    # VWAP
+    # -----------------------------------------------------
+
+    if result["vwap"] is not None:
+
+        if last > result["vwap"]:
+
+            score += 1
+
+            result["reasons"].append(
+                f"{label}: price VWAP ke upar."
+            )
+
+        elif last < result["vwap"]:
+
+            score -= 1
+
+            result["reasons"].append(
+                f"{label}: price VWAP ke neeche."
+            )
+
+    # -----------------------------------------------------
+    # RSI
+    # -----------------------------------------------------
+
+    if result["rsi"] is not None:
+
+        if result["rsi"] >= 55:
+
+            score += 1
+
+        elif result["rsi"] <= 45:
+
+            score -= 1
+
+    # -----------------------------------------------------
+    # MACD
+    # -----------------------------------------------------
+
+    macd = num(
+        row.get("MACD")
+    )
+
+    macd_signal = num(
+        row.get("MACD_SIGNAL")
+    )
+
+    if (
+        macd is not None
+        and macd_signal is not None
+    ):
+
+        if macd > macd_signal:
+
+            score += 1
+
+        elif macd < macd_signal:
+
+            score -= 1
+
+    # -----------------------------------------------------
+    # ADX
+    # -----------------------------------------------------
+
+    if (
+        result["adx"] is not None
+        and result["adx"] >= 20
+    ):
+
+        result["reasons"].append(
+            f"{label}: ADX {result['adx']:.1f}, trend strength active."
+        )
+
+    # -----------------------------------------------------
+    # PRICE STRUCTURE
+    # -----------------------------------------------------
+
+    if len(df) >= 8:
+
+        recent = df.tail(8)
+
+        recent_highs = (
+            recent["high"]
+            .tail(4)
+            .values
+        )
+
+        previous_highs = (
+            recent["high"]
+            .head(4)
+            .values
+        )
+
+        recent_lows = (
+            recent["low"]
+            .tail(4)
+            .values
+        )
+
+        previous_lows = (
+            recent["low"]
+            .head(4)
+            .values
+        )
+
+        try:
+
+            if (
+                np.nanmean(recent_highs)
+                > np.nanmean(previous_highs)
+                and
+                np.nanmean(recent_lows)
+                > np.nanmean(previous_lows)
+            ):
+
+                result["structure"] = (
+                    "HIGHER HIGH / HIGHER LOW"
+                )
+
+                score += 2
+
+                result["reasons"].append(
+                    f"{label}: higher-high / higher-low structure."
+                )
+
+            elif (
+                np.nanmean(recent_highs)
+                < np.nanmean(previous_highs)
+                and
+                np.nanmean(recent_lows)
+                < np.nanmean(previous_lows)
+            ):
+
+                result["structure"] = (
+                    "LOWER HIGH / LOWER LOW"
+                )
+
+                score -= 2
+
+                result["reasons"].append(
+                    f"{label}: lower-high / lower-low structure."
+                )
+
+        except Exception:
+            pass
+
+    # -----------------------------------------------------
+    # VOLUME
+    # -----------------------------------------------------
+
+    if result["volume_ratio"] is not None:
+
+        if result["volume_ratio"] >= 1.20:
+
+            result["reasons"].append(
+                f"{label}: volume confirmation present."
+            )
+
+    result["score"] = score
+
+    # -----------------------------------------------------
+    # FINAL TIMEFRAME TREND
+    # -----------------------------------------------------
+
+    if score >= 2:
+
+        result["trend"] = "BULLISH"
+
+    elif score <= -2:
+
+        result["trend"] = "BEARISH"
+
+    else:
+
+        result["trend"] = "NEUTRAL"
+
+    return result
+
+
+def build_trade_confirmation(
+    symbol,
+    market
+):
+    """
+    Phase-1 confirmation engine.
+
+    Checks:
+    - 5 minute
+    - 15 minute
+    - 1 hour
+    - EMA alignment
+    - VWAP
+    - RSI
+    - MACD
+    - ADX
+    - price structure
+    - volume
+    """
+
+    confirmation = {
+        "available": False,
+        "status": "WAIT",
+        "direction": "NEUTRAL",
+        "score": 0,
+        "max_score": 0,
+        "strength": 0,
+        "timeframes": {},
+        "checks": [],
+        "reasons": [],
+        "warnings": [],
+    }
+
+    timeframe_configs = [
+        (
+            "5M",
+            "FIVE_MINUTE",
+            5
+        ),
+        (
+            "15M",
+            "FIFTEEN_MINUTE",
+            10
+        ),
+        (
+            "1H",
+            "ONE_HOUR",
+            20
+        ),
+    ]
+
+    results = []
+
+    for label, interval, days in timeframe_configs:
+
+        df = fetch_confirmation_timeframe(
+            symbol,
+            interval,
+            days
+        )
+
+        analysis = analyze_confirmation_timeframe(
+            df,
+            label
+        )
+
+        confirmation["timeframes"][label] = analysis
+
+        if analysis["available"]:
+            results.append(analysis)
+
+    if not results:
+        confirmation["warnings"].append(
+            "Multi-timeframe data unavailable."
+        )
+
+        return confirmation
+
+    confirmation["available"] = True
+
+    # -----------------------------------------------------
+    # TIMEFRAME DIRECTION VOTES
+    # -----------------------------------------------------
+
+    bullish_votes = sum(
+        1
+        for x in results
+        if x["trend"] == "BULLISH"
+    )
+
+    bearish_votes = sum(
+        1
+        for x in results
+        if x["trend"] == "BEARISH"
+    )
+
+    # -----------------------------------------------------
+    # DIRECTION
+    # -----------------------------------------------------
+
+    if bullish_votes >= 2 and bullish_votes > bearish_votes:
+
+        direction = "BULLISH"
+
+    elif bearish_votes >= 2 and bearish_votes > bullish_votes:
+
+        direction = "BEARISH"
+
+    else:
+
+        direction = "NEUTRAL"
+
+    confirmation["direction"] = direction
+
+    # -----------------------------------------------------
+    # SCORE
+    # -----------------------------------------------------
+
+    raw_score = sum(
+        x["score"]
+        for x in results
+    )
+
+    confirmation["score"] = raw_score
+
+    max_possible = len(results) * 7
+
+    confirmation["max_score"] = max_possible
+
+    if max_possible > 0:
+
+        confirmation["strength"] = round(
+            min(
+                100,
+                abs(raw_score)
+                / max_possible
+                * 100
+            ),
+            1
+        )
+
+    # -----------------------------------------------------
+    # TREND ALIGNMENT
+    # -----------------------------------------------------
+
+    if (
+        bullish_votes >= 2
+        and bearish_votes == 0
+    ):
+
+        confirmation["checks"].append(
+            "MTF BULLISH ALIGNMENT"
+        )
+
+        confirmation["score"] += 2
+
+        confirmation["reasons"].append(
+            "5M/15M/1H me bullish alignment mil raha hai."
+        )
+
+    elif (
+        bearish_votes >= 2
+        and bullish_votes == 0
+    ):
+
+        confirmation["checks"].append(
+            "MTF BEARISH ALIGNMENT"
+        )
+
+        confirmation["score"] -= 2
+
+        confirmation["reasons"].append(
+            "5M/15M/1H me bearish alignment mil raha hai."
+        )
+
+    else:
+
+        confirmation["warnings"].append(
+            "Timeframes fully aligned nahi hain."
+        )
+
+    # -----------------------------------------------------
+    # MARKET STRUCTURE
+    # -----------------------------------------------------
+
+    bullish_structure = sum(
+        1
+        for x in results
+        if x["structure"]
+        == "HIGHER HIGH / HIGHER LOW"
+    )
+
+    bearish_structure = sum(
+        1
+        for x in results
+        if x["structure"]
+        == "LOWER HIGH / LOWER LOW"
+    )
+
+    if bullish_structure >= 2:
+
+        confirmation["checks"].append(
+            "BULLISH PRICE STRUCTURE"
+        )
+
+        confirmation["score"] += 2
+
+        confirmation["reasons"].append(
+            "Multiple timeframes higher-high / higher-low structure dikha rahe hain."
+        )
+
+    elif bearish_structure >= 2:
+
+        confirmation["checks"].append(
+            "BEARISH PRICE STRUCTURE"
+        )
+
+        confirmation["score"] -= 2
+
+        confirmation["reasons"].append(
+            "Multiple timeframes lower-high / lower-low structure dikha rahe hain."
+        )
+
+    else:
+
+        confirmation["warnings"].append(
+            "Price structure mixed hai."
+        )
+
+    # -----------------------------------------------------
+    # VOLUME
+    # -----------------------------------------------------
+
+    volume_confirmed = any(
+        (
+            x["volume_ratio"] is not None
+            and x["volume_ratio"] >= 1.20
+        )
+        for x in results
+    )
+
+    if volume_confirmed:
+
+        confirmation["checks"].append(
+            "VOLUME CONFIRMATION"
+        )
+
+        confirmation["reasons"].append(
+            "At least one timeframe me above-average volume confirmation hai."
+        )
+
+    else:
+
+        confirmation["warnings"].append(
+            "Strong volume confirmation nahi mila."
+        )
+
+    # -----------------------------------------------------
+    # MARKET ANALYSIS CONSISTENCY
+    # -----------------------------------------------------
+
+    market_score = float(
+        market.get("technical_score", 0)
+        or 0
+    )
+
+    if direction == "BULLISH" and market_score > 0:
+
+        confirmation["checks"].append(
+            "TECHNICAL DIRECTION ALIGNED"
+        )
+
+        confirmation["score"] += 2
+
+    elif direction == "BEARISH" and market_score < 0:
+
+        confirmation["checks"].append(
+            "TECHNICAL DIRECTION ALIGNED"
+        )
+
+        confirmation["score"] -= 2
+
+    else:
+
+        confirmation["warnings"].append(
+            "Current technical score aur MTF direction fully aligned nahi hain."
+        )
+
+    # -----------------------------------------------------
+    # FINAL STATUS
+    # -----------------------------------------------------
+
+    final_score = confirmation["score"]
+
+    if direction == "BULLISH":
+
+        if final_score >= 5:
+            confirmation["status"] = "CONFIRMED"
+
+        elif final_score >= 2:
+            confirmation["status"] = "WATCH"
+
+        else:
+            confirmation["status"] = "REJECT"
+
+    elif direction == "BEARISH":
+
+        if final_score <= -5:
+            confirmation["status"] = "CONFIRMED"
+
+        elif final_score <= -2:
+            confirmation["status"] = "WATCH"
+
+        else:
+            confirmation["status"] = "REJECT"
+
+    else:
+
+        confirmation["status"] = "WATCH"
+
+    return confirmation
 
 # =========================================================
 # TRADE IDEA
