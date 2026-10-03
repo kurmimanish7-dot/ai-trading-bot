@@ -2986,6 +2986,150 @@ market = analyze_market(
     underlying,
     derivatives_proxy
 )
+# =========================
+# TOMORROW MARKET BLUEPRINT
+# =========================
+
+st.markdown("## 🔮 Tomorrow Market Blueprint")
+
+if build_tomorrow_forecast is None:
+    st.warning("Tomorrow Forecast Engine unavailable.")
+else:
+    try:
+        tomorrow_data = {
+            "symbol": underlying,
+            "spot": market.get("last"),
+            "support": market.get("support"),
+            "resistance": market.get("resistance"),
+            "rsi": market.get("rsi"),
+            "adx": market.get("adx"),
+            "ema20": market.get("ema20"),
+            "ema50": market.get("ema50"),
+            "vwap": market.get("vwap"),
+            "technical_score": market.get("technical_score", 0),
+            "institutional_score": market.get("institutional_score", 0),
+            "score": market.get("score", 0),
+            "institutional_bias": market.get(
+                "institutional_bias", "UNAVAILABLE"
+            ),
+            "pcr": pcr,
+            "fii_net": fii_dii.get("fii_net"),
+            "dii_net": fii_dii.get("dii_net"),
+        }
+
+        tomorrow = build_tomorrow_forecast(tomorrow_data)
+
+        if tomorrow:
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                "Next Session Bias",
+                tomorrow.get("bias", "N/A")
+            )
+
+            c2.metric(
+                "Forecast Confidence",
+                f"{tomorrow.get('confidence', 0):.0f}%"
+            )
+
+            c3.metric(
+                "Combined Score",
+                f"{tomorrow.get('combined_score', 0):+.1f}"
+            )
+
+            c4.metric(
+                "Data Quality",
+                tomorrow.get("data_quality", "N/A")
+            )
+
+            st.markdown("### 📊 Reference Levels")
+
+            r1, r2, r3, r4 = st.columns(4)
+
+            r1.metric(
+                "Reference Spot",
+                f"{tomorrow.get('spot', 0):,.2f}"
+                if tomorrow.get("spot") is not None else "N/A"
+            )
+
+            r2.metric(
+                "Support",
+                f"{tomorrow.get('support', 0):,.2f}"
+                if tomorrow.get("support") is not None else "N/A"
+            )
+
+            r3.metric(
+                "Resistance",
+                f"{tomorrow.get('resistance', 0):,.2f}"
+                if tomorrow.get("resistance") is not None else "N/A"
+            )
+
+            r4.metric(
+                "Expected Range",
+                tomorrow.get("expected_range", "N/A")
+            )
+
+            st.markdown("### 🎯 Key Triggers")
+
+            t1, t2 = st.columns(2)
+
+            with t1:
+                st.success(
+                    f"**Bullish Trigger**\n\n"
+                    f"{tomorrow.get('bullish_trigger', 'N/A')}"
+                )
+
+            with t2:
+                st.error(
+                    f"**Bearish Trigger**\n\n"
+                    f"{tomorrow.get('bearish_trigger', 'N/A')}"
+                )
+
+            st.markdown("### 🧠 Market Scenarios")
+
+            scenarios = tomorrow.get("scenarios", [])
+
+            if scenarios:
+                for scenario in scenarios:
+                    st.write(
+                        f"**{scenario.get('name', 'Scenario')}** — "
+                        f"{scenario.get('description', '')}"
+                    )
+            else:
+                st.info("No scenario data available.")
+
+            st.markdown("### 🔎 Research Reasons")
+
+            reasons = tomorrow.get("reasons", [])
+
+            if reasons:
+                for reason in reasons:
+                    st.write(f"• {reason}")
+            else:
+                st.info("No additional reasons available.")
+
+            st.markdown("### ⚠️ Invalidation")
+
+            st.warning(
+                tomorrow.get(
+                    "invalidation",
+                    "Forecast invalidation level unavailable."
+                )
+            )
+
+            st.caption(
+                tomorrow.get(
+                    "disclaimer",
+                    "Scenario-based research only. "
+                    "This is not a guaranteed market prediction."
+                )
+            )
+
+        else:
+            st.info("Tomorrow forecast data unavailable.")
+
+    except Exception as e:
+        st.warning(f"Tomorrow Market Blueprint unavailable: {e}")
 
 # =========================================================
 # FII / DII
