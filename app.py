@@ -3070,9 +3070,16 @@ else:
             )
 
             r4.metric(
-                "Expected Range",
-                tomorrow.get("expected_range", "N/A")
-            )
+    "Expected Range",
+    (
+        f"{tomorrow['expected_range']['low']:,.2f} - "
+        f"{tomorrow['expected_range']['high']:,.2f}"
+        if isinstance(tomorrow.get("expected_range"), dict)
+        and tomorrow["expected_range"].get("low") is not None
+        and tomorrow["expected_range"].get("high") is not None
+        else "N/A"
+    )
+)
 
             st.markdown("### 🎯 Key Triggers")
 
