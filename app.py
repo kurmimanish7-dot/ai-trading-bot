@@ -3059,8 +3059,8 @@ def make_trade_idea(
     chain=None,
 ):
     last = market.get("last")
-    
-        confirmation = build_trade_confirmation(
+
+    confirmation = build_trade_confirmation(
         symbol,
         market
     )
