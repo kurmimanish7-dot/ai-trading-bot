@@ -209,6 +209,11 @@ except Exception:
     TelemetryEngine = None
 
 try:
+    from options_engine import OptionsEngine
+except Exception:
+    OptionsEngine = None
+
+try:
     from tomorrow_forecast_engine import build_tomorrow_forecast
 except Exception:
     build_tomorrow_forecast = None
