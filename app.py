@@ -866,6 +866,7 @@ SPOT_TOKENS = {
     "NIFTY": ("NSE", "99926000"),
     "BANKNIFTY": ("NSE", "99926009"),
     "FINNIFTY": ("NSE", "99926037"),
+    "MIDCPNIFTY": ("NSE", "99926074"),
     "SENSEX": ("BSE", "99919000"),
     "BANKEX": ("BSE", "99919012"),
 }
