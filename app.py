@@ -2429,23 +2429,385 @@ def make_trade_idea(
     expiry=None,
     chain=None,
 ):
-
     last = market.get("last")
 
     if last is None:
         return None
 
-    score = float(
-        market.get("score", 0)
-    )
+    try:
+        entry_spot = float(last)
+    except Exception:
+        return None
 
     technical_score = float(
-        market.get("technical_score", 0)
+        market.get("technical_score", 0) or 0
     )
 
     institutional_score = float(
-        market.get("institutional_score", 0)
+        market.get("institutional_score", 0) or 0
     )
+
+    score = float(
+        market.get(
+            "score",
+            technical_score + institutional_score
+        ) or 0
+    )
+
+    # -----------------------------------------------------
+    # MARKET DIRECTION
+    # -----------------------------------------------------
+
+    if score >= 2:
+        bullish = True
+    elif score <= -2:
+        bullish = False
+    else:
+        if technical_score > 0:
+            bullish = True
+        elif technical_score < 0:
+            bullish = False
+        else:
+            return None
+
+    direction = "BUY" if bullish else "SELL"
+
+    # -----------------------------------------------------
+    # SPOT RISK MODEL
+    # -----------------------------------------------------
+
+    support = market.get("support")
+    resistance = market.get("resistance")
+
+    try:
+        support = float(support) if support is not None else None
+    except Exception:
+        support = None
+
+    try:
+        resistance = (
+            float(resistance)
+            if resistance is not None
+            else None
+        )
+    except Exception:
+        resistance = None
+
+    if bullish:
+
+        if support is not None and support < entry_spot:
+            sl = support
+        else:
+            sl = entry_spot * 0.997
+
+        risk = entry_spot - sl
+
+        if risk <= 0:
+            return None
+
+        target1 = entry_spot + (risk * 1.5)
+        target2 = entry_spot + (risk * 2.5)
+
+    else:
+
+        if resistance is not None and resistance > entry_spot:
+            sl = resistance
+        else:
+            sl = entry_spot * 1.003
+
+        risk = sl - entry_spot
+
+        if risk <= 0:
+            return None
+
+        target1 = entry_spot - (risk * 1.5)
+        target2 = entry_spot - (risk * 2.5)
+
+    # -----------------------------------------------------
+    # CONFIDENCE
+    # -----------------------------------------------------
+
+    confidence = (
+        65
+        + abs(score) * 4
+        + abs(institutional_score) * 2
+    )
+
+    confidence = min(
+        95,
+        max(65, confidence)
+    )
+
+    # -----------------------------------------------------
+    # BASE IDEA
+    # -----------------------------------------------------
+
+    idea = {
+        "segment": instrument,
+        "symbol": symbol,
+
+        "action": direction,
+
+        "entry": entry_spot,
+        "sl": sl,
+        "target1": target1,
+        "target2": target2,
+
+        "risk_reward": (
+            abs(target1 - entry_spot) / risk
+            if risk > 0
+            else 0
+        ),
+
+        "target2_risk_reward": (
+            abs(target2 - entry_spot) / risk
+            if risk > 0
+            else 0
+        ),
+
+        "confidence": confidence,
+
+        "holding": (
+            "Intraday"
+            if market_open()
+            else "NEXT SESSION"
+        ),
+
+        "expiry": expiry,
+
+        "option": None,
+        "strike": None,
+        "option_ltp": None,
+
+        "delta": None,
+        "gamma": None,
+        "theta": None,
+        "vega": None,
+        "iv": None,
+
+        "oi": None,
+        "change_oi": None,
+
+        "technical_score": technical_score,
+        "institutional_score": institutional_score,
+
+        "institutional_bias": market.get(
+            "institutional_bias",
+            "UNAVAILABLE"
+        ),
+
+        "institutional_source": market.get(
+            "institutional_source",
+            "NONE"
+        ),
+
+        "why": " ".join(
+            market.get(
+                "reasons",
+                []
+            )[:8]
+        ),
+
+        "invalidation": (
+            f"Price {'below' if bullish else 'above'} "
+            f"SL level sustain kare."
+        ),
+    }
+
+    # -----------------------------------------------------
+    # INDEX OPTION
+    #
+    # IMPORTANT:
+    # Bullish  = BUY CE
+    # Bearish  = BUY PE
+    #
+    # No SELL CE / SELL PE here.
+    # -----------------------------------------------------
+
+    if (
+        instrument == "INDEX OPTION"
+        and chain is not None
+        and not chain.empty
+    ):
+
+        option_type = (
+            option_side
+            if option_side in ["CE", "PE"]
+            else (
+                "CE"
+                if bullish
+                else "PE"
+            )
+        )
+
+        selected = nearest_option(
+            chain,
+            entry_spot,
+            option_type
+        )
+
+        if selected is not None:
+
+            strike = first_value(
+                selected,
+                [
+                    "strike",
+                    "strikePrice",
+                    "strike_price",
+                ]
+            )
+
+            option_price = option_ltp(
+                selected
+            )
+
+            idea["option"] = option_type
+            idea["action"] = "BUY"
+            idea["strike"] = strike
+            idea["option_ltp"] = option_price
+
+            # -------------------------------------------------
+            # OPTION OI
+            # -------------------------------------------------
+
+            idea["oi"] = num(
+                first_value(
+                    selected,
+                    [
+                        "openInterest",
+                        "opnInterest",
+                        "oi",
+                    ]
+                )
+            )
+
+            idea["change_oi"] = num(
+                first_value(
+                    selected,
+                    [
+                        "changeInOpenInterest",
+                        "changeinOpenInterest",
+                        "change_oi",
+                        "chg_oi",
+                    ]
+                )
+            )
+
+            # -------------------------------------------------
+            # GREEKS
+            # -------------------------------------------------
+
+            idea["delta"] = num(
+                first_value(
+                    selected,
+                    ["delta"]
+                )
+            )
+
+            idea["gamma"] = num(
+                first_value(
+                    selected,
+                    ["gamma"]
+                )
+            )
+
+            idea["theta"] = num(
+                first_value(
+                    selected,
+                    ["theta"]
+                )
+            )
+
+            idea["vega"] = num(
+                first_value(
+                    selected,
+                    ["vega"]
+                )
+            )
+
+            idea["iv"] = num(
+                first_value(
+                    selected,
+                    [
+                        "impliedVolatility",
+                        "iv",
+                    ]
+                )
+            )
+
+            # -------------------------------------------------
+            # OPTION BUYING RISK MODEL
+            # -------------------------------------------------
+
+            if option_price is not None:
+
+                try:
+                    option_entry = float(option_price)
+                except Exception:
+                    option_entry = None
+
+                if (
+                    option_entry is not None
+                    and option_entry > 0
+                ):
+
+                    option_sl = option_entry * 0.85
+
+                    option_target1 = (
+                        option_entry * 1.20
+                    )
+
+                    option_target2 = (
+                        option_entry * 1.35
+                    )
+
+                    option_risk = (
+                        option_entry - option_sl
+                    )
+
+                    if option_risk > 0:
+
+                        idea["entry"] = option_entry
+                        idea["sl"] = option_sl
+                        idea["target1"] = option_target1
+                        idea["target2"] = option_target2
+
+                        idea["risk_reward"] = (
+                            (
+                                option_target1
+                                - option_entry
+                            )
+                            / option_risk
+                        )
+
+                        idea["target2_risk_reward"] = (
+                            (
+                                option_target2
+                                - option_entry
+                            )
+                            / option_risk
+                        )
+
+            # -------------------------------------------------
+            # EXPLANATION
+            # -------------------------------------------------
+
+            direction_text = (
+                "Bullish"
+                if bullish
+                else "Bearish"
+            )
+
+            idea["why"] = (
+                f"{idea['why']} "
+                f"{direction_text} setup ke basis par "
+                f"BUY {option_type} selected near ATM "
+                f"strike {strike}. "
+                f"Option buying model use kiya gaya hai; "
+                f"SELL {option_type} nahi."
+            ).strip()
+
+    return idea
 
     # -----------------------------------------------------
     # DIRECTION
