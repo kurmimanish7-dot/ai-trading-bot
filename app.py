@@ -3059,6 +3059,17 @@ def make_trade_idea(
     chain=None,
 ):
     last = market.get("last")
+    
+        confirmation = build_trade_confirmation(
+        symbol,
+        market
+    )
+
+    if not confirmation.get("available"):
+        return None
+
+    if confirmation.get("status") == "REJECT":
+        return None
 
     if last is None:
         return None
