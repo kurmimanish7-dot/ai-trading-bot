@@ -3102,14 +3102,14 @@ else:
             scenarios = tomorrow.get("scenarios", [])
 
             if scenarios:
-    for scenario in scenarios:
-        st.write(
-            f"**{scenario.get('scenario', 'Scenario')}** — "
-            f"{scenario.get('condition', '')}"
-        )
-        st.caption(
-            scenario.get('view', '')
-        )
+                for scenario in scenarios:
+                    st.write(
+                        f"**{scenario.get('scenario', 'Scenario')}** — "
+                        f"{scenario.get('condition', '')}"
+                    )
+                    st.caption(
+                        scenario.get('view', '')
+                    )
             else:
                 st.info("No scenario data available.")
 
