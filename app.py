@@ -880,56 +880,79 @@ SPOT_TOKENS = {
 # =========================================================
 
 def get_spot(symbol):
-    # 1. Try live LTP from Angel One
-    if telemetry is not None:
+    """
+    Get the CURRENT live index LTP from Angel One.
+
+    Important:
+    TelemetryEngine exposes get_live_ltp(), not get_ltp().
+    The old app called the non-existent get_ltp() method,
+    swallowed the exception, and then fell back to cached
+    historical candles. That made the screen look frozen.
+
+    During market hours we do NOT silently replace a failed
+    live LTP with an old candle close.
+    """
+
+    if telemetry is None:
+        return None
+
+    exchange, token = SPOT_TOKENS.get(
+        symbol,
+        ("", "")
+    )
+
+    if not exchange or not token:
+        return None
+
+    # Angel's index trading-symbol names can vary by index.
+    # Try the app symbol first, then known SmartAPI names.
+    symbol_candidates = {
+        "NIFTY": [
+            "NIFTY",
+            "Nifty 50",
+        ],
+        "BANKNIFTY": [
+            "BANKNIFTY",
+            "Nifty Bank",
+        ],
+        "FINNIFTY": [
+            "FINNIFTY",
+            "Nifty Fin Service",
+        ],
+        "MIDCPNIFTY": [
+            "MIDCPNIFTY",
+            "NIFTY MID SELECT",
+        ],
+        "SENSEX": [
+            "SENSEX",
+        ],
+        "BANKEX": [
+            "BANKEX",
+        ],
+    }.get(symbol, [symbol])
+
+    for tradingsymbol in symbol_candidates:
         try:
-            result = telemetry.get_ltp(symbol)
+            result = telemetry.get_live_ltp(
+                exchange=exchange,
+                tradingsymbol=tradingsymbol,
+                symboltoken=token,
+            )
 
             if isinstance(result, dict):
-                for key in (
-                    "ltp",
-                    "LTP",
-                    "lastTradedPrice",
-                    "lastTradedPriceValue",
-                    "close",
-                    "price",
-                ):
-                    if key in result:
-                        value = num(result[key])
-                        if value is not None and value > 0:
-                            return value
+                value = num(
+                    result.get("ltp")
+                )
 
-            value = num(result)
-            if value is not None and value > 0:
-                return value
+                if value is not None and value > 0:
+                    return value
 
         except Exception:
-            pass
+            continue
 
-    # 2. If live LTP fails, use latest OHLCV close
-    try:
-        df = fetch_ohlcv(
-            symbol,
-            interval="FIVE_MINUTE",
-            days=5,
-        )
-
-        if df is not None and not df.empty:
-            if "close" in df.columns:
-                close = pd.to_numeric(
-                    df["close"],
-                    errors="coerce"
-                ).dropna()
-
-                if not close.empty:
-                    value = float(close.iloc[-1])
-
-                    if value > 0:
-                        return value
-    except Exception:
-        pass
-
-    # 3. No fake fallback number
+    # Never show an old candle as LIVE LTP.
+    # After-market historical analysis can still use fetch_ohlcv()
+    # elsewhere in the application.
     return None
 
 # =========================================================
@@ -1721,7 +1744,7 @@ def calculate_live_derivatives_proxy(chain, pcr):
 # OHLCV
 # =========================================================
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def fetch_ohlcv(
     symbol,
     interval="FIVE_MINUTE",
@@ -3931,622 +3954,623 @@ if st.sidebar.button(
     st.cache_data.clear()
     st.rerun()
 
-# =========================================================
-# CURRENT MARKET
-# =========================================================
+with st.fragment(run_every="5s"):
+    # =========================================================
+    # CURRENT MARKET
+    # =========================================================
 
-spot = get_spot(
-    underlying
-)
-
-st.subheader(
-    "📌 Current Market"
-)
-
-m1, m2, m3, m4 = st.columns(4)
-
-with m1:
-    st.metric(
-        "Underlying",
+    spot = get_spot(
         underlying
     )
 
-with m2:
-    st.metric(
-        "LTP",
-        fmt(spot)
+    st.subheader(
+        "📌 Current Market"
     )
 
-with m3:
-    st.metric(
-        "Expiry",
-        expiry_label(
-            selected_expiry
+    m1, m2, m3, m4 = st.columns(4)
+
+    with m1:
+        st.metric(
+            "Underlying",
+            underlying
         )
-        if selected_expiry
-        else "-"
+
+    with m2:
+        st.metric(
+            "LTP",
+            fmt(spot)
+        )
+
+    with m3:
+        st.metric(
+            "Expiry",
+            expiry_label(
+                selected_expiry
+            )
+            if selected_expiry
+            else "-"
+        )
+
+    with m4:
+        st.metric(
+            "Session",
+            "LIVE"
+            if market_open()
+            else "AFTER MARKET"
+        )
+
+    # =========================================================
+    # OPTIONS DATA FIRST
+    # =========================================================
+
+    chain = pd.DataFrame()
+
+    if selected_expiry:
+
+        chain, all_contracts = get_chain(
+            underlying,
+            selected_expiry,
+            spot
+        )
+
+    pcr = calculate_pcr(
+        chain
     )
 
-with m4:
-    st.metric(
-        "Session",
-        "LIVE"
-        if market_open()
-        else "AFTER MARKET"
+    derivatives_proxy = (
+        calculate_live_derivatives_proxy(
+            chain,
+            pcr
+        )
     )
 
-# =========================================================
-# OPTIONS DATA FIRST
-# =========================================================
+    # =========================================================
+    # MARKET ANALYSIS
+    # =========================================================
 
-chain = pd.DataFrame()
-
-if selected_expiry:
-
-    chain, all_contracts = get_chain(
+    market = analyze_market(
         underlying,
-        selected_expiry,
-        spot
+        derivatives_proxy
     )
+    # =========================
+    # TOMORROW MARKET BLUEPRINT
+    # =========================
 
-pcr = calculate_pcr(
-    chain
-)
+    st.markdown("## 🔮 Tomorrow Market Blueprint")
 
-derivatives_proxy = (
-    calculate_live_derivatives_proxy(
-        chain,
-        pcr
-    )
-)
+    if build_tomorrow_forecast is None:
+        st.warning("Tomorrow Forecast Engine unavailable.")
+    else:
+        try:
+            tomorrow_data = {
+                "symbol": underlying,
+                "spot": market.get("last"),
+                "support": market.get("support"),
+                "resistance": market.get("resistance"),
+                "rsi": market.get("rsi"),
+                "adx": market.get("adx"),
+                "ema20": market.get("ema20"),
+                "ema50": market.get("ema50"),
+                "vwap": market.get("vwap"),
+                "technical_score": market.get("technical_score", 0),
+                "institutional_score": market.get("institutional_score", 0),
+                "score": market.get("score", 0),
+                "institutional_bias": market.get(
+                    "institutional_bias", "UNAVAILABLE"
+                ),
+                "pcr": pcr,
+                "fii_net": fii_dii.get("fii_net"),
+                "dii_net": fii_dii.get("dii_net"),
+            }
 
-# =========================================================
-# MARKET ANALYSIS
-# =========================================================
+            tomorrow = build_tomorrow_forecast(tomorrow_data)
 
-market = analyze_market(
-    underlying,
-    derivatives_proxy
-)
-# =========================
-# TOMORROW MARKET BLUEPRINT
-# =========================
+            if tomorrow:
+                c1, c2, c3, c4 = st.columns(4)
 
-st.markdown("## 🔮 Tomorrow Market Blueprint")
-
-if build_tomorrow_forecast is None:
-    st.warning("Tomorrow Forecast Engine unavailable.")
-else:
-    try:
-        tomorrow_data = {
-            "symbol": underlying,
-            "spot": market.get("last"),
-            "support": market.get("support"),
-            "resistance": market.get("resistance"),
-            "rsi": market.get("rsi"),
-            "adx": market.get("adx"),
-            "ema20": market.get("ema20"),
-            "ema50": market.get("ema50"),
-            "vwap": market.get("vwap"),
-            "technical_score": market.get("technical_score", 0),
-            "institutional_score": market.get("institutional_score", 0),
-            "score": market.get("score", 0),
-            "institutional_bias": market.get(
-                "institutional_bias", "UNAVAILABLE"
-            ),
-            "pcr": pcr,
-            "fii_net": fii_dii.get("fii_net"),
-            "dii_net": fii_dii.get("dii_net"),
-        }
-
-        tomorrow = build_tomorrow_forecast(tomorrow_data)
-
-        if tomorrow:
-            c1, c2, c3, c4 = st.columns(4)
-
-            c1.metric(
-                "Next Session Bias",
-                tomorrow.get("bias", "N/A")
-            )
-
-            c2.metric(
-                "Forecast Confidence",
-                f"{tomorrow.get('confidence', 0):.0f}%"
-            )
-
-            c3.metric(
-                "Combined Score",
-                f"{tomorrow.get('combined_score', 0):+.1f}"
-            )
-
-            c4.metric(
-                "Data Quality",
-                tomorrow.get("data_quality", "N/A")
-            )
-
-            st.markdown("### 📊 Reference Levels")
-
-            r1, r2, r3, r4 = st.columns(4)
-
-            r1.metric(
-                "Reference Spot",
-                f"{tomorrow.get('spot', 0):,.2f}"
-                if tomorrow.get("spot") is not None else "N/A"
-            )
-
-            r2.metric(
-                "Support",
-                f"{tomorrow.get('support', 0):,.2f}"
-                if tomorrow.get("support") is not None else "N/A"
-            )
-
-            r3.metric(
-                "Resistance",
-                f"{tomorrow.get('resistance', 0):,.2f}"
-                if tomorrow.get("resistance") is not None else "N/A"
-            )
-
-            r4.metric(
-    "Expected Range",
-    (
-        f"{tomorrow['expected_range']['low']:,.2f} - "
-        f"{tomorrow['expected_range']['high']:,.2f}"
-        if isinstance(tomorrow.get("expected_range"), dict)
-        and tomorrow["expected_range"].get("low") is not None
-        and tomorrow["expected_range"].get("high") is not None
-        else "N/A"
-    )
-)
-
-            st.markdown("### 🎯 Key Triggers")
-
-            t1, t2 = st.columns(2)
-
-            with t1:
-                st.success(
-                    f"**Bullish Trigger**\n\n"
-                    f"{tomorrow.get('bullish_trigger', 'N/A')}"
+                c1.metric(
+                    "Next Session Bias",
+                    tomorrow.get("bias", "N/A")
                 )
 
-            with t2:
-                st.error(
-                    f"**Bearish Trigger**\n\n"
-                    f"{tomorrow.get('bearish_trigger', 'N/A')}"
+                c2.metric(
+                    "Forecast Confidence",
+                    f"{tomorrow.get('confidence', 0):.0f}%"
                 )
 
-            st.markdown("### 🧠 Market Scenarios")
+                c3.metric(
+                    "Combined Score",
+                    f"{tomorrow.get('combined_score', 0):+.1f}"
+                )
 
-            scenarios = tomorrow.get("scenarios", [])
+                c4.metric(
+                    "Data Quality",
+                    tomorrow.get("data_quality", "N/A")
+                )
 
-            if scenarios:
-                for scenario in scenarios:
-                    st.write(
-                        f"**{scenario.get('scenario', 'Scenario')}** — "
-                        f"{scenario.get('condition', '')}"
+                st.markdown("### 📊 Reference Levels")
+
+                r1, r2, r3, r4 = st.columns(4)
+
+                r1.metric(
+                    "Reference Spot",
+                    f"{tomorrow.get('spot', 0):,.2f}"
+                    if tomorrow.get("spot") is not None else "N/A"
+                )
+
+                r2.metric(
+                    "Support",
+                    f"{tomorrow.get('support', 0):,.2f}"
+                    if tomorrow.get("support") is not None else "N/A"
+                )
+
+                r3.metric(
+                    "Resistance",
+                    f"{tomorrow.get('resistance', 0):,.2f}"
+                    if tomorrow.get("resistance") is not None else "N/A"
+                )
+
+                r4.metric(
+        "Expected Range",
+        (
+            f"{tomorrow['expected_range']['low']:,.2f} - "
+            f"{tomorrow['expected_range']['high']:,.2f}"
+            if isinstance(tomorrow.get("expected_range"), dict)
+            and tomorrow["expected_range"].get("low") is not None
+            and tomorrow["expected_range"].get("high") is not None
+            else "N/A"
+        )
+    )
+
+                st.markdown("### 🎯 Key Triggers")
+
+                t1, t2 = st.columns(2)
+
+                with t1:
+                    st.success(
+                        f"**Bullish Trigger**\n\n"
+                        f"{tomorrow.get('bullish_trigger', 'N/A')}"
                     )
-                    st.caption(
-                        scenario.get('view', '')
+
+                with t2:
+                    st.error(
+                        f"**Bearish Trigger**\n\n"
+                        f"{tomorrow.get('bearish_trigger', 'N/A')}"
                     )
+
+                st.markdown("### 🧠 Market Scenarios")
+
+                scenarios = tomorrow.get("scenarios", [])
+
+                if scenarios:
+                    for scenario in scenarios:
+                        st.write(
+                            f"**{scenario.get('scenario', 'Scenario')}** — "
+                            f"{scenario.get('condition', '')}"
+                        )
+                        st.caption(
+                            scenario.get('view', '')
+                        )
+                else:
+                    st.info("No scenario data available.")
+
+                st.markdown("### 🔎 Research Reasons")
+
+                reasons = tomorrow.get("reasons", [])
+
+                if reasons:
+                    for reason in reasons:
+                        st.write(f"• {reason}")
+                else:
+                    st.info("No additional reasons available.")
+
+                st.markdown("### ⚠️ Invalidation")
+
+                st.warning(
+                    tomorrow.get(
+                        "invalidation",
+                        "Forecast invalidation level unavailable."
+                    )
+                )
+
+                st.caption(
+                    tomorrow.get(
+                        "disclaimer",
+                        "Scenario-based research only. "
+                        "This is not a guaranteed market prediction."
+                    )
+                )
+
             else:
-                st.info("No scenario data available.")
+                st.info("Tomorrow forecast data unavailable.")
 
-            st.markdown("### 🔎 Research Reasons")
+        except Exception as e:
+            st.warning(f"Tomorrow Market Blueprint unavailable: {e}")
 
-            reasons = tomorrow.get("reasons", [])
+    # =========================================================
+    # FII / DII
+    # =========================================================
 
-            if reasons:
-                for reason in reasons:
-                    st.write(f"• {reason}")
-            else:
-                st.info("No additional reasons available.")
+    st.subheader(
+        "🏦 Institutional Flow"
+    )
 
-            st.markdown("### ⚠️ Invalidation")
+    if fii_dii["available"]:
 
-            st.warning(
-                tomorrow.get(
-                    "invalidation",
-                    "Forecast invalidation level unavailable."
+        f1, f2, f3, f4 = st.columns(4)
+
+        with f1:
+            st.metric(
+                "FII Net",
+                (
+                    f"₹{fmt(fii_dii['fii_net'], 0)} Cr"
+                    if fii_dii["fii_net"] is not None
+                    else "Unavailable"
                 )
             )
 
-            st.caption(
-                tomorrow.get(
-                    "disclaimer",
-                    "Scenario-based research only. "
-                    "This is not a guaranteed market prediction."
+        with f2:
+            st.metric(
+                "DII Net",
+                (
+                    f"₹{fmt(fii_dii['dii_net'], 0)} Cr"
+                    if fii_dii["dii_net"] is not None
+                    else "Unavailable"
                 )
             )
 
-        else:
-            st.info("Tomorrow forecast data unavailable.")
+        with f3:
+            st.metric(
+                "Combined Net",
+                (
+                    f"₹{fmt(fii_dii['combined_net'], 0)} Cr"
+                    if fii_dii["combined_net"] is not None
+                    else "Unavailable"
+                )
+            )
 
-    except Exception as e:
-        st.warning(f"Tomorrow Market Blueprint unavailable: {e}")
+        with f4:
+            st.metric(
+                "Institutional Score",
+                f"{fii_dii['institutional_score']:+d}"
+            )
 
-# =========================================================
-# FII / DII
-# =========================================================
+        f5, f6, f7, f8 = st.columns(4)
 
-st.subheader(
-    "🏦 Institutional Flow"
-)
+        with f5:
+            st.metric(
+                "FII 3-Session",
+                (
+                    f"₹{fmt(fii_dii['fii_3d'], 0)} Cr"
+                    if fii_dii["fii_3d"] is not None
+                    else "-"
+                )
+            )
 
-if fii_dii["available"]:
+        with f6:
+            st.metric(
+                "DII 3-Session",
+                (
+                    f"₹{fmt(fii_dii['dii_3d'], 0)} Cr"
+                    if fii_dii["dii_3d"] is not None
+                    else "-"
+                )
+            )
 
-    f1, f2, f3, f4 = st.columns(4)
+        with f7:
+            st.metric(
+                "Institutional Bias",
+                fii_dii["bias"]
+            )
 
-    with f1:
+        with f8:
+            st.metric(
+                "Source",
+                "ACTUAL"
+            )
+
+        st.caption(
+            f"Source: {fii_dii['source']} • "
+            f"{fii_dii['status']} • "
+            f"Date: {safe_text(fii_dii['date'])}"
+        )
+
+    else:
+
+        st.warning(
+            "Actual FII/DII cash-flow data abhi unavailable hai. "
+            "AI analysis rukega nahi — live/latest option-chain positioning "
+            "available hone par institutional proxy use hoga."
+        )
+
+    # =========================================================
+    # DERIVATIVES PROXY
+    # =========================================================
+
+    st.subheader(
+        "🧮 Derivatives Institutional Proxy"
+    )
+
+    if derivatives_proxy.get("available"):
+
+        d1, d2, d3 = st.columns(3)
+
+        with d1:
+            st.metric(
+                "Proxy Score",
+                f"{derivatives_proxy['score']:+d}"
+            )
+
+        with d2:
+            st.metric(
+                "Proxy Bias",
+                derivatives_proxy["bias"]
+            )
+
+        with d3:
+            st.metric(
+                "PCR",
+                (
+                    fmt(
+                        derivatives_proxy.get("pcr"),
+                        2
+                    )
+                    if derivatives_proxy.get("pcr") is not None
+                    else "-"
+                )
+            )
+
+        st.caption(
+            f"Source: {derivatives_proxy['source']} • "
+            f"{derivatives_proxy['status']} • "
+            f"Actual FII/DII available hone par proxy automatically replace hota hai."
+        )
+
+        for reason in derivatives_proxy.get(
+            "reasons",
+            []
+        ):
+            st.write(
+                "• " + reason
+            )
+
+    else:
+
+        st.info(
+            "Usable derivatives positioning bhi unavailable hai. "
+            "Institutional score ko 0 rakha gaya hai — koi fake value nahi."
+        )
+
+    # =========================================================
+    # MARKET INTELLIGENCE
+    # =========================================================
+
+    st.subheader(
+        "📈 Market Intelligence"
+    )
+
+    a1, a2, a3, a4 = st.columns(4)
+
+    with a1:
         st.metric(
-            "FII Net",
-            (
-                f"₹{fmt(fii_dii['fii_net'], 0)} Cr"
-                if fii_dii["fii_net"] is not None
-                else "Unavailable"
+            "Trend",
+            market["trend"]
+        )
+
+    with a2:
+        st.metric(
+            "Momentum",
+            market["momentum"]
+        )
+
+    with a3:
+        st.metric(
+            "RSI",
+            fmt(
+                market["rsi"],
+                1
             )
         )
 
-    with f2:
+    with a4:
         st.metric(
-            "DII Net",
-            (
-                f"₹{fmt(fii_dii['dii_net'], 0)} Cr"
-                if fii_dii["dii_net"] is not None
-                else "Unavailable"
+            "ADX",
+            fmt(
+                market["adx"],
+                1
             )
         )
 
-    with f3:
+    a5, a6, a7, a8 = st.columns(4)
+
+    with a5:
         st.metric(
-            "Combined Net",
-            (
-                f"₹{fmt(fii_dii['combined_net'], 0)} Cr"
-                if fii_dii["combined_net"] is not None
-                else "Unavailable"
+            "EMA20",
+            fmt(
+                market["ema20"]
             )
         )
 
-    with f4:
+    with a6:
+        st.metric(
+            "EMA50",
+            fmt(
+                market["ema50"]
+            )
+        )
+
+    with a7:
+        st.metric(
+            "VWAP",
+            fmt(
+                market["vwap"]
+            )
+        )
+
+    with a8:
+        st.metric(
+            "Volume Ratio",
+            fmt(
+                market["volume_ratio"],
+                2
+            )
+        )
+
+    a9, a10, a11, a12 = st.columns(4)
+
+    with a9:
+        st.metric(
+            "Technical Score",
+            f"{market.get('technical_score', 0):+d}"
+        )
+
+    with a10:
         st.metric(
             "Institutional Score",
-            f"{fii_dii['institutional_score']:+d}"
+            f"{market.get('institutional_score', 0):+d}"
         )
 
-    f5, f6, f7, f8 = st.columns(4)
-
-    with f5:
+    with a11:
         st.metric(
-            "FII 3-Session",
-            (
-                f"₹{fmt(fii_dii['fii_3d'], 0)} Cr"
-                if fii_dii["fii_3d"] is not None
-                else "-"
+            "Combined Score",
+            f"{market.get('score', 0):+d}"
+        )
+
+    with a12:
+        st.metric(
+            "Institutional Source",
+            market.get(
+                "institutional_source",
+                "NONE"
             )
         )
 
-    with f6:
+    # =========================================================
+    # SUPPORT / RESISTANCE
+    # =========================================================
+
+    r1, r2 = st.columns(2)
+
+    with r1:
         st.metric(
-            "DII 3-Session",
-            (
-                f"₹{fmt(fii_dii['dii_3d'], 0)} Cr"
-                if fii_dii["dii_3d"] is not None
-                else "-"
+            "Support",
+            fmt(
+                market["support"]
             )
         )
 
-    with f7:
+    with r2:
         st.metric(
-            "Institutional Bias",
-            fii_dii["bias"]
-        )
-
-    with f8:
-        st.metric(
-            "Source",
-            "ACTUAL"
+            "Resistance",
+            fmt(
+                market["resistance"]
+            )
         )
 
     st.caption(
-        f"Source: {fii_dii['source']} • "
-        f"{fii_dii['status']} • "
-        f"Date: {safe_text(fii_dii['date'])}"
+        f"Institutional input: "
+        f"{market.get('institutional_bias', 'UNAVAILABLE')}"
     )
 
-else:
+    if market["reasons"]:
 
-    st.warning(
-        "Actual FII/DII cash-flow data abhi unavailable hai. "
-        "AI analysis rukega nahi — live/latest option-chain positioning "
-        "available hone par institutional proxy use hoga."
+        st.markdown(
+            "### Current Analysis"
+        )
+
+        for reason in market["reasons"]:
+            st.write(
+                "• " + reason
+            )
+
+    # =========================================================
+    # OPTIONS INTELLIGENCE
+    # =========================================================
+
+    st.subheader(
+        "🧮 Options Intelligence"
     )
 
-# =========================================================
-# DERIVATIVES PROXY
-# =========================================================
+    o1, o2, o3 = st.columns(3)
 
-st.subheader(
-    "🧮 Derivatives Institutional Proxy"
-)
-
-if derivatives_proxy.get("available"):
-
-    d1, d2, d3 = st.columns(3)
-
-    with d1:
-        st.metric(
-            "Proxy Score",
-            f"{derivatives_proxy['score']:+d}"
-        )
-
-    with d2:
-        st.metric(
-            "Proxy Bias",
-            derivatives_proxy["bias"]
-        )
-
-    with d3:
+    with o1:
         st.metric(
             "PCR",
-            (
-                fmt(
-                    derivatives_proxy.get("pcr"),
-                    2
-                )
-                if derivatives_proxy.get("pcr") is not None
-                else "-"
+            fmt(
+                pcr,
+                2
             )
+            if pcr is not None
+            else "Unavailable"
         )
 
-    st.caption(
-        f"Source: {derivatives_proxy['source']} • "
-        f"{derivatives_proxy['status']} • "
-        f"Actual FII/DII available hone par proxy automatically replace hota hai."
-    )
-
-    for reason in derivatives_proxy.get(
-        "reasons",
-        []
-    ):
-        st.write(
-            "• " + reason
+    with o2:
+        st.metric(
+            "Contracts",
+            len(chain)
         )
 
-else:
-
-    st.info(
-        "Usable derivatives positioning bhi unavailable hai. "
-        "Institutional score ko 0 rakha gaya hai — koi fake value nahi."
-    )
-
-# =========================================================
-# MARKET INTELLIGENCE
-# =========================================================
-
-st.subheader(
-    "📈 Market Intelligence"
-)
-
-a1, a2, a3, a4 = st.columns(4)
-
-with a1:
-    st.metric(
-        "Trend",
-        market["trend"]
-    )
-
-with a2:
-    st.metric(
-        "Momentum",
-        market["momentum"]
-    )
-
-with a3:
-    st.metric(
-        "RSI",
-        fmt(
-            market["rsi"],
-            1
-        )
-    )
-
-with a4:
-    st.metric(
-        "ADX",
-        fmt(
-            market["adx"],
-            1
-        )
-    )
-
-a5, a6, a7, a8 = st.columns(4)
-
-with a5:
-    st.metric(
-        "EMA20",
-        fmt(
-            market["ema20"]
-        )
-    )
-
-with a6:
-    st.metric(
-        "EMA50",
-        fmt(
-            market["ema50"]
-        )
-    )
-
-with a7:
-    st.metric(
-        "VWAP",
-        fmt(
-            market["vwap"]
-        )
-    )
-
-with a8:
-    st.metric(
-        "Volume Ratio",
-        fmt(
-            market["volume_ratio"],
-            2
-        )
-    )
-
-a9, a10, a11, a12 = st.columns(4)
-
-with a9:
-    st.metric(
-        "Technical Score",
-        f"{market.get('technical_score', 0):+d}"
-    )
-
-with a10:
-    st.metric(
-        "Institutional Score",
-        f"{market.get('institutional_score', 0):+d}"
-    )
-
-with a11:
-    st.metric(
-        "Combined Score",
-        f"{market.get('score', 0):+d}"
-    )
-
-with a12:
-    st.metric(
-        "Institutional Source",
-        market.get(
-            "institutional_source",
-            "NONE"
-        )
-    )
-
-# =========================================================
-# SUPPORT / RESISTANCE
-# =========================================================
-
-r1, r2 = st.columns(2)
-
-with r1:
-    st.metric(
-        "Support",
-        fmt(
-            market["support"]
-        )
-    )
-
-with r2:
-    st.metric(
-        "Resistance",
-        fmt(
-            market["resistance"]
-        )
-    )
-
-st.caption(
-    f"Institutional input: "
-    f"{market.get('institutional_bias', 'UNAVAILABLE')}"
-)
-
-if market["reasons"]:
-
-    st.markdown(
-        "### Current Analysis"
-    )
-
-    for reason in market["reasons"]:
-        st.write(
-            "• " + reason
+    with o3:
+        st.metric(
+            "Expiry",
+            expiry_label(
+                selected_expiry
+            )
+            if selected_expiry
+            else "-"
         )
 
-# =========================================================
-# OPTIONS INTELLIGENCE
-# =========================================================
+    if not chain.empty:
 
-st.subheader(
-    "🧮 Options Intelligence"
-)
-
-o1, o2, o3 = st.columns(3)
-
-with o1:
-    st.metric(
-        "PCR",
-        fmt(
-            pcr,
-            2
-        )
-        if pcr is not None
-        else "Unavailable"
-    )
-
-with o2:
-    st.metric(
-        "Contracts",
-        len(chain)
-    )
-
-with o3:
-    st.metric(
-        "Expiry",
-        expiry_label(
-            selected_expiry
-        )
-        if selected_expiry
-        else "-"
-    )
-
-if not chain.empty:
-
-    display_cols = [
-        "symbol",
-        "strike",
-        "strikePrice",
-        "option_type",
-        "optionType",
-        "expiry_normalized",
-        "ltp",
-        "LTP",
-        "tradeVolume",
-        "opnInterest",
-        "openInterest",
-    ]
-
-    cols = [
-        c
-        for c in display_cols
-        if c in chain.columns
-    ]
-
-    view = chain.copy()
-
-    type_col = find_column(
-        view,
-        [
+        display_cols = [
+            "symbol",
+            "strike",
+            "strikePrice",
             "option_type",
             "optionType",
-            "optionTypeName",
-        ]
-    )
-
-    if option_type in [
-        "CE",
-        "PE"
-    ] and type_col:
-
-        view = view[
-            view[type_col]
-            .map(normalize_option_type)
-            .eq(option_type)
+            "expiry_normalized",
+            "ltp",
+            "LTP",
+            "tradeVolume",
+            "opnInterest",
+            "openInterest",
         ]
 
-    if cols and not view.empty:
+        cols = [
+            c
+            for c in display_cols
+            if c in chain.columns
+        ]
 
-        st.dataframe(
-            view[cols],
-            use_container_width=True,
-            hide_index=True
+        view = chain.copy()
+
+        type_col = find_column(
+            view,
+            [
+                "option_type",
+                "optionType",
+                "optionTypeName",
+            ]
         )
+
+        if option_type in [
+            "CE",
+            "PE"
+        ] and type_col:
+
+            view = view[
+                view[type_col]
+                .map(normalize_option_type)
+                .eq(option_type)
+            ]
+
+        if cols and not view.empty:
+
+            st.dataframe(
+                view[cols],
+                use_container_width=True,
+                hide_index=True
+            )
 
 # =========================================================
 # TRADE IDEAS
