@@ -1896,3 +1896,368 @@ if st.button("🚀 GENERATE TRADE IDEAS", type="primary", use_container_width=Tr
 
 st.divider()
 st.caption("Paper Trading Mode • Deterministic Quantitative Rules Engine • Real-Time Order Routing Disabled.")
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import requests
+import json
+import xml.etree.ElementTree as ET
+from datetime import datetime
+
+# =========================================================
+# 1. CANDLESTICK PATTERN & VOLUME ENGINE
+# =========================================================
+
+def analyze_candlesticks_and_volume(df):
+    """
+    Analyzes candlestick price action, patterns (Doji, Hammer, Engulfing),
+    and volume expansion ratios.
+    """
+    if df is None or len(df) < 5:
+        return {
+            "status": "YELLOW",
+            "pattern": "INSUFFICIENT DATA",
+            "volume_spike": False,
+            "score": 0,
+            "reason": "Not enough candles to form pattern analysis."
+        }
+
+    c = df.iloc[-1]
+    p = df.iloc[-2]
+
+    open_p = float(c["open"])
+    close_p = float(c["close"])
+    high_p = float(c["high"])
+    low_p = float(c["low"])
+    vol = float(c["volume"]) if "volume" in c and pd.notna(c["volume"]) else 0.0
+
+    avg_vol = float(df["volume"].tail(20).mean()) if "volume" in df.columns else 1.0
+    vol_ratio = (vol / avg_vol) if avg_vol > 0 else 1.0
+    vol_spike = vol_ratio >= 1.25
+
+    total_range = high_p - low_p
+    if total_range <= 0:
+        total_range = 0.0001
+
+    body = abs(close_p - open_p)
+    upper_shadow = high_p - max(open_p, close_p)
+    lower_shadow = min(open_p, close_p) - low_p
+    is_green = close_p > open_p
+    is_red = close_p < open_p
+
+    pattern = "NORMAL CANDLE"
+    score = 0
+    status = "YELLOW"
+    reason = "No high-conviction pattern identified."
+
+    # Pattern 1: Doji (Indecision)
+    if body <= (0.12 * total_range):
+        pattern = "DOJI (INDECISION / REVERSAL)"
+        status = "YELLOW"
+        score = 0
+        reason = f"Doji formed with body ratio {body/total_range:.2f}. Market in equilibrium."
+
+    # Pattern 2: Hammer (Bullish Reversal)
+    elif lower_shadow >= (2.0 * body) and upper_shadow <= (0.25 * body):
+        pattern = "BULLISH HAMMER"
+        if vol_spike:
+            status = "GREEN"
+            score = 2
+            reason = f"Hammer with strong volume expansion ({vol_ratio:.2f}x). Buyers absorbing dips."
+        else:
+            status = "YELLOW"
+            score = 1
+            reason = "Hammer formed but lacking volume confirmation."
+
+    # Pattern 3: Shooting Star (Bearish Reversal)
+    elif upper_shadow >= (2.0 * body) and lower_shadow <= (0.25 * body):
+        pattern = "BEARISH SHOOTING STAR"
+        if vol_spike:
+            status = "RED"
+            score = -2
+            reason = f"Shooting star with high volume rejection ({vol_ratio:.2f}x) at the top."
+        else:
+            status = "YELLOW"
+            score = -1
+            reason = "Shooting star formed without volume confirmation."
+
+    # Pattern 4: Bullish Engulfing
+    elif is_green and (float(p["close"]) < float(p["open"])) and (close_p >= float(p["open"])) and (open_p <= float(p["close"])):
+        pattern = "BULLISH ENGULFING"
+        status = "GREEN" if vol_spike else "YELLOW"
+        score = 2 if vol_spike else 1
+        reason = f"Bullish engulfing detected over previous red candle. Volume ratio: {vol_ratio:.2f}x."
+
+    # Pattern 5: Bearish Engulfing
+    elif is_red and (float(p["close"]) > float(p["open"])) and (close_p <= float(p["open"])) and (open_p >= float(p["close"])):
+        pattern = "BEARISH ENGULFING"
+        status = "RED" if vol_spike else "YELLOW"
+        score = -2 if vol_spike else -1
+        reason = f"Bearish engulfing observed overriding prior green candle. Volume ratio: {vol_ratio:.2f}x."
+
+    # Pattern 6: Trend Continuation Marubozu
+    elif body >= (0.75 * total_range):
+        if is_green and vol_spike:
+            pattern = "BULLISH EXPANSION CANDLE"
+            status = "GREEN"
+            score = 2
+            reason = f"Strong bullish momentum body with {vol_ratio:.2f}x volume expansion."
+        elif is_red and vol_spike:
+            pattern = "BEARISH BREAKDOWN CANDLE"
+            status = "RED"
+            score = -2
+            reason = f"Aggressive selling body with {vol_ratio:.2f}x volume confirmation."
+
+    return {
+        "status": status,
+        "pattern": pattern,
+        "volume_spike": vol_spike,
+        "volume_ratio": vol_ratio,
+        "score": score,
+        "reason": reason
+    }
+
+# =========================================================
+# 2. MARKET SENTIMENT & INSTITUTIONAL FLOW ENGINE
+# =========================================================
+
+def analyze_sentiment_and_smart_money(fii_dii, pcr, derivatives_proxy):
+    """
+    Evaluates institutional cash market flows, PCR, and derivative OI positioning.
+    """
+    score = 0
+    reasons = []
+
+    # PCR Logic
+    if pcr is not None:
+        if pcr >= 1.20:
+            score += 2
+            reasons.append(f"PCR ({pcr:.2f}) indicates solid put writing floor.")
+        elif pcr >= 0.95:
+            score += 1
+            reasons.append(f"PCR ({pcr:.2f}) is moderately bullish.")
+        elif 0.70 < pcr < 0.95:
+            score -= 1
+            reasons.append(f"PCR ({pcr:.2f}) reflects cautious/bearish skew.")
+        else:
+            score -= 2
+            reasons.append(f"PCR ({pcr:.2f}) signals heavy call resistance / breakdown.")
+
+    # Institutional Flow Logic
+    if fii_dii.get("available"):
+        inst_score = fii_dii.get("institutional_score", 0)
+        score += inst_score
+        reasons.append(f"Institutional cash bias: {fii_dii.get('bias', 'MIXED')}.")
+    elif derivatives_proxy.get("available"):
+        score += derivatives_proxy.get("score", 0)
+        reasons.append("Derivatives positioning proxy utilized (Cash data pending).")
+
+    if score >= 2:
+        status = "GREEN"
+    elif score <= -2:
+        status = "RED"
+    else:
+        status = "YELLOW"
+
+    return {
+        "status": status,
+        "score": score,
+        "pcr": pcr,
+        "reasons": " | ".join(reasons) if reasons else "Neutral institutional balance."
+    }
+
+# =========================================================
+# 3. NEWS & MACRO SENTIMENT IMPACT ENGINE
+# =========================================================
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_market_news_sentiment(query="Indian stock market Nifty"):
+    """
+    Fetches real-time RSS market headlines and evaluates polarity score.
+    """
+    rss_url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+    headlines = []
+    try:
+        resp = requests.get(rss_url, timeout=6)
+        if resp.status_code == 200:
+            root = ET.fromstring(resp.content)
+            for item in root.findall(".//item")[:5]:
+                title = item.find("title").text
+                headlines.append(title)
+    except Exception:
+        pass
+
+    if not headlines:
+        return {
+            "status": "YELLOW",
+            "score": 0,
+            "sentiment": "NEUTRAL / NO NEWS",
+            "headlines": ["No breaking macro alerts detected."],
+            "reason": "Defaulting to neutral macro environment."
+        }
+
+    bullish_keywords = ["surge", "jump", "record high", "gain", "rally", "growth", "positive", "buying", "inflow", "up"]
+    bearish_keywords = ["fall", "crash", "plunge", "slump", "war", "rate hike", "deficit", "inflation", "selling", "down", "drop"]
+
+    sentiment_score = 0
+    text_corpus = " ".join(headlines).lower()
+
+    for word in bullish_keywords:
+        sentiment_score += text_corpus.count(word)
+    for word in bearish_keywords:
+        sentiment_score -= text_corpus.count(word)
+
+    if sentiment_score >= 3:
+        status = "GREEN"
+        sentiment_label = "POSITIVE NEWS FLOW"
+    elif sentiment_score <= -3:
+        status = "RED"
+        sentiment_label = "NEGATIVE NEWS PRESSURE"
+    else:
+        status = "YELLOW"
+        sentiment_label = "NEUTRAL / BALANCED NEWS"
+
+    return {
+        "status": status,
+        "score": sentiment_score,
+        "sentiment": sentiment_label,
+        "headlines": headlines[:3],
+        "reason": f"Analyzed {len(headlines)} headlines with net sentiment factor: {sentiment_score:+d}"
+    }
+
+# =========================================================
+# 4. TRIPLE LIGHT CONFLUENCE & EXIT DECISION ENGINE
+# =========================================================
+
+def evaluate_three_lights_confluence(light1, light2, light3, current_open_position=None):
+    """
+    Evaluates combinations of all three lights and generates Entry & Exit directives.
+    """
+    l1 = light1["status"]
+    l2 = light2["status"]
+    l3 = light3["status"]
+
+    green_count = [l1, l2, l3].count("GREEN")
+    red_count = [l1, l2, l3].count("RED")
+    yellow_count = [l1, l2, l3].count("YELLOW")
+
+    signal = "NO TRADE / WAIT"
+    action = "STAND ASIDE"
+    confidence = 50
+
+    # Entry Logic Permutations
+    if green_count == 3:
+        signal = "STRONG BUY (BUY CALL)"
+        action = "BUY CE"
+        confidence = 95
+    elif red_count == 3:
+        signal = "STRONG SHORT (BUY PUT)"
+        action = "BUY PE"
+        confidence = 95
+    elif green_count == 2 and yellow_count == 1:
+        signal = "MODERATE BUY (SCALP ONLY)"
+        action = "BUY CE (HALF SIZE)"
+        confidence = 75
+    elif red_count == 2 and yellow_count == 1:
+        signal = "MODERATE SHORT (SCALP ONLY)"
+        action = "BUY PE (HALF SIZE)"
+        confidence = 75
+    elif green_count >= 1 and red_count >= 1:
+        signal = "CONFLICT TRAP ZONE (NO TRADE)"
+        action = "STRICT AVOID"
+        confidence = 20
+
+    # Dynamic Exit Check for Existing Trades
+    exit_alert = False
+    exit_reason = "No active exit condition triggered."
+
+    if current_open_position:
+        pos_type = current_open_position.get("type", "").upper()  # 'CE' or 'PE'
+        
+        # Rule 1: Lights Flip against position
+        if pos_type in ["CE", "BUY"] and red_count >= 2:
+            exit_alert = True
+            exit_reason = "EMERGENCY EXIT: 2+ Lights turned RED against your LONG position."
+        elif pos_type in ["PE", "SHORT"] and green_count >= 2:
+            exit_alert = True
+            exit_reason = "EMERGENCY EXIT: 2+ Lights turned GREEN against your SHORT position."
+
+        # Rule 2: Pattern Reversal with Volume
+        if pos_type in ["CE", "BUY"] and light1["pattern"] in ["BEARISH SHOOTING STAR", "BEARISH ENGULFING"] and light1["volume_spike"]:
+            exit_alert = True
+            exit_reason = f"REVERSAL EXIT: High-volume {light1['pattern']} formed at resistance."
+        elif pos_type in ["PE", "SHORT"] and light1["pattern"] in ["BULLISH HAMMER", "BULLISH ENGULFING"] and light1["volume_spike"]:
+            exit_alert = True
+            exit_reason = f"REVERSAL EXIT: High-volume {light1['pattern']} formed at support."
+
+    return {
+        "signal": signal,
+        "action": action,
+        "confidence": confidence,
+        "green_count": green_count,
+        "red_count": red_count,
+        "yellow_count": yellow_count,
+        "exit_alert": exit_alert,
+        "exit_reason": exit_reason
+    }
+
+# =========================================================
+# 5. STREAMLIT UI DISPLAY COMPONENT
+# =========================================================
+
+def render_traffic_lights_dashboard(df_ohlcv, fii_dii, pcr, proxy, current_position=None):
+    """
+    Renders visual traffic lights and signal execution cards on Streamlit.
+    """
+    st.markdown("### 🚦 Triple Light Trading Confluence System")
+
+    # Evaluate all three lights
+    l1 = analyze_candlesticks_and_volume(df_ohlcv)
+    l2 = analyze_sentiment_and_smart_money(fii_dii, pcr, proxy)
+    l3 = fetch_market_news_sentiment()
+
+    confluence = evaluate_three_lights_confluence(l1, l2, l3, current_position)
+
+    # UI Visual Lights
+    col1, col2, col3 = st.columns(3)
+
+    light_icons = {"GREEN": "🟢", "RED": "🔴", "YELLOW": "🟡"}
+
+    with col1:
+        st.markdown(f"#### {light_icons[l1['status']]} Light 1: Technicals")
+        st.caption("Candlestick & Volume Analysis")
+        st.metric("Pattern", l1["pattern"])
+        st.write(f"**Volume Ratio:** {l1.get('volume_ratio', 1.0):.2f}x")
+        st.caption(l1["reason"])
+
+    with col2:
+        st.markdown(f"#### {light_icons[l2['status']]} Light 2: Sentiment")
+        st.caption("FII/DII, PCR & Options OI")
+        st.metric("PCR", f"{l2.get('pcr', 0.0):.2f}" if l2.get('pcr') else "N/A")
+        st.caption(l2["reasons"])
+
+    with col3:
+        st.markdown(f"#### {light_icons[l3['status']]} Light 3: News Impact")
+        st.caption("Macro News Flow & Polarity")
+        st.metric("Macro Polarity", l3["sentiment"])
+        st.caption(l3["reason"])
+
+    st.divider()
+
+    # Signal Banner
+    if confluence["signal"].startswith("STRONG BUY"):
+        st.success(f"🔥 **{confluence['signal']}** | Confidence: {confluence['confidence']}% — Teeno Green Lights Confirmed! Strong upside setup.")
+    elif confluence["signal"].startswith("STRONG SHORT"):
+        st.error(f"🚨 **{confluence['signal']}** | Confidence: {confluence['confidence']}% — Teeno Red Lights Confirmed! Strong downside breakdown.")
+    elif "MODERATE" in confluence["signal"]:
+        st.warning(f"⚡ **{confluence['signal']}** | 2 Lights aligned, 1 Yellow. Half-position scalp allowed.")
+    else:
+        st.info(f"⏸️ **{confluence['signal']}** — Market in conflict or consolidation. Wait for clear 3-light alignment.")
+
+    # Exit Monitor Alert
+    if confluence["exit_alert"]:
+        st.error(f"⚠️ **TRIGGER EXIT NOW:** {confluence['exit_reason']}")
+    else:
+        st.caption("🛡️ **Exit Monitor:** Normal hold. Invalidation or reversal pattern absent.")
+    
