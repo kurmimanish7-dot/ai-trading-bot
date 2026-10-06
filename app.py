@@ -3954,7 +3954,7 @@ if st.sidebar.button(
     st.cache_data.clear()
     st.rerun()
 
-with st.fragment(run_every="5s"):
+with st.fragment():
     # =========================================================
     # CURRENT MARKET
     # =========================================================
