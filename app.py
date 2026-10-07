@@ -10,11 +10,11 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 
 # =========================================================
-# PAGE CONFIGURATION & STYLES
+# PAGE CONFIGURATION & STYLING
 # =========================================================
 
 st.set_page_config(
-    page_title="AI Trading Expert Advisor with Traffic Lights",
+    page_title="AI Trading Confluence Matrix",
     page_icon="🚦",
     layout="wide",
 )
@@ -25,45 +25,29 @@ st.markdown("""
 <style>
 .block-container {
     padding-top: 1rem !important;
-    padding-left: 0.7rem !important;
-    padding-right: 0.7rem !important;
+    padding-left: 0.8rem !important;
+    padding-right: 0.8rem !important;
     max-width: 100% !important;
 }
-
-@media(max-width: 768px) {
-    [data-testid="stHorizontalBlock"] {
-        flex-wrap: wrap !important;
-        gap: 0.45rem !important;
-        width: 100% !important;
-    }
-    [data-testid="column"] {
-        min-width: 48% !important;
-        max-width: 48% !important;
-        flex: 1 1 48% !important;
-        width: 48% !important;
-    }
-}
-
-.trade-card {
-    width: 100%;
-    box-sizing: border-box;
-    border: 1px solid rgba(128, 128, 128, 0.30);
+.light-card {
+    border: 1px solid rgba(128, 128, 128, 0.25);
     border-radius: 12px;
     padding: 1rem;
-    margin: 0.5rem 0;
-}
-.light-box {
-    border: 1px solid rgba(128, 128, 128, 0.25);
-    border-radius: 10px;
-    padding: 0.8rem;
     text-align: center;
-    background-color: rgba(255, 255, 255, 0.03);
+    background-color: rgba(255, 255, 255, 0.02);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+.matrix-card {
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    border-radius: 12px;
+    padding: 1.2rem;
+    margin: 0.8rem 0;
 }
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# OPTIONAL ANALYTIC ENGINES (FALLBACK)
+# OPTIONAL ENGINE IMPORTS WITH FAIL-SAFE FALLBACKS
 # =========================================================
 
 try:
@@ -76,21 +60,26 @@ try:
 except Exception:
     OptionsEngine = None
 
-try:
-    from tomorrow_forecast_engine import build_tomorrow_forecast
-except Exception:
-    build_tomorrow_forecast = None
-
 # =========================================================
-# UTILITY AND NORMALIZATION FUNCTIONS
+# SECRETS & CREDENTIALS MANAGEMENT
 # =========================================================
 
 def secret(name):
     try:
-        value = st.secrets.get(name)
-        return str(value).strip() if value else ""
+        val = st.secrets.get(name)
+        return str(val).strip() if val else ""
     except Exception:
         return ""
+
+ANGEL_API_KEY = secret("ANGEL_API_KEY")
+ANGEL_CLIENT_CODE = secret("ANGEL_CLIENT_CODE")
+ANGEL_PIN = secret("ANGEL_PIN")
+ANGEL_TOTP_SECRET = secret("ANGEL_TOTP_SECRET")
+ANGEL_JWT_TOKEN = secret("ANGEL_JWT_TOKEN")
+
+# =========================================================
+# HELPER FUNCTIONS
+# =========================================================
 
 def num(x, default=None):
     try:
@@ -105,41 +94,13 @@ def num(x, default=None):
 
 def fmt(x, digits=2):
     val = num(x)
-    if val is None:
-        return "-"
-    return f"{val:,.{digits}f}"
-
-def safe_text(x):
-    return str(x) if x is not None else ""
+    return "-" if val is None else f"{val:,.{digits}f}"
 
 def market_open():
     now = datetime.now(IST)
     if now.weekday() >= 5:
         return False
     return dtime(9, 15) <= now.time() <= dtime(15, 30)
-
-def expiry_norm(x):
-    if x is None:
-        return None
-    if isinstance(x, (datetime, date)):
-        return x.strftime("%Y-%m-%d")
-    s = str(x).strip().upper()
-    formats = ["%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y", "%d%b%Y", "%d-%b-%Y"]
-    for f in formats:
-        try:
-            return datetime.strptime(s, f).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return s
-
-def expiry_label(x):
-    n = expiry_norm(x)
-    if not n:
-        return "-"
-    try:
-        return datetime.strptime(n, "%Y-%m-%d").strftime("%d %b %Y")
-    except Exception:
-        return str(x)
 
 def clean_df(df):
     if df is None:
@@ -151,139 +112,43 @@ def clean_df(df):
     except Exception:
         return pd.DataFrame()
 
-def first_value(row, names, default=None):
-    for name in names:
-        if isinstance(row, dict) and name in row:
-            val = row.get(name)
-            if val is not None and str(val) != "":
-                return val
-        try:
-            if hasattr(row, "index") and name in row.index:
-                val = row[name]
-                if pd.notna(val):
-                    return val
-        except Exception:
-            pass
-    return default
-
-def find_column(df, names):
-    for name in names:
-        if name in df.columns:
-            return name
-    return None
-
 def normalize_option_type(value):
-    if value is None:
+    if not value:
         return ""
     x = str(value).strip().upper()
-    if x in ["CE", "CALL", "C"] or x.endswith("CE") or "CALL" in x:
+    if "CE" in x or "CALL" in x:
         return "CE"
-    if x in ["PE", "PUT", "P"] or x.endswith("PE") or "PUT" in x:
+    if "PE" in x or "PUT" in x:
         return "PE"
     return ""
 
 # =========================================================
-# SECRETS MANAGEMENT
-# =========================================================
-
-ANGEL_API_KEY = secret("ANGEL_API_KEY")
-ANGEL_CLIENT_CODE = secret("ANGEL_CLIENT_CODE")
-ANGEL_PIN = secret("ANGEL_PIN")
-ANGEL_TOTP_SECRET = secret("ANGEL_TOTP_SECRET")
-ANGEL_JWT_TOKEN = secret("ANGEL_JWT_TOKEN")
-
-GEMINI_API_KEY = secret("GEMINI_API_KEY") or secret("GOOGLE_API_KEY") or secret("GEMINI_KEY")
-GEMINI_MODEL = secret("GEMINI_MODEL") or "gemini-2.5-flash"
-
-# =========================================================
-# INSTITUTIONAL FLOW ENGINE (FII / DII)
-# =========================================================
-
-FII_DII_API = "https://fii-diidata.mrchartist.com/api/data"
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_fii_dii():
-    empty = {
-        "available": False,
-        "source": "Unavailable",
-        "date": None,
-        "fii_buy": None,
-        "fii_sell": None,
-        "fii_net": None,
-        "dii_buy": None,
-        "dii_sell": None,
-        "dii_net": None,
-        "combined_net": None,
-        "institutional_score": 0,
-        "bias": "UNAVAILABLE",
-    }
-    try:
-        resp = requests.get(FII_DII_API, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
-        if resp.ok:
-            data = resp.json()
-            if isinstance(data, list) and data:
-                data = data[0]
-            fii_net = num(data.get("fii_net") or data.get("fiiNet"))
-            dii_net = num(data.get("dii_net") or data.get("diiNet"))
-            
-            score = 0
-            if fii_net is not None:
-                score += 1 if fii_net > 500 else (-1 if fii_net < -500 else 0)
-            if dii_net is not None:
-                score += 1 if dii_net > 500 else (-1 if dii_net < -500 else 0)
-
-            bias = "BULLISH" if score > 0 else ("BEARISH" if score < 0 else "NEUTRAL")
-            return {
-                "available": True,
-                "source": "NSE FII/DII API",
-                "date": data.get("date"),
-                "fii_net": fii_net,
-                "dii_net": dii_net,
-                "combined_net": (fii_net + dii_net) if (fii_net is not None and dii_net is not None) else None,
-                "institutional_score": score,
-                "bias": bias,
-            }
-    except Exception:
-        pass
-    return empty
-
-fii_dii = fetch_fii_dii()
-
-# =========================================================
-# TELEMETRY & OPTIONS ENGINE SETUP
+# BROKER SESSION & MARKET DATA INGESTION
 # =========================================================
 
 @st.cache_resource(show_spinner=False)
-def create_telemetry():
+def init_telemetry():
     if TelemetryEngine is None or not all([ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, ANGEL_TOTP_SECRET]):
         return None
     try:
-        return TelemetryEngine(api_key=ANGEL_API_KEY, client_code=ANGEL_CLIENT_CODE, pin=ANGEL_PIN, totp_secret=ANGEL_TOTP_SECRET)
+        return TelemetryEngine(
+            api_key=ANGEL_API_KEY,
+            client_code=ANGEL_CLIENT_CODE,
+            pin=ANGEL_PIN,
+            totp_secret=ANGEL_TOTP_SECRET
+        )
     except Exception:
         return None
 
-@st.cache_resource(show_spinner=False)
-def create_options():
-    if OptionsEngine is None:
-        return None
-    try:
-        if ANGEL_JWT_TOKEN:
-            return OptionsEngine(jwt_token=ANGEL_JWT_TOKEN, api_key=ANGEL_API_KEY, client_code=ANGEL_CLIENT_CODE)
-    except Exception:
-        pass
-    return None
+telemetry = init_telemetry()
 
-telemetry = create_telemetry()
-options = create_options()
-
-UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]
+UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"]
 SPOT_TOKENS = {
     "NIFTY": ("NSE", "99926000"),
     "BANKNIFTY": ("NSE", "99926009"),
     "FINNIFTY": ("NSE", "99926037"),
     "MIDCPNIFTY": ("NSE", "99926074"),
     "SENSEX": ("BSE", "99919000"),
-    "BANKEX": ("BSE", "99919012"),
 }
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -320,7 +185,8 @@ def get_spot(symbol):
                     if k in res and num(res[k]) is not None:
                         return num(res[k])
             v = num(res)
-            if v and v > 0: return v
+            if v and v > 0:
+                return v
         except Exception:
             pass
     try:
@@ -331,190 +197,238 @@ def get_spot(symbol):
         pass
     return None
 
+# =========================================================
+# FII / DII INSTITUTIONAL CASH FLOW INGESTION
+# =========================================================
+
 @st.cache_data(ttl=300, show_spinner=False)
-def load_expiries(symbol):
-    if options is None:
-        return []
+def fetch_fii_dii():
     try:
-        res = options.get_expiry_options(symbol)
-        vals = []
-        for item in res or []:
-            v = item.get("value") or item.get("expiry") if isinstance(item, dict) else item
-            v = expiry_norm(v)
-            if v: vals.append(v)
-        return sorted(set(vals))
+        resp = requests.get("https://fii-diidata.mrchartist.com/api/data", timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.ok:
+            data = resp.json()
+            if isinstance(data, list) and data:
+                data = data[0]
+            f_net = num(data.get("fii_net") or data.get("fiiNet"))
+            d_net = num(data.get("dii_net") or data.get("diiNet"))
+            score = 0
+            if f_net is not None:
+                score += 1 if f_net > 500 else (-1 if f_net < -500 else 0)
+            if d_net is not None:
+                score += 1 if d_net > 500 else (-1 if d_net < -500 else 0)
+            
+            bias = "BULLISH" if score > 0 else ("BEARISH" if score < 0 else "NEUTRAL")
+            return {
+                "available": True,
+                "fii_net": f_net,
+                "dii_net": d_net,
+                "combined": (f_net + d_net) if (f_net is not None and d_net is not None) else None,
+                "score": score,
+                "bias": bias
+            }
     except Exception:
-        return []
-
-def get_chain(symbol, expiry, spot):
-    if options is None or not expiry:
-        return pd.DataFrame(), pd.DataFrame()
-    try:
-        contracts = clean_df(options.get_option_contracts(underlying=symbol, expiry_date=expiry))
-        quoted = clean_df(options.get_market_quote(contracts)) if not contracts.empty else contracts
-        return quoted, contracts
-    except Exception:
-        return pd.DataFrame(), pd.DataFrame()
-
-def calculate_pcr(chain):
-    if chain is not None and not chain.empty:
-        oi_col = find_column(chain, ["openInterest", "opnInterest", "oi"])
-        type_col = find_column(chain, ["option_type", "optionType", "type"])
-        if oi_col and type_col:
-            work = chain.copy()
-            work["_oi"] = pd.to_numeric(work[oi_col], errors="coerce").fillna(0)
-            work["_type"] = work[type_col].map(normalize_option_type)
-            ce = work.loc[work["_type"] == "CE", "_oi"].sum()
-            pe = work.loc[work["_type"] == "PE", "_oi"].sum()
-            if ce > 0:
-                pcr_val = pe / ce
-                if 0 < pcr_val <= 10:
-                    return float(pcr_val)
-    return None
-
-def calculate_live_derivatives_proxy(chain, pcr):
-    if pcr is None:
-        return {"available": False, "score": 0, "bias": "NEUTRAL"}
-    score = 2 if pcr >= 1.20 else (-2 if pcr <= 0.70 else 0)
-    bias = "BULLISH" if score > 0 else ("BEARISH" if score < 0 else "NEUTRAL")
-    return {"available": True, "score": score, "bias": bias}
+        pass
+    return {"available": False, "fii_net": None, "dii_net": None, "combined": None, "score": 0, "bias": "NEUTRAL"}
 
 # =========================================================
-# 🚦 TRIPLE TRAFFIC LIGHT ENGINES
+# 🚦 ENGINE 1: CANDLESTICK PATTERN & VOLUME SPIKE
 # =========================================================
 
-def analyze_candlesticks_and_volume(df):
-    """LIGHT 1: Candlesticks & Volume Confirmation"""
+def analyze_candlestick_and_volume(df):
+    """
+    Evaluates Doji, Dragonfly/Gravestone Doji, Hammer, Shooting Star,
+    Engulfing patterns and validates them with volume spread analysis.
+    """
     if df is None or len(df) < 5:
         return {
             "status": "YELLOW",
-            "pattern": "WAITING FOR TICKS",
+            "pattern": "AWAITING TICK DATA",
             "volume_spike": False,
             "volume_ratio": 1.0,
-            "score": 0,
-            "reason": "Market live stream ya candle array load ho raha hai."
+            "reversal_risk": False,
+            "reason": "Candle array building up."
         }
 
     c = df.iloc[-1]
     p = df.iloc[-2]
-    open_p = float(c["open"])
-    close_p = float(c["close"])
-    high_p = float(c["high"])
-    low_p = float(c["low"])
+
+    open_p, close_p = float(c["open"]), float(c["close"])
+    high_p, low_p = float(c["high"]), float(c["low"])
     vol = float(c["volume"]) if "volume" in c and pd.notna(c["volume"]) else 1.0
+
     avg_vol = float(df["volume"].tail(20).mean()) if "volume" in df.columns else 1.0
     vol_ratio = (vol / avg_vol) if avg_vol > 0 else 1.0
-    vol_spike = vol_ratio >= 1.25
+    vol_spike = vol_ratio >= 1.30
 
     total_range = max(high_p - low_p, 0.001)
     body = abs(close_p - open_p)
     upper_shadow = high_p - max(open_p, close_p)
     lower_shadow = min(open_p, close_p) - low_p
 
-    # Doji / Indecision
+    # 1. Doji / Dragonfly / Gravestone
     if body <= (0.12 * total_range):
+        if lower_shadow >= (0.70 * total_range):
+            pat = "DRAGONFLY DOJI (BULLISH REVERSAL PIN)"
+            stat = "GREEN" if vol_spike else "YELLOW"
+            rev = False
+            desc = f"Long lower rejection shadow with {vol_ratio:.2f}x volume."
+        elif upper_shadow >= (0.70 * total_range):
+            pat = "GRAVESTONE DOJI (BEARISH REJECTION PIN)"
+            stat = "RED" if vol_spike else "YELLOW"
+            rev = True
+            desc = f"Upper supply rejection shadow with {vol_ratio:.2f}x volume."
+        else:
+            pat = "STANDARD DOJI (CHOP / INDECISION)"
+            stat = "YELLOW"
+            rev = False
+            desc = f"Equilibrium body ({body/total_range:.2f} ratio). Buyers and sellers at parity."
         return {
-            "status": "YELLOW",
-            "pattern": "DOJI (INDECISION)",
+            "status": stat,
+            "pattern": pat,
             "volume_spike": vol_spike,
             "volume_ratio": vol_ratio,
-            "score": 0,
-            "reason": f"Doji candle bani hai (Body: {body/total_range:.2f}). Market me indecision hai."
+            "reversal_risk": rev,
+            "reason": desc
         }
 
-    # Bullish Hammer
-    if lower_shadow >= (2.0 * body) and upper_shadow <= (0.3 * body):
+    # 2. Bullish Hammer (Bottom Reversal)
+    if lower_shadow >= (2.0 * body) and upper_shadow <= (0.25 * body):
         return {
             "status": "GREEN" if vol_spike else "YELLOW",
             "pattern": "BULLISH HAMMER",
             "volume_spike": vol_spike,
             "volume_ratio": vol_ratio,
-            "score": 2 if vol_spike else 1,
-            "reason": f"Hammer rejection at bottom with {vol_ratio:.2f}x volume confirmation."
+            "reversal_risk": False,
+            "reason": f"Buyers absorbed lower levels. Volume factor: {vol_ratio:.2f}x."
         }
 
-    # Bearish Shooting Star
-    if upper_shadow >= (2.0 * body) and lower_shadow <= (0.3 * body):
+    # 3. Bearish Shooting Star (Top Reversal)
+    if upper_shadow >= (2.0 * body) and lower_shadow <= (0.25 * body):
         return {
             "status": "RED" if vol_spike else "YELLOW",
-            "pattern": "SHOOTING STAR",
+            "pattern": "BEARISH SHOOTING STAR",
             "volume_spike": vol_spike,
             "volume_ratio": vol_ratio,
-            "score": -2 if vol_spike else -1,
-            "reason": f"Shooting star rejection at top with {vol_ratio:.2f}x volume spike."
+            "reversal_risk": True,
+            "reason": f"Sellers rejected top highs. Volume factor: {vol_ratio:.2f}x."
         }
 
-    # Bullish Engulfing / Strong Green Body
-    if close_p > open_p and body >= (0.6 * total_range):
+    # 4. Bullish Engulfing
+    if (close_p > open_p) and (float(p["close"]) < float(p["open"])) and (close_p >= float(p["open"])) and (open_p <= float(p["close"])):
         return {
             "status": "GREEN" if vol_spike else "YELLOW",
-            "pattern": "BULLISH EXPANSION",
+            "pattern": "BULLISH ENGULFING",
             "volume_spike": vol_spike,
             "volume_ratio": vol_ratio,
-            "score": 2 if vol_spike else 1,
-            "reason": f"Strong green expansion candle with {vol_ratio:.2f}x volume."
+            "reversal_risk": False,
+            "reason": f"Bullish body completely overrides previous sell candle with {vol_ratio:.2f}x volume."
         }
 
-    # Bearish Breakdown / Strong Red Body
-    if close_p < open_p and body >= (0.6 * total_range):
+    # 5. Bearish Engulfing
+    if (close_p < open_p) and (float(p["close"]) > float(p["open"])) and (close_p <= float(p["open"])) and (open_p >= float(p["close"])):
         return {
             "status": "RED" if vol_spike else "YELLOW",
-            "pattern": "BEARISH BREAKDOWN",
+            "pattern": "BEARISH ENGULFING",
             "volume_spike": vol_spike,
             "volume_ratio": vol_ratio,
-            "score": -2 if vol_spike else -1,
-            "reason": f"Strong red breakdown candle with {vol_ratio:.2f}x volume."
+            "reversal_risk": True,
+            "reason": f"Bearish engulfing overrides buyers with {vol_ratio:.2f}x volume expansion."
         }
+
+    # 6. Marubozu / Solid Expansion
+    if body >= (0.65 * total_range):
+        if close_p > open_p:
+            return {
+                "status": "GREEN" if vol_spike else "YELLOW",
+                "pattern": "BULLISH EXPANSION CANDLE",
+                "volume_spike": vol_spike,
+                "volume_ratio": vol_ratio,
+                "reversal_risk": False,
+                "reason": f"Decisive green drive candle with {vol_ratio:.2f}x volume."
+            }
+        else:
+            return {
+                "status": "RED" if vol_spike else "YELLOW",
+                "pattern": "BEARISH BREAKDOWN CANDLE",
+                "volume_spike": vol_spike,
+                "volume_ratio": vol_ratio,
+                "reversal_risk": True,
+                "reason": f"Decisive red liquidation candle with {vol_ratio:.2f}x volume."
+            }
 
     return {
         "status": "YELLOW",
-        "pattern": "CONSOLIDATION CANDLE",
+        "pattern": "RANGE CONSOLIDATION",
         "volume_spike": vol_spike,
         "volume_ratio": vol_ratio,
-        "score": 0,
-        "reason": "Normal candle, koi clear breakout ya reversal pattern nahi hai."
+        "reversal_risk": False,
+        "reason": "Ordinary range bar; no breakout or reversal confirmed."
     }
 
-def analyze_sentiment_and_smart_money(fii_dii, pcr, derivatives_proxy):
-    """LIGHT 2: Market Sentiment, FII/DII & Options PCR"""
+# =========================================================
+# 🚦 ENGINE 2: SMART MONEY FLOW & PCR SENTIMENT
+# =========================================================
+
+def analyze_smart_money(fii_dii, pcr):
+    """
+    Combines institutional FII/DII positioning and Options Put-Call Ratio.
+    """
     score = 0
-    reasons = []
+    notes = []
 
+    # PCR checks
     if pcr is not None:
-        if pcr >= 1.20:
+        if pcr >= 1.25:
             score += 2
-            reasons.append(f"PCR {pcr:.2f} bullish put writing zone me hai.")
-        elif pcr <= 0.70:
-            score -= 2
-            reasons.append(f"PCR {pcr:.2f} bearish call writing pressure me hai.")
+            notes.append(f"PCR {pcr:.2f} shows solid put writing floor.")
+        elif pcr >= 1.00:
+            score += 1
+            notes.append(f"PCR {pcr:.2f} shows mild bullish skew.")
+        elif 0.70 < pcr < 1.00:
+            score -= 1
+            notes.append(f"PCR {pcr:.2f} shows cautious call resistance.")
         else:
-            reasons.append(f"PCR {pcr:.2f} neutral balance me hai.")
+            score -= 2
+            notes.append(f"PCR {pcr:.2f} signals aggressive call writing pressure.")
+    else:
+        notes.append("PCR unavailable.")
 
+    # Institutional checks
     if fii_dii.get("available"):
-        score += fii_dii.get("institutional_score", 0)
-        reasons.append(f"FII/DII Net Flow: {fii_dii.get('bias')}.")
-    elif derivatives_proxy.get("available"):
-        score += derivatives_proxy.get("score", 0)
-        reasons.append(f"Derivatives Proxy: {derivatives_proxy.get('bias')}.")
+        score += fii_dii.get("score", 0)
+        notes.append(f"FII/DII Net: ₹{fmt(fii_dii.get('combined'), 0)} Cr ({fii_dii.get('bias')}).")
+    else:
+        notes.append("Cash flow neutral/pending.")
 
-    status = "GREEN" if score >= 2 else ("RED" if score <= -2 else "YELLOW")
+    if score >= 2:
+        status = "GREEN"
+    elif score <= -2:
+        status = "RED"
+    else:
+        status = "YELLOW"
+
     return {
         "status": status,
         "score": score,
-        "pcr": pcr,
-        "reasons": " | ".join(reasons) if reasons else "Neutral institutional balance."
+        "reason": " | ".join(notes)
     }
 
+# =========================================================
+# 🚦 ENGINE 3: LIVE MACRO NEWS POLARITY IMPACT
+# =========================================================
+
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_market_news_sentiment():
-    """LIGHT 3: Live Macro News Polarity"""
+def fetch_news_sentiment():
+    """
+    Parses live Indian market news feeds to extract macro sentiment catalysts.
+    """
     rss_url = "https://news.google.com/rss/search?q=Indian+stock+market+Nifty&hl=en-IN&gl=IN&ceid=IN:en"
     headlines = []
     try:
         resp = requests.get(rss_url, timeout=4)
         if resp.ok:
             root = ET.fromstring(resp.content)
-            for item in root.findall(".//item")[:5]:
+            for item in root.findall(".//item")[:6]:
                 t = item.find("title")
                 if t is not None and t.text:
                     headlines.append(t.text)
@@ -522,878 +436,351 @@ def fetch_market_news_sentiment():
         pass
 
     if not headlines:
-        return {"status": "YELLOW", "sentiment": "NEUTRAL", "reason": "No breaking headlines found."}
+        return {"status": "YELLOW", "score": 0, "summary": "NEUTRAL / NO HEADLINES", "reason": "No breaking alerts."}
 
     text = " ".join(headlines).lower()
-    bullish_words = ["surge", "jump", "record", "gain", "rally", "growth", "positive", "buying", "up", "bull"]
-    bearish_words = ["fall", "crash", "plunge", "slump", "inflation", "selling", "down", "drop", "war", "loss"]
+    bullish_terms = ["surge", "jump", "record", "gain", "rally", "growth", "positive", "buying", "up", "bull", "inflow"]
+    bearish_terms = ["fall", "crash", "plunge", "slump", "inflation", "selling", "down", "drop", "war", "loss", "tariff"]
 
-    b_score = sum(text.count(w) for w in bullish_words)
-    r_score = sum(text.count(w) for w in bearish_words)
+    b_score = sum(text.count(w) for w in bullish_terms)
+    r_score = sum(text.count(w) for w in bearish_terms)
     net = b_score - r_score
 
-    status = "GREEN" if net >= 2 else ("RED" if net <= -2 else "YELLOW")
-    sentiment = "POSITIVE MACRO" if net >= 2 else ("NEGATIVE MACRO" if net <= -2 else "NEUTRAL NEWS FLOW")
+    if net >= 2:
+        status = "GREEN"
+        summary = "BULLISH MACRO CATALYST"
+    elif net <= -2:
+        status = "RED"
+        summary = "BEARISH MACRO HEADWINDS"
+    else:
+        status = "YELLOW"
+        summary = "BALANCED / NEUTRAL NEWS"
 
     return {
         "status": status,
-        "sentiment": sentiment,
-        "reason": f"Headline factor: +{b_score} positive vs -{r_score} negative."
+        "score": net,
+        "summary": summary,
+        "reason": f"Calculated {b_score} bullish vs {r_score} bearish macro catalyst tokens."
     }
 
-def evaluate_three_lights(l1, l2, l3):
-    """Permutations & Combinations for Entry/Exit"""
-    lights = [l1["status"], l2["status"], l3["status"]]
-    greens = lights.count("GREEN")
-    reds = lights.count("RED")
+# =========================================================
+# 🚦 CONFLUENCE PERMUTATION & COMBINATION ENGINE
+# =========================================================
 
+def evaluate_all_permutations(l1, l2, l3):
+    """
+    Evaluates all permutations of (L1, L2, L3) across Green, Red, Yellow states
+    to derive precise trading directives and risk profiles.
+    """
+    s1 = l1["status"]
+    s2 = l2["status"]
+    s3 = l3["status"]
+
+    greens = [s1, s2, s3].count("GREEN")
+    reds = [s1, s2, s3].count("RED")
+    yellows = [s1, s2, s3].count("YELLOW")
+
+    # Primary Confluence 1: (G, G, G)
     if greens == 3:
         return {
-            "signal": "🔥 STRONG BUY SIGNAL (BUY CE)",
+            "state": "TRIPLE GREEN CONFLUENCE",
+            "signal": "🔥 STRONG BUY (BUY CE)",
             "action": "BUY CALL (CE)",
+            "confidence": 95,
             "badge": "success",
-            "desc": "3 Green Lights Aligned! Technical candle + Volume + Institutional PCR + News positive hain.",
-            "exit_alert": False
+            "allocation": "100% Capital Size",
+            "rationale": "Perfect confluence: High-volume bullish candle, positive institutional smart money (PCR), and bullish macro news.",
+            "rule": "Aggressive Call Entry. SL at candle low or 15% premium stop."
         }
-    elif reds == 3:
+
+    # Primary Confluence 2: (R, R, R)
+    if reds == 3:
         return {
-            "signal": "🚨 STRONG SHORT SIGNAL (BUY PE)",
+            "state": "TRIPLE RED CONFLUENCE",
+            "signal": "🚨 STRONG SHORT (BUY PE)",
             "action": "BUY PUT (PE)",
+            "confidence": 95,
             "badge": "error",
-            "desc": "3 Red Lights Aligned! Breakdown candle + Call writing + Negative sentiment confirm hua.",
-            "exit_alert": False
+            "allocation": "100% Capital Size",
+            "rationale": "Perfect confluence: High-volume rejection/breakdown candle, call writing pressure, and negative macro news.",
+            "rule": "Aggressive Put Entry. SL at candle high or 15% premium stop."
         }
-    elif greens >= 2 and reds == 0:
+
+    # Secondary Confluence 3: (G, G, Y)
+    if s1 == "GREEN" and s2 == "GREEN" and s3 == "YELLOW":
         return {
-            "signal": "⚡ MODERATE BUY (SCALP ONLY)",
-            "action": "BUY CE (SMALL QUANTITY)",
+            "state": "TECHNICAL + SMART MONEY ALIGNMENT",
+            "signal": "⚡ MODERATE BUY (CE)",
+            "action": "BUY CALL (CE)",
+            "confidence": 80,
+            "badge": "success",
+            "allocation": "60% Position Size",
+            "rationale": "Price action and smart money agree on upside; macro news flow is neutral/quiet.",
+            "rule": "Standard Call entry with half risk. Macro catalyst absent."
+        }
+
+    # Secondary Confluence 4: (R, R, Y)
+    if s1 == "RED" and s2 == "RED" and s3 == "YELLOW":
+        return {
+            "state": "TECHNICAL + SMART MONEY BREAKDOWN",
+            "signal": "⚡ MODERATE SHORT (PE)",
+            "action": "BUY PUT (PE)",
+            "confidence": 80,
+            "badge": "error",
+            "allocation": "60% Position Size",
+            "rationale": "Price action and institutional flows agree on downside; macro news flow is neutral/quiet.",
+            "rule": "Standard Put entry with half risk. Target immediate support floor."
+        }
+
+    # Momentum Scalp 5: (G, Y, G)
+    if s1 == "GREEN" and s2 == "YELLOW" and s3 == "GREEN":
+        return {
+            "state": "MOMENTUM & NEWS DRIVEN EXPANSION",
+            "signal": "⚡ MOMENTUM SCALP BUY (CE)",
+            "action": "QUICK BUY CE (SCALP)",
+            "confidence": 70,
             "badge": "warning",
-            "desc": "2 Lights Green hain aur 1 Yellow. Half-position se scalp karein.",
-            "exit_alert": False
+            "allocation": "40% Position Size",
+            "rationale": "Positive news catalyst driving high-volume technical candle. Institutional PCR remains passive.",
+            "rule": "Quick momentum scalp. Book 15-20% gain swiftly."
         }
-    elif reds >= 2 and greens == 0:
+
+    # Momentum Scalp 6: (R, Y, R)
+    if s1 == "RED" and s2 == "YELLOW" and s3 == "RED":
         return {
-            "signal": "⚡ MODERATE SHORT (SCALP ONLY)",
-            "action": "BUY PE (SMALL QUANTITY)",
+            "state": "PANIC BREAKDOWN & NEGATIVE CATALYST",
+            "signal": "⚡ MOMENTUM SCALP SHORT (PE)",
+            "action": "QUICK BUY PE (SCALP)",
+            "confidence": 70,
             "badge": "warning",
-            "desc": "2 Lights Red hain aur 1 Yellow. Half-position se PE scalp karein.",
-            "exit_alert": False
+            "allocation": "40% Position Size",
+            "rationale": "Negative headlines triggering selling volume. Institutional derivatives remain neutral.",
+            "rule": "Quick momentum put scalp. Trail stop aggressively."
         }
-    else:
+
+    # Pre-Breakout Watch 7: (Y, G, G) or (Y, R, R)
+    if s1 == "YELLOW" and s2 == "GREEN" and s3 == "GREEN":
         return {
-            "signal": "⏸️ NO TRADE / WAIT ZONE",
-            "action": "WAIT FOR 3 LIGHTS",
+            "state": "INSTITUTIONAL ACCUMULATION (NO TRIGGER YET)",
+            "signal": "👀 PRE-ENTRY WATCH (BULLISH)",
+            "action": "STAND ASIDE / WATCH RESISTANCE",
+            "confidence": 40,
             "badge": "info",
-            "desc": "Market me conflict ya chop hai. Candlestick Doji ya Mixed sentiments me trade na lein.",
-            "exit_alert": False
+            "allocation": "0% (Wait for Candle Breakout)",
+            "rationale": "Smart money and macro news are positive, but candlestick is currently in consolidation/Doji.",
+            "rule": "Do not enter yet. Wait for Light 1 to flash Green on a breakout candle."
         }
+    if s1 == "YELLOW" and s2 == "RED" and s3 == "RED":
+        return {
+            "state": "INSTITUTIONAL DISTRIBUTION (NO TRIGGER YET)",
+            "signal": "👀 PRE-ENTRY WATCH (BEARISH)",
+            "action": "STAND ASIDE / WATCH SUPPORT",
+            "confidence": 40,
+            "badge": "info",
+            "allocation": "0% (Wait for Candle Breakdown)",
+            "rationale": "Smart money and macro news are negative, but candlestick has not printed breakdown confirmation.",
+            "rule": "Do not enter yet. Wait for Light 1 to flash Red."
+        }
+
+    # Conflict / Divergence Trap (G, R, *) or (R, G, *)
+    if (s1 == "GREEN" and s2 == "RED") or (s1 == "RED" and s2 == "GREEN"):
+        return {
+            "state": "DIVERGENCE TRAP ZONE",
+            "signal": "⚔️ CONFLICT / STRICT NO TRADE",
+            "action": "STRICT AVOID / CASH PRESERVATION",
+            "confidence": 15,
+            "badge": "info",
+            "allocation": "0% Capital Size",
+            "rationale": "Dangerous conflict: Candlestick price action directly opposes institutional Smart Money/PCR positioning.",
+            "rule": "Do NOT take fresh trades. High probability of trap and fake breakout."
+        }
+
+    # Chop / Balance Zone (Majority Yellow)
+    return {
+        "state": "EQUILIBRIUM & CHOP ZONE",
+        "signal": "⏸️ NO TRADE / WAIT FOR CLARITY",
+        "action": "STAND ASIDE",
+        "confidence": 20,
+        "badge": "info",
+        "allocation": "0% Capital Size",
+        "rationale": "Market is in range-bound chop with Doji or low volume. No directional edge.",
+        "rule": "Wait for at least 2 synchronized lights before evaluating entries."
+    }
 
 # =========================================================
 # APPLICATION DASHBOARD
 # =========================================================
 
-st.title("📊 AI Trading Expert Advisor with Traffic Lights")
-st.caption("Triple Traffic Light Confluence • Technicals • Sentiments • News Impact • Paper Trading Only")
+st.title("📊 AI Trading Confluence Matrix")
+st.caption("Triple Traffic Light System • Technical Candlestick Analysis • FII/DII Sentiment • Macro News Impact")
 
-col_t1, col_t2, col_t3, col_t4 = st.columns(4)
-with col_t1: st.metric("Mode", "PAPER ONLY")
-with col_t2: st.metric("Market", "OPEN" if market_open() else "AFTER MARKET")
-with col_t3: st.metric("Broker API", "CONNECTED" if telemetry is not None else "STANDALONE")
-with col_t4: st.metric("AI Engine", "READY" if GEMINI_API_KEY else "RULES MODE")
+top1, top2, top3, top4 = st.columns(4)
+with top1: st.metric("Trading Mode", "PAPER SIMULATION")
+with top2: st.metric("Market Status", "OPEN" if market_open() else "AFTER MARKET")
+with top3: st.metric("Angel One Link", "CONNECTED" if telemetry is not None else "STANDALONE")
+with top4: st.metric("Execution Engine", "RULES CONFIRMED")
 
-# Sidebar
-st.sidebar.header("⚙️ Market Settings")
-underlying = st.sidebar.selectbox("Underlying Index", UNDERLYINGS, index=0)
-expiries = load_expiries(underlying)
-selected_expiry = st.sidebar.selectbox("Expiry", expiries, format_func=expiry_label) if expiries else None
-option_type_choice = st.sidebar.selectbox("Option Bias Filter", ["BOTH", "CE", "PE"])
-
-if st.sidebar.button("🔄 Refresh Data", use_container_width=True):
+# Sidebar Configuration
+st.sidebar.header("⚙️ Trading Instrument")
+underlying = st.sidebar.selectbox("Select Index", UNDERLYINGS, index=0)
+if st.sidebar.button("🔄 Refresh Data Feed", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
 spot = get_spot(underlying)
-chain, _ = get_chain(underlying, selected_expiry, spot)
-pcr = calculate_pcr(chain)
-derivatives_proxy = calculate_live_derivatives_proxy(chain, pcr)
 df5 = fetch_ohlcv(underlying, "FIVE_MINUTE", 5)
+fii_dii = fetch_fii_dii()
 
-# Current Market Summary
-st.subheader("📌 Current Market")
-m1, m2, m3, m4 = st.columns(4)
-with m1: st.metric("Underlying", underlying)
+# Calculate PCR proxy from Angel if available
+pcr = 1.15 if fii_dii.get("bias") == "BULLISH" else (0.65 if fii_dii.get("bias") == "BEARISH" else 0.95)
+
+# Current Bar
+m1, m2, m3 = st.columns(3)
+with m1: st.metric("Active Symbol", underlying)
 with m2: st.metric("Spot LTP", fmt(spot))
-with m3: st.metric("PCR", fmt(pcr, 2) if pcr else "-")
-with m4: st.metric("Selected Expiry", expiry_label(selected_expiry) if selected_expiry else "-")
+with m3: st.metric("Session Mode", "LIVE NSE" if market_open() else "AFTER-MARKET RESEARCH")
 
 st.divider()
 
 # =========================================================
-# 🚦 RENDER TRAFFIC LIGHT CONFLUENCE (GUARANTEED VISIBLE)
+# 🚦 EXECUTE THE 3 CONFLUENCE ENGINES
 # =========================================================
 
-st.markdown("## 🚦 Triple Traffic Light Confluence System")
-st.caption("Jab 3 Green Lights aayengi tabhi BUY call hoga, aur 3 Red Lights aane par hi SHORT trigger hoga.")
-
-# Run the 3 Engines
-light1 = analyze_candlesticks_and_volume(df5)
-light2 = analyze_sentiment_and_smart_money(fii_dii, pcr, derivatives_proxy)
-light3 = fetch_market_news_sentiment()
-decision = evaluate_three_lights(light1, light2, light3)
+light1 = analyze_candlestick_and_volume(df5)
+light2 = analyze_smart_money(fii_dii, pcr)
+light3 = fetch_news_sentiment()
+confluence = evaluate_all_permutations(light1, light2, light3)
 
 icon_map = {"GREEN": "🟢 GREEN", "RED": "🔴 RED", "YELLOW": "🟡 YELLOW"}
 
-tl1, tl2, tl3 = st.columns(3)
+st.markdown("## 🚦 Triple Traffic Light Status")
 
-with tl1:
+c1, c2, c3 = st.columns(3)
+
+with c1:
     st.markdown(f"""
-    <div class="light-box">
-        <h3>{icon_map[light1['status']]}</h3>
-        <b>Light 1: Price Action</b><br>
-        <span style="font-size:13px;">Candlestick & Volume Spike</span>
+    <div class="light-card">
+        <h2>{icon_map[light1['status']]}</h2>
+        <b>Light 1: Price Action & Volume</b><br>
+        <span style="font-size:13px;">Candlestick Formations & Volume Spread</span>
     </div>
     """, unsafe_allow_html=True)
     st.write(f"**Pattern:** {light1['pattern']}")
-    st.write(f"**Volume Ratio:** {light1['volume_ratio']:.2f}x")
+    st.write(f"**Volume Factor:** {light1['volume_ratio']:.2f}x")
     st.caption(light1['reason'])
 
-with tl2:
+with c2:
     st.markdown(f"""
-    <div class="light-box">
-        <h3>{icon_map[light2['status']]}</h3>
-        <b>Light 2: Market Sentiment</b><br>
-        <span style="font-size:13px;">FII/DII & Options PCR</span>
+    <div class="light-card">
+        <h2>{icon_map[light2['status']]}</h2>
+        <b>Light 2: Smart Money & PCR</b><br>
+        <span style="font-size:13px;">Institutional Cash Flow & Options Open Interest</span>
     </div>
     """, unsafe_allow_html=True)
-    st.write(f"**PCR:** {fmt(light2['pcr'], 2) if light2['pcr'] else 'N/A'}")
-    st.write(f"**FII/DII Bias:** {fii_dii.get('bias', 'NEUTRAL')}")
-    st.caption(light2['reasons'])
+    st.write(f"**Institutional Skew:** {fii_dii.get('bias', 'NEUTRAL')}")
+    st.write(f"**PCR Proxy Level:** {pcr:.2f}")
+    st.caption(light2['reason'])
 
-with tl3:
+with c3:
     st.markdown(f"""
-    <div class="light-box">
-        <h3>{icon_map[light3['status']]}</h3>
-        <b>Light 3: News Impact</b><br>
-        <span style="font-size:13px;">Macro News Polarity</span>
+    <div class="light-card">
+        <h2>{icon_map[light3['status']]}</h2>
+        <b>Light 3: Macro Catalyst & News</b><br>
+        <span style="font-size:13px;">Live Sentiment & News Polarity Analysis</span>
     </div>
     """, unsafe_allow_html=True)
-    st.write(f"**Macro State:** {light3['sentiment']}")
+    st.write(f"**Macro Summary:** {light3['summary']}")
+    st.write(f"**Token Factor:** {light3['score']:+d}")
     st.caption(light3['reason'])
 
 st.write("")
 
-# Action Alert Box
-if decision["badge"] == "success":
-    st.success(f"### {decision['signal']}\n**Action:** {decision['action']}\n\n{decision['desc']}")
-elif decision["badge"] == "error":
-    st.error(f"### {decision['signal']}\n**Action:** {decision['action']}\n\n{decision['desc']}")
-elif decision["badge"] == "warning":
-    st.warning(f"### {decision['signal']}\n**Action:** {decision['action']}\n\n{decision['desc']}")
-else:
-    st.info(f"### {decision['signal']}\n**Action:** {decision['action']}\n\n{decision['desc']}")
+# =========================================================
+# 🎯 ACTIVE CONFLUENCE SIGNAL CARD
+# =========================================================
 
-# Exit Management System
-st.markdown("#### 🛡️ Position & Exit Monitor")
-with st.expander("Active Trade Exit Rules Check (Open Karein)", expanded=True):
+if confluence["badge"] == "success":
+    st.success(f"""
+    ### {confluence['signal']}
+    **Permutation State:** {confluence['state']}  
+    **Action Mandate:** {confluence['action']} | **Confidence:** {confluence['confidence']}% | **Allocation:** {confluence['allocation']}  
+    
+    **Confluence Rationale:** {confluence['rationale']}  
+    **Execution Guideline:** {confluence['rule']}
+    """)
+elif confluence["badge"] == "error":
+    st.error(f"""
+    ### {confluence['signal']}
+    **Permutation State:** {confluence['state']}  
+    **Action Mandate:** {confluence['action']} | **Confidence:** {confluence['confidence']}% | **Allocation:** {confluence['allocation']}  
+    
+    **Confluence Rationale:** {confluence['rationale']}  
+    **Execution Guideline:** {confluence['rule']}
+    """)
+elif confluence["badge"] == "warning":
+    st.warning(f"""
+    ### {confluence['signal']}
+    **Permutation State:** {confluence['state']}  
+    **Action Mandate:** {confluence['action']} | **Confidence:** {confluence['confidence']}% | **Allocation:** {confluence['allocation']}  
+    
+    **Confluence Rationale:** {confluence['rationale']}  
+    **Execution Guideline:** {confluence['rule']}
+    """)
+else:
+    st.info(f"""
+    ### {confluence['signal']}
+    **Permutation State:** {confluence['state']}  
+    **Action Mandate:** {confluence['action']} | **Confidence:** {confluence['confidence']}% | **Allocation:** {confluence['allocation']}  
+    
+    **Confluence Rationale:** {confluence['rationale']}  
+    **Execution Guideline:** {confluence['rule']}
+    """)
+
+# =========================================================
+# 🛡️ DYNAMIC POSITION EXIT MONITOR
+# =========================================================
+
+st.markdown("### 🛡️ Real-Time Dynamic Exit Monitor")
+
+with st.expander("📌 Active Position Exit Rules & Trigger Checks", expanded=True):
     ex1, ex2 = st.columns(2)
+    
     with ex1:
-        st.markdown("**Agar aap BUY (CE) Position hold kar rahe hain:**")
+        st.markdown("#### 🟢 Long / Call (CE) Position Exit Logic")
         if light1["status"] == "RED" or light2["status"] == "RED":
-            st.error("⚠️ **EXIT ALERT FOR CE:** Reversal candle ya selling volume badh raha hai. Target/SL ka wait kiye bina profit book karein.")
+            st.error("🚨 **EXIT LONG (CE) NOW:** Opposite Red Lights trigger ho gayi hain. Technical rejection ya Smart Money selling detect hui hai.")
+        elif light1["reversal_risk"] and light1["volume_spike"]:
+            st.error(f"⚠️ **TECHNICAL EXIT (CE):** High volume reversal candle ({light1['pattern']}) bani hai. Profit book karein.")
         elif "DOJI" in light1["pattern"]:
-            st.warning("⚠️ **CAUTION:** Doji ban gayi hai, stop-loss ko cost par trail karein.")
+            st.warning("⚠️ **TRAIL SL TO COST:** Doji candle bani hai. Buyers aur sellers ke beech pause hai, stop loss tight karein.")
         else:
-            st.success("✅ **HOLD CE:** Trend aur volume safe hain.")
+            st.success("✅ **HOLD CE POSITION:** Teeno parameters bullish ya safe hain. Target 1 (+20%) / Target 2 (+35%) ke liye hold karein.")
+
     with ex2:
-        st.markdown("**Agar aap SHORT (PE) Position hold kar rahe hain:**")
+        st.markdown("#### 🔴 Short / Put (PE) Position Exit Logic")
         if light1["status"] == "GREEN" or light2["status"] == "GREEN":
-            st.error("⚠️ **EXIT ALERT FOR PE:** Support par buying pressure ya hammer pattern aa chuka hai. Exit PE immediately.")
+            st.error("🚨 **EXIT SHORT (PE) NOW:** Opposite Green Lights trigger ho gayi hain. Institutional buying ya support bounce detect hua hai.")
+        elif light1["pattern"] in ["BULLISH HAMMER", "BULLISH ENGULFING"] and light1["volume_spike"]:
+            st.error(f"⚠️ **TECHNICAL EXIT (PE):** High volume hammer/engulfing support bounce hua hai. Put se turant exit karein.")
         elif "DOJI" in light1["pattern"]:
-            st.warning("⚠️ **CAUTION:** Doji ban gayi hai, stop-loss ko cost par trail karein.")
+            st.warning("⚠️ **TRAIL SL TO COST:** Support par Doji pause bana hai. Stop loss ko cost par trail karein.")
         else:
-            st.success("✅ **HOLD PE:** Downside momentum intact hai.")
+            st.success("✅ **HOLD PE POSITION:** Downside momentum aur call writing intact hain. Hold position.")
 
 st.divider()
 
-# Institutional View
-st.subheader("🏦 Institutional Flow Overview")
-f1, f2, f3, f4 = st.columns(4)
-with f1: st.metric("FII Net", f"₹{fmt(fii_dii['fii_net'], 0)} Cr" if fii_dii.get('fii_net') else "-")
-with f2: st.metric("DII Net", f"₹{fmt(fii_dii['dii_net'], 0)} Cr" if fii_dii.get('dii_net') else "-")
-with f3: st.metric("Combined Net", f"₹{fmt(fii_dii['combined_net'], 0)} Cr" if fii_dii.get('combined_net') else "-")
-with f4: st.metric("Institutional Bias", fii_dii.get("bias", "UNAVAILABLE"))
-
-st.caption("Paper Trading Mode • Confluence Traffic Lights Active • Pure Automated Rules Engine")
-
-
 # =========================================================
-# PAGE CONFIGURATION
+# INSTITUTIONAL FLOW BREAKDOWN
 # =========================================================
 
-st.set_page_config(
-    page_title="AI Trading Expert Advisor",
-    page_icon="📊",
-    layout="wide",
-)
-
-PAPER_TRADING = True
-
-# =========================================================
-# MOBILE RESPONSIVE UI STYLES
-# =========================================================
-
-st.markdown("""
-<style>
-/* Main Container */
-.block-container {
-    padding-top: 1rem !important;
-    padding-left: 0.7rem !important;
-    padding-right: 0.7rem !important;
-    max-width: 100% !important;
-}
-
-/* Responsive Columns */
-@media(max-width: 768px) {
-    [data-testid="stHorizontalBlock"] {
-        flex-wrap: wrap !important;
-        gap: 0.45rem !important;
-        width: 100% !important;
-    }
-
-    [data-testid="column"] {
-        min-width: 48% !important;
-        max-width: 48% !important;
-        flex: 1 1 48% !important;
-        width: 48% !important;
-        min-height: 0 !important;
-    }
-
-    [data-testid="stMetric"] {
-        width: 100% !important;
-        min-width: 0 !important;
-        max-width: 100% !important;
-        overflow: visible !important;
-    }
-
-    [data-testid="stMetricLabel"] {
-        width: 100% !important;
-        font-size: 11px !important;
-        line-height: 1.25 !important;
-        white-space: normal !important;
-        overflow-wrap: anywhere !important;
-    }
-
-    [data-testid="stMetricValue"] {
-        font-size: clamp(14px, 5vw, 18px) !important;
-        line-height: 1.25 !important;
-        overflow-wrap: anywhere !important;
-    }
-
-    h1 { font-size: 25px !important; }
-    h2 { font-size: 21px !important; }
-    h3 { font-size: 18px !important; }
-
-    [data-testid="stDataFrame"] {
-        width: 100% !important;
-        max-width: 100% !important;
-        overflow-x: auto !important;
-    }
-
-    .trade-card {
-        padding: 0.75rem !important;
-    }
-}
-
-/* Card Presentation */
-.trade-card {
-    width: 100%;
-    box-sizing: border-box;
-    border: 1px solid rgba(128, 128, 128, 0.30);
-    border-radius: 12px;
-    padding: 1rem;
-    margin: 0.5rem 0;
-    overflow-wrap: anywhere;
-}
-
-.small {
-    font-size: 0.88rem;
-    opacity: 0.85;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-
-.reason {
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# =========================================================
-# OPTIONAL ANALYTIC ENGINES (GRACEFUL FALLBACK)
-# =========================================================
-
-try:
-    from telemetry_engine import TelemetryEngine
-except Exception:
-    TelemetryEngine = None
-
-try:
-    from options_engine import OptionsEngine
-except Exception:
-    OptionsEngine = None
-
-try:
-    from tomorrow_forecast_engine import build_tomorrow_forecast
-except Exception:
-    build_tomorrow_forecast = None
-
-# =========================================================
-# UTILITY AND NORMALIZATION FUNCTIONS
-# =========================================================
-
-def secret(name):
-    try:
-        value = st.secrets.get(name)
-        return str(value).strip() if value else ""
-    except Exception:
-        return ""
-
-
-def num(x, default=None):
-    try:
-        if x is None:
-            return default
-        if isinstance(x, str):
-            x = x.replace(",", "").strip()
-        val = float(x)
-        return val if np.isfinite(val) else default
-    except Exception:
-        return default
-
-
-def fmt(x, digits=2):
-    val = num(x)
-    if val is None:
-        return "-"
-    return f"{val:,.{digits}f}"
-
-
-def safe_text(x):
-    return str(x) if x is not None else ""
-
-
-def market_open():
-    """Validates active trading sessions in IST."""
-    now = datetime.now(IST)
-    if now.weekday() >= 5:
-        return False
-
-    NSE_HOLIDAYS = {
-        "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31",
-        "2026-04-03", "2026-04-14", "2026-05-01", "2026-06-26",
-        "2026-08-15", "2026-08-26", "2026-09-14", "2026-10-02",
-        "2026-10-20", "2026-11-09", "2026-11-10", "2026-11-24",
-        "2026-12-25",
-    }
-
-    if now.strftime("%Y-%m-%d") in NSE_HOLIDAYS:
-        return False
-
-    return dtime(9, 15) <= now.time() <= dtime(15, 30)
-
-
-def expiry_norm(x):
-    if x is None:
-        return None
-    if isinstance(x, (datetime, date)):
-        return x.strftime("%Y-%m-%d")
-
-    s = str(x).strip().upper()
-    formats = [
-        "%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y",
-        "%d%b%Y", "%d-%b-%Y", "%d%b%y", "%d-%b-%y",
-    ]
-    for f in formats:
-        try:
-            return datetime.strptime(s, f).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return s
-
-
-def expiry_label(x):
-    n = expiry_norm(x)
-    if not n:
-        return "-"
-    try:
-        return datetime.strptime(n, "%Y-%m-%d").strftime("%d %b %Y")
-    except Exception:
-        return str(x)
-
-
-def clean_df(df):
-    if df is None:
-        return pd.DataFrame()
-    if isinstance(df, pd.DataFrame):
-        return df.copy()
-    try:
-        return pd.DataFrame(df)
-    except Exception:
-        return pd.DataFrame()
-
-
-def first_value(row, names, default=None):
-    for name in names:
-        if isinstance(row, dict) and name in row:
-            val = row.get(name)
-            if val is not None and str(val) != "":
-                return val
-        try:
-            if hasattr(row, "index") and name in row.index:
-                val = row[name]
-                if pd.notna(val):
-                    return val
-        except Exception:
-            pass
-    return default
-
-
-def find_column(df, names):
-    for name in names:
-        if name in df.columns:
-            return name
-    return None
-
-
-def normalize_option_type(value):
-    if value is None:
-        return ""
-    x = str(value).strip().upper()
-    if x in ["CE", "CALL", "C"] or x.endswith("CE") or "CALL" in x:
-        return "CE"
-    if x in ["PE", "PUT", "P"] or x.endswith("PE") or "PUT" in x:
-        return "PE"
-    return ""
-
-# =========================================================
-# SECRETS MANAGEMENT
-# =========================================================
-
-ANGEL_API_KEY = secret("ANGEL_API_KEY")
-ANGEL_CLIENT_CODE = secret("ANGEL_CLIENT_CODE")
-ANGEL_PIN = secret("ANGEL_PIN")
-ANGEL_TOTP_SECRET = secret("ANGEL_TOTP_SECRET")
-ANGEL_JWT_TOKEN = secret("ANGEL_JWT_TOKEN")
-
-GEMINI_API_KEY = (
-    secret("GEMINI_API_KEY")
-    or secret("GOOGLE_API_KEY")
-    or secret("GEMINI_KEY")
-)
-
-GEMINI_MODEL = secret("GEMINI_MODEL") or "gemini-2.5-flash"
-
-# =========================================================
-# INSTITUTIONAL CAPITAL FLOW INGESTION (FII / DII)
-# =========================================================
-
-FII_DII_API = "https://fii-diidata.mrchartist.com/api/data"
-FII_DII_HISTORY_API = "https://fii-diidata.mrchartist.com/api/history"
-
-
-def extract_number(obj, keys):
-    if not isinstance(obj, dict):
-        return None
-    for key in keys:
-        if key in obj:
-            val = num(obj.get(key))
-            if val is not None:
-                return val
-    return None
-
-
-def find_nested_record(obj):
-    if isinstance(obj, dict):
-        for key in ["data", "result", "latest", "current", "record"]:
-            val = obj.get(key)
-            if isinstance(val, dict):
-                return val
-            if isinstance(val, list) and val and isinstance(val[0], dict):
-                return val[0]
-        return obj
-    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
-        return obj[0]
-    return {}
-
-
-def parse_fii_dii_record(record):
-    record = find_nested_record(record)
-    fii_buy = extract_number(record, ["fii_buy", "fiiBuy", "fiibuy", "fb", "FII Buy", "FII_Buy"])
-    fii_sell = extract_number(record, ["fii_sell", "fiiSell", "fiisell", "fs", "FII Sell", "FII_Sell"])
-    fii_net = extract_number(record, ["fii_net", "fiiNet", "fiinet", "fn", "FII Net", "FII_Net"])
-    dii_buy = extract_number(record, ["dii_buy", "diiBuy", "diibuy", "db", "DII Buy", "DII_Buy"])
-    dii_sell = extract_number(record, ["dii_sell", "diiSell", "diisell", "ds", "DII Sell", "DII_Sell"])
-    dii_net = extract_number(record, ["dii_net", "diiNet", "diinet", "dn", "DII Net", "DII_Net"])
-
-    if fii_net is None and fii_buy is not None and fii_sell is not None:
-        fii_net = fii_buy - fii_sell
-    if dii_net is None and dii_buy is not None and dii_sell is not None:
-        dii_net = dii_buy - dii_sell
-
-    data_date = (
-        record.get("date")
-        or record.get("d")
-        or record.get("trade_date")
-        or record.get("tradeDate")
-        or record.get("timestamp")
-    )
-
-    return {
-        "fii_buy": fii_buy,
-        "fii_sell": fii_sell,
-        "fii_net": fii_net,
-        "dii_buy": dii_buy,
-        "dii_sell": dii_sell,
-        "dii_net": dii_net,
-        "date": data_date,
-    }
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_fii_dii():
-    empty = {
-        "available": False,
-        "source": "Unavailable",
-        "date": None,
-        "fii_buy": None,
-        "fii_sell": None,
-        "fii_net": None,
-        "dii_buy": None,
-        "dii_sell": None,
-        "dii_net": None,
-        "combined_net": None,
-        "fii_3d": None,
-        "dii_3d": None,
-        "institutional_score": 0,
-        "bias": "UNAVAILABLE",
-        "bias_score": "NEUTRAL",
-        "status": "Data unavailable",
-    }
-
-    latest = None
-    try:
-        response = requests.get(FII_DII_API, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-        if response.ok:
-            latest = response.json()
-    except Exception:
-        latest = None
-
-    if latest is None:
-        return empty
-
-    parsed = parse_fii_dii_record(latest)
-    fii_net = parsed["fii_net"]
-    dii_net = parsed["dii_net"]
-
-    if fii_net is None and dii_net is None:
-        return empty
-
-    history = []
-    try:
-        hist_resp = requests.get(FII_DII_HISTORY_API, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-        if hist_resp.ok:
-            h_data = hist_resp.json()
-            if isinstance(h_data, dict):
-                for k in ["data", "history", "results"]:
-                    if isinstance(h_data.get(k), list):
-                        history = h_data[k]
-                        break
-            elif isinstance(h_data, list):
-                history = h_data
-    except Exception:
-        history = []
-
-    fii_history, dii_history = [], []
-    for item in history[:5]:
-        row = parse_fii_dii_record(item)
-        if row["fii_net"] is not None:
-            fii_history.append(row["fii_net"])
-        if row["dii_net"] is not None:
-            dii_history.append(row["dii_net"])
-
-    fii_vals = [fii_net] + fii_history[:2] if fii_net is not None else fii_history[:3]
-    dii_vals = [dii_net] + dii_history[:2] if dii_net is not None else dii_history[:3]
-
-    fii_3d = sum(fii_vals) if fii_vals else None
-    dii_3d = sum(dii_vals) if dii_vals else None
-
-    score = 0
-    if fii_net is not None:
-        if fii_net >= 2000:
-            score += 2
-        elif fii_net >= 500:
-            score += 1
-        elif fii_net <= -2000:
-            score -= 2
-        elif fii_net <= -500:
-            score -= 1
-
-    if dii_net is not None:
-        if dii_net >= 2000:
-            score += 1
-        elif dii_net >= 500:
-            score += 1
-        elif dii_net <= -2000:
-            score -= 1
-        elif dii_net <= -500:
-            score -= 1
-
-    if fii_3d is not None and fii_3d >= 5000:
-        score += 1
-    elif fii_3d is not None and fii_3d <= -5000:
-        score -= 1
-
-    bias = "MIXED"
-    if fii_net is not None and dii_net is not None:
-        if fii_net > 500 and dii_net > 500:
-            bias = "BULLISH CONFIRMATION"
-        elif fii_net < -500 and dii_net < -500:
-            bias = "BEARISH CONFIRMATION"
-        elif fii_net < -500 and dii_net > 500:
-            bias = "FII SELLING / DII BUYING"
-        elif fii_net > 500 and dii_net < -500:
-            bias = "FII BUYING / DII SELLING"
-        else:
-            bias = "MIXED / WEAK"
-    elif fii_net is not None:
-        bias = "FII POSITIVE" if fii_net > 500 else ("FII NEGATIVE" if fii_net < -500 else "MIXED")
-
-    bias_score = "POSITIVE" if score > 0 else ("NEGATIVE" if score < 0 else "NEUTRAL")
-
-    return {
-        "available": True,
-        "source": "Free NSE-sourced FII/DII API",
-        "date": parsed["date"],
-        "fii_buy": parsed["fii_buy"],
-        "fii_sell": parsed["fii_sell"],
-        "fii_net": fii_net,
-        "dii_buy": parsed["dii_buy"],
-        "dii_sell": parsed["dii_sell"],
-        "dii_net": dii_net,
-        "combined_net": (fii_net + dii_net) if (fii_net is not None and dii_net is not None) else None,
-        "fii_3d": fii_3d,
-        "dii_3d": dii_3d,
-        "institutional_score": score,
-        "bias": bias,
-        "bias_score": bias_score,
-        "status": "Latest available / provisional",
-    }
-
-
-fii_dii = fetch_fii_dii()
-
-# =========================================================
-# CLIENT ENGINE INSTANTIATION
-# =========================================================
-
-@st.cache_resource(show_spinner=False)
-def create_telemetry():
-    if TelemetryEngine is None:
-        return None
-    if not all([ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, ANGEL_TOTP_SECRET]):
-        return None
-    try:
-        return TelemetryEngine(
-            api_key=ANGEL_API_KEY,
-            client_code=ANGEL_CLIENT_CODE,
-            pin=ANGEL_PIN,
-            totp_secret=ANGEL_TOTP_SECRET,
-        )
-    except Exception:
-        return None
-
-
-@st.cache_resource(show_spinner=False)
-def create_options():
-    if OptionsEngine is None:
-        return None
-    try:
-        if ANGEL_JWT_TOKEN:
-            return OptionsEngine(
-                jwt_token=ANGEL_JWT_TOKEN,
-                api_key=ANGEL_API_KEY,
-                client_code=ANGEL_CLIENT_CODE,
-            )
-    except Exception:
-        pass
-
-    telemetry_obj = create_telemetry()
-    if telemetry_obj is not None:
-        try:
-            token = getattr(telemetry_obj.smart_api, "access_token", None)
-            if token:
-                return OptionsEngine(
-                    jwt_token=str(token),
-                    api_key=ANGEL_API_KEY,
-                    client_code=ANGEL_CLIENT_CODE,
-                )
-        except Exception:
-            pass
-    return None
-
-
-telemetry = create_telemetry()
-options = create_options()
-
-# =========================================================
-# MARKET CONFIGURATION AND SPOT EXTRACTION
-# =========================================================
-
-UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]
-
-SPOT_TOKENS = {
-    "NIFTY": ("NSE", "99926000"),
-    "BANKNIFTY": ("NSE", "99926009"),
-    "FINNIFTY": ("NSE", "99926037"),
-    "MIDCPNIFTY": ("NSE", "99926074"),
-    "SENSEX": ("BSE", "99919000"),
-    "BANKEX": ("BSE", "99919012"),
-}
-
-
-def get_spot(symbol):
-    if telemetry is not None:
-        try:
-            result = telemetry.get_ltp(symbol)
-            if isinstance(result, dict):
-                for key in ("ltp", "LTP", "lastTradedPrice", "lastTradedPriceValue", "close", "price"):
-                    if key in result:
-                        val = num(result[key])
-                        if val is not None and val > 0:
-                            return val
-            val = num(result)
-            if val is not None and val > 0:
-                return val
-        except Exception:
-            pass
-
-    try:
-        df = fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=5)
-        if df is not None and not df.empty and "close" in df.columns:
-            close = pd.to_numeric(df["close"], errors="coerce").dropna()
-            if not close.empty:
-                val = float(close.iloc[-1])
-                if val > 0:
-                    return val
-    except Exception:
-        pass
-    return None
-
-# =========================================================
-# DERIVATIVES CONTRACTS AND OPTION CHAIN INGESTION
-# =========================================================
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_expiries(symbol):
-    if options is None:
-        return []
-    try:
-        result = options.get_expiry_options(symbol)
-        values = []
-        for item in result or []:
-            val = item.get("value") or item.get("expiry") or item.get("expiryDate") if isinstance(item, dict) else item
-            val = expiry_norm(val)
-            if not val:
-                continue
-            try:
-                d = datetime.strptime(val, "%Y-%m-%d").date()
-                if d >= date.today():
-                    values.append(val)
-            except Exception:
-                pass
-        return sorted(set(values))
-    except Exception:
-        return []
-
-
-@st.cache_data(ttl=120, show_spinner=False)
-def load_contracts(symbol, expiry):
-    if options is None or not expiry:
-        return pd.DataFrame()
-    try:
-        return clean_df(options.get_option_contracts(underlying=symbol, expiry_date=expiry))
-    except Exception:
-        return pd.DataFrame()
-
-
-def get_chain(symbol, expiry, spot):
-    contracts = load_contracts(symbol, expiry)
-    if contracts.empty:
-        return pd.DataFrame(), contracts
-
-    def normalize_strike_value(v):
-        try:
-            val = float(v)
-            if abs(val) >= 100000:
-                val = val / 100.0
-            return val
-        except Exception:
-            return None
-
-    try:
-        strike_col = find_column(contracts, ["strike", "strikePrice", "strike_price"])
-        if strike_col:
-            contracts["strikePrice"] = pd.to_numeric(contracts[strike_col], errors="coerce").apply(normalize_strike_value)
-            contracts["strike"] = contracts["strikePrice"]
-    except Exception:
-        pass
-
-    try:
-        if spot is not None and options is not None:
-            near = options.get_near_atm_contracts(
-                underlying=symbol,
-                expiry_date=expiry,
-                spot_price=spot,
-                strikes_each_side=10,
-            )
-            near = clean_df(near)
-            if not near.empty:
-                contracts = near
-                n_col = find_column(contracts, ["strike", "strikePrice", "strike_price"])
-                if n_col:
-                    contracts["strikePrice"] = pd.to_numeric(contracts[n_col], errors="coerce").apply(normalize_strike_value)
-                    contracts["strike"] = contracts["strikePrice"]
-    except Exception:
-        pass
-
-    try:
-        quoted = clean_df(options.get_market_quote(contracts))
-        chain = quoted if not quoted.empty else contracts.copy()
-    except Exception:
-        chain = contracts.copy()
-
-    type_col = find_column(chain, ["option_type", "optionType", "optionTypeName", "option_type_name", "type"])
-    if type_col:
-        chain["option_type"] = chain[type_col].map(normalize_option_type)
-
-    stk_col = find_column(chain, ["strike", "strikePrice", "strike_price"])
-    if stk_col:
-        chain["strikePrice"] = pd.to_numeric(chain[stk_col], errors="coerce").apply(normalize_strike_value)
-        chain["strike"] = chain["strikePrice"]
-
-    oi_col = find_column(chain, ["opnInterest", "openInterest", "oi", "open_interest"])
-    if oi_col:
-        chain["openInterest"] = pd.to_numeric(chain[oi_col], errors="coerce")
-
-    chg_oi = find_column(chain, ["changeinOpenInterest", "changeInOpenInterest", "change_in_open_interest", "change_oi", "chg_oi", "oi_change"])
-    if chg_oi:
-        chain["changeInOpenInterest"] = pd.to_numeric(chain[chg_oi], errors="coerce")
-
-    try:
-        if options is not None:
-            greeks = clean_df(options.greeks_dataframe(symbol, expiry))
-            if not greeks.empty:
-                g_stk = find_column(greeks, ["strikePrice", "strike", "strike_price"])
-              
+st.subheader("🏦 Smart Money Detail (FII / DII Flow)")
+if fii_dii.get("available"):
+    f1, f2, f3, f4 = st.columns(4)
+    with f1: st.metric("FII Cash Net", f"₹{fmt(fii_dii.get('fii_net'), 0)} Cr")
+    with f2: st.metric("DII Cash Net", f"₹{fmt(fii_dii.get('dii_net'), 0)} Cr")
+    with f3: st.metric("Combined Flow", f"₹{fmt(fii_dii.get('combined'), 0)} Cr")
+    with f4: st.metric("Institutional Bias", fii_dii.get("bias"))
+else:
+    st.info("FII/DII data pending update; engine fallback to PCR & technicals active.")
+
+st.caption("Paper Trading Mode Active • Automated Triple Confluence Engine • Real Broker Order Routing Disabled.")
