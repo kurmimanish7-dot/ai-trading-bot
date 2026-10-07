@@ -724,3 +724,676 @@ with f3: st.metric("Combined Net", f"₹{fmt(fii_dii['combined_net'], 0)} Cr" if
 with f4: st.metric("Institutional Bias", fii_dii.get("bias", "UNAVAILABLE"))
 
 st.caption("Paper Trading Mode • Confluence Traffic Lights Active • Pure Automated Rules Engine")
+
+
+# =========================================================
+# PAGE CONFIGURATION
+# =========================================================
+
+st.set_page_config(
+    page_title="AI Trading Expert Advisor",
+    page_icon="📊",
+    layout="wide",
+)
+
+PAPER_TRADING = True
+
+# =========================================================
+# MOBILE RESPONSIVE UI STYLES
+# =========================================================
+
+st.markdown("""
+<style>
+/* Main Container */
+.block-container {
+    padding-top: 1rem !important;
+    padding-left: 0.7rem !important;
+    padding-right: 0.7rem !important;
+    max-width: 100% !important;
+}
+
+/* Responsive Columns */
+@media(max-width: 768px) {
+    [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+        gap: 0.45rem !important;
+        width: 100% !important;
+    }
+
+    [data-testid="column"] {
+        min-width: 48% !important;
+        max-width: 48% !important;
+        flex: 1 1 48% !important;
+        width: 48% !important;
+        min-height: 0 !important;
+    }
+
+    [data-testid="stMetric"] {
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: 100% !important;
+        overflow: visible !important;
+    }
+
+    [data-testid="stMetricLabel"] {
+        width: 100% !important;
+        font-size: 11px !important;
+        line-height: 1.25 !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: clamp(14px, 5vw, 18px) !important;
+        line-height: 1.25 !important;
+        overflow-wrap: anywhere !important;
+    }
+
+    h1 { font-size: 25px !important; }
+    h2 { font-size: 21px !important; }
+    h3 { font-size: 18px !important; }
+
+    [data-testid="stDataFrame"] {
+        width: 100% !important;
+        max-width: 100% !important;
+        overflow-x: auto !important;
+    }
+
+    .trade-card {
+        padding: 0.75rem !important;
+    }
+}
+
+/* Card Presentation */
+.trade-card {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid rgba(128, 128, 128, 0.30);
+    border-radius: 12px;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    overflow-wrap: anywhere;
+}
+
+.small {
+    font-size: 0.88rem;
+    opacity: 0.85;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.reason {
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# =========================================================
+# OPTIONAL ANALYTIC ENGINES (GRACEFUL FALLBACK)
+# =========================================================
+
+try:
+    from telemetry_engine import TelemetryEngine
+except Exception:
+    TelemetryEngine = None
+
+try:
+    from options_engine import OptionsEngine
+except Exception:
+    OptionsEngine = None
+
+try:
+    from tomorrow_forecast_engine import build_tomorrow_forecast
+except Exception:
+    build_tomorrow_forecast = None
+
+# =========================================================
+# UTILITY AND NORMALIZATION FUNCTIONS
+# =========================================================
+
+def secret(name):
+    try:
+        value = st.secrets.get(name)
+        return str(value).strip() if value else ""
+    except Exception:
+        return ""
+
+
+def num(x, default=None):
+    try:
+        if x is None:
+            return default
+        if isinstance(x, str):
+            x = x.replace(",", "").strip()
+        val = float(x)
+        return val if np.isfinite(val) else default
+    except Exception:
+        return default
+
+
+def fmt(x, digits=2):
+    val = num(x)
+    if val is None:
+        return "-"
+    return f"{val:,.{digits}f}"
+
+
+def safe_text(x):
+    return str(x) if x is not None else ""
+
+
+def market_open():
+    """Validates active trading sessions in IST."""
+    now = datetime.now(IST)
+    if now.weekday() >= 5:
+        return False
+
+    NSE_HOLIDAYS = {
+        "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31",
+        "2026-04-03", "2026-04-14", "2026-05-01", "2026-06-26",
+        "2026-08-15", "2026-08-26", "2026-09-14", "2026-10-02",
+        "2026-10-20", "2026-11-09", "2026-11-10", "2026-11-24",
+        "2026-12-25",
+    }
+
+    if now.strftime("%Y-%m-%d") in NSE_HOLIDAYS:
+        return False
+
+    return dtime(9, 15) <= now.time() <= dtime(15, 30)
+
+
+def expiry_norm(x):
+    if x is None:
+        return None
+    if isinstance(x, (datetime, date)):
+        return x.strftime("%Y-%m-%d")
+
+    s = str(x).strip().upper()
+    formats = [
+        "%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y",
+        "%d%b%Y", "%d-%b-%Y", "%d%b%y", "%d-%b-%y",
+    ]
+    for f in formats:
+        try:
+            return datetime.strptime(s, f).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return s
+
+
+def expiry_label(x):
+    n = expiry_norm(x)
+    if not n:
+        return "-"
+    try:
+        return datetime.strptime(n, "%Y-%m-%d").strftime("%d %b %Y")
+    except Exception:
+        return str(x)
+
+
+def clean_df(df):
+    if df is None:
+        return pd.DataFrame()
+    if isinstance(df, pd.DataFrame):
+        return df.copy()
+    try:
+        return pd.DataFrame(df)
+    except Exception:
+        return pd.DataFrame()
+
+
+def first_value(row, names, default=None):
+    for name in names:
+        if isinstance(row, dict) and name in row:
+            val = row.get(name)
+            if val is not None and str(val) != "":
+                return val
+        try:
+            if hasattr(row, "index") and name in row.index:
+                val = row[name]
+                if pd.notna(val):
+                    return val
+        except Exception:
+            pass
+    return default
+
+
+def find_column(df, names):
+    for name in names:
+        if name in df.columns:
+            return name
+    return None
+
+
+def normalize_option_type(value):
+    if value is None:
+        return ""
+    x = str(value).strip().upper()
+    if x in ["CE", "CALL", "C"] or x.endswith("CE") or "CALL" in x:
+        return "CE"
+    if x in ["PE", "PUT", "P"] or x.endswith("PE") or "PUT" in x:
+        return "PE"
+    return ""
+
+# =========================================================
+# SECRETS MANAGEMENT
+# =========================================================
+
+ANGEL_API_KEY = secret("ANGEL_API_KEY")
+ANGEL_CLIENT_CODE = secret("ANGEL_CLIENT_CODE")
+ANGEL_PIN = secret("ANGEL_PIN")
+ANGEL_TOTP_SECRET = secret("ANGEL_TOTP_SECRET")
+ANGEL_JWT_TOKEN = secret("ANGEL_JWT_TOKEN")
+
+GEMINI_API_KEY = (
+    secret("GEMINI_API_KEY")
+    or secret("GOOGLE_API_KEY")
+    or secret("GEMINI_KEY")
+)
+
+GEMINI_MODEL = secret("GEMINI_MODEL") or "gemini-2.5-flash"
+
+# =========================================================
+# INSTITUTIONAL CAPITAL FLOW INGESTION (FII / DII)
+# =========================================================
+
+FII_DII_API = "https://fii-diidata.mrchartist.com/api/data"
+FII_DII_HISTORY_API = "https://fii-diidata.mrchartist.com/api/history"
+
+
+def extract_number(obj, keys):
+    if not isinstance(obj, dict):
+        return None
+    for key in keys:
+        if key in obj:
+            val = num(obj.get(key))
+            if val is not None:
+                return val
+    return None
+
+
+def find_nested_record(obj):
+    if isinstance(obj, dict):
+        for key in ["data", "result", "latest", "current", "record"]:
+            val = obj.get(key)
+            if isinstance(val, dict):
+                return val
+            if isinstance(val, list) and val and isinstance(val[0], dict):
+                return val[0]
+        return obj
+    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        return obj[0]
+    return {}
+
+
+def parse_fii_dii_record(record):
+    record = find_nested_record(record)
+    fii_buy = extract_number(record, ["fii_buy", "fiiBuy", "fiibuy", "fb", "FII Buy", "FII_Buy"])
+    fii_sell = extract_number(record, ["fii_sell", "fiiSell", "fiisell", "fs", "FII Sell", "FII_Sell"])
+    fii_net = extract_number(record, ["fii_net", "fiiNet", "fiinet", "fn", "FII Net", "FII_Net"])
+    dii_buy = extract_number(record, ["dii_buy", "diiBuy", "diibuy", "db", "DII Buy", "DII_Buy"])
+    dii_sell = extract_number(record, ["dii_sell", "diiSell", "diisell", "ds", "DII Sell", "DII_Sell"])
+    dii_net = extract_number(record, ["dii_net", "diiNet", "diinet", "dn", "DII Net", "DII_Net"])
+
+    if fii_net is None and fii_buy is not None and fii_sell is not None:
+        fii_net = fii_buy - fii_sell
+    if dii_net is None and dii_buy is not None and dii_sell is not None:
+        dii_net = dii_buy - dii_sell
+
+    data_date = (
+        record.get("date")
+        or record.get("d")
+        or record.get("trade_date")
+        or record.get("tradeDate")
+        or record.get("timestamp")
+    )
+
+    return {
+        "fii_buy": fii_buy,
+        "fii_sell": fii_sell,
+        "fii_net": fii_net,
+        "dii_buy": dii_buy,
+        "dii_sell": dii_sell,
+        "dii_net": dii_net,
+        "date": data_date,
+    }
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_fii_dii():
+    empty = {
+        "available": False,
+        "source": "Unavailable",
+        "date": None,
+        "fii_buy": None,
+        "fii_sell": None,
+        "fii_net": None,
+        "dii_buy": None,
+        "dii_sell": None,
+        "dii_net": None,
+        "combined_net": None,
+        "fii_3d": None,
+        "dii_3d": None,
+        "institutional_score": 0,
+        "bias": "UNAVAILABLE",
+        "bias_score": "NEUTRAL",
+        "status": "Data unavailable",
+    }
+
+    latest = None
+    try:
+        response = requests.get(FII_DII_API, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        if response.ok:
+            latest = response.json()
+    except Exception:
+        latest = None
+
+    if latest is None:
+        return empty
+
+    parsed = parse_fii_dii_record(latest)
+    fii_net = parsed["fii_net"]
+    dii_net = parsed["dii_net"]
+
+    if fii_net is None and dii_net is None:
+        return empty
+
+    history = []
+    try:
+        hist_resp = requests.get(FII_DII_HISTORY_API, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        if hist_resp.ok:
+            h_data = hist_resp.json()
+            if isinstance(h_data, dict):
+                for k in ["data", "history", "results"]:
+                    if isinstance(h_data.get(k), list):
+                        history = h_data[k]
+                        break
+            elif isinstance(h_data, list):
+                history = h_data
+    except Exception:
+        history = []
+
+    fii_history, dii_history = [], []
+    for item in history[:5]:
+        row = parse_fii_dii_record(item)
+        if row["fii_net"] is not None:
+            fii_history.append(row["fii_net"])
+        if row["dii_net"] is not None:
+            dii_history.append(row["dii_net"])
+
+    fii_vals = [fii_net] + fii_history[:2] if fii_net is not None else fii_history[:3]
+    dii_vals = [dii_net] + dii_history[:2] if dii_net is not None else dii_history[:3]
+
+    fii_3d = sum(fii_vals) if fii_vals else None
+    dii_3d = sum(dii_vals) if dii_vals else None
+
+    score = 0
+    if fii_net is not None:
+        if fii_net >= 2000:
+            score += 2
+        elif fii_net >= 500:
+            score += 1
+        elif fii_net <= -2000:
+            score -= 2
+        elif fii_net <= -500:
+            score -= 1
+
+    if dii_net is not None:
+        if dii_net >= 2000:
+            score += 1
+        elif dii_net >= 500:
+            score += 1
+        elif dii_net <= -2000:
+            score -= 1
+        elif dii_net <= -500:
+            score -= 1
+
+    if fii_3d is not None and fii_3d >= 5000:
+        score += 1
+    elif fii_3d is not None and fii_3d <= -5000:
+        score -= 1
+
+    bias = "MIXED"
+    if fii_net is not None and dii_net is not None:
+        if fii_net > 500 and dii_net > 500:
+            bias = "BULLISH CONFIRMATION"
+        elif fii_net < -500 and dii_net < -500:
+            bias = "BEARISH CONFIRMATION"
+        elif fii_net < -500 and dii_net > 500:
+            bias = "FII SELLING / DII BUYING"
+        elif fii_net > 500 and dii_net < -500:
+            bias = "FII BUYING / DII SELLING"
+        else:
+            bias = "MIXED / WEAK"
+    elif fii_net is not None:
+        bias = "FII POSITIVE" if fii_net > 500 else ("FII NEGATIVE" if fii_net < -500 else "MIXED")
+
+    bias_score = "POSITIVE" if score > 0 else ("NEGATIVE" if score < 0 else "NEUTRAL")
+
+    return {
+        "available": True,
+        "source": "Free NSE-sourced FII/DII API",
+        "date": parsed["date"],
+        "fii_buy": parsed["fii_buy"],
+        "fii_sell": parsed["fii_sell"],
+        "fii_net": fii_net,
+        "dii_buy": parsed["dii_buy"],
+        "dii_sell": parsed["dii_sell"],
+        "dii_net": dii_net,
+        "combined_net": (fii_net + dii_net) if (fii_net is not None and dii_net is not None) else None,
+        "fii_3d": fii_3d,
+        "dii_3d": dii_3d,
+        "institutional_score": score,
+        "bias": bias,
+        "bias_score": bias_score,
+        "status": "Latest available / provisional",
+    }
+
+
+fii_dii = fetch_fii_dii()
+
+# =========================================================
+# CLIENT ENGINE INSTANTIATION
+# =========================================================
+
+@st.cache_resource(show_spinner=False)
+def create_telemetry():
+    if TelemetryEngine is None:
+        return None
+    if not all([ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, ANGEL_TOTP_SECRET]):
+        return None
+    try:
+        return TelemetryEngine(
+            api_key=ANGEL_API_KEY,
+            client_code=ANGEL_CLIENT_CODE,
+            pin=ANGEL_PIN,
+            totp_secret=ANGEL_TOTP_SECRET,
+        )
+    except Exception:
+        return None
+
+
+@st.cache_resource(show_spinner=False)
+def create_options():
+    if OptionsEngine is None:
+        return None
+    try:
+        if ANGEL_JWT_TOKEN:
+            return OptionsEngine(
+                jwt_token=ANGEL_JWT_TOKEN,
+                api_key=ANGEL_API_KEY,
+                client_code=ANGEL_CLIENT_CODE,
+            )
+    except Exception:
+        pass
+
+    telemetry_obj = create_telemetry()
+    if telemetry_obj is not None:
+        try:
+            token = getattr(telemetry_obj.smart_api, "access_token", None)
+            if token:
+                return OptionsEngine(
+                    jwt_token=str(token),
+                    api_key=ANGEL_API_KEY,
+                    client_code=ANGEL_CLIENT_CODE,
+                )
+        except Exception:
+            pass
+    return None
+
+
+telemetry = create_telemetry()
+options = create_options()
+
+# =========================================================
+# MARKET CONFIGURATION AND SPOT EXTRACTION
+# =========================================================
+
+UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]
+
+SPOT_TOKENS = {
+    "NIFTY": ("NSE", "99926000"),
+    "BANKNIFTY": ("NSE", "99926009"),
+    "FINNIFTY": ("NSE", "99926037"),
+    "MIDCPNIFTY": ("NSE", "99926074"),
+    "SENSEX": ("BSE", "99919000"),
+    "BANKEX": ("BSE", "99919012"),
+}
+
+
+def get_spot(symbol):
+    if telemetry is not None:
+        try:
+            result = telemetry.get_ltp(symbol)
+            if isinstance(result, dict):
+                for key in ("ltp", "LTP", "lastTradedPrice", "lastTradedPriceValue", "close", "price"):
+                    if key in result:
+                        val = num(result[key])
+                        if val is not None and val > 0:
+                            return val
+            val = num(result)
+            if val is not None and val > 0:
+                return val
+        except Exception:
+            pass
+
+    try:
+        df = fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=5)
+        if df is not None and not df.empty and "close" in df.columns:
+            close = pd.to_numeric(df["close"], errors="coerce").dropna()
+            if not close.empty:
+                val = float(close.iloc[-1])
+                if val > 0:
+                    return val
+    except Exception:
+        pass
+    return None
+
+# =========================================================
+# DERIVATIVES CONTRACTS AND OPTION CHAIN INGESTION
+# =========================================================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_expiries(symbol):
+    if options is None:
+        return []
+    try:
+        result = options.get_expiry_options(symbol)
+        values = []
+        for item in result or []:
+            val = item.get("value") or item.get("expiry") or item.get("expiryDate") if isinstance(item, dict) else item
+            val = expiry_norm(val)
+            if not val:
+                continue
+            try:
+                d = datetime.strptime(val, "%Y-%m-%d").date()
+                if d >= date.today():
+                    values.append(val)
+            except Exception:
+                pass
+        return sorted(set(values))
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_contracts(symbol, expiry):
+    if options is None or not expiry:
+        return pd.DataFrame()
+    try:
+        return clean_df(options.get_option_contracts(underlying=symbol, expiry_date=expiry))
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_chain(symbol, expiry, spot):
+    contracts = load_contracts(symbol, expiry)
+    if contracts.empty:
+        return pd.DataFrame(), contracts
+
+    def normalize_strike_value(v):
+        try:
+            val = float(v)
+            if abs(val) >= 100000:
+                val = val / 100.0
+            return val
+        except Exception:
+            return None
+
+    try:
+        strike_col = find_column(contracts, ["strike", "strikePrice", "strike_price"])
+        if strike_col:
+            contracts["strikePrice"] = pd.to_numeric(contracts[strike_col], errors="coerce").apply(normalize_strike_value)
+            contracts["strike"] = contracts["strikePrice"]
+    except Exception:
+        pass
+
+    try:
+        if spot is not None and options is not None:
+            near = options.get_near_atm_contracts(
+                underlying=symbol,
+                expiry_date=expiry,
+                spot_price=spot,
+                strikes_each_side=10,
+            )
+            near = clean_df(near)
+            if not near.empty:
+                contracts = near
+                n_col = find_column(contracts, ["strike", "strikePrice", "strike_price"])
+                if n_col:
+                    contracts["strikePrice"] = pd.to_numeric(contracts[n_col], errors="coerce").apply(normalize_strike_value)
+                    contracts["strike"] = contracts["strikePrice"]
+    except Exception:
+        pass
+
+    try:
+        quoted = clean_df(options.get_market_quote(contracts))
+        chain = quoted if not quoted.empty else contracts.copy()
+    except Exception:
+        chain = contracts.copy()
+
+    type_col = find_column(chain, ["option_type", "optionType", "optionTypeName", "option_type_name", "type"])
+    if type_col:
+        chain["option_type"] = chain[type_col].map(normalize_option_type)
+
+    stk_col = find_column(chain, ["strike", "strikePrice", "strike_price"])
+    if stk_col:
+        chain["strikePrice"] = pd.to_numeric(chain[stk_col], errors="coerce").apply(normalize_strike_value)
+        chain["strike"] = chain["strikePrice"]
+
+    oi_col = find_column(chain, ["opnInterest", "openInterest", "oi", "open_interest"])
+    if oi_col:
+        chain["openInterest"] = pd.to_numeric(chain[oi_col], errors="coerce")
+
+    chg_oi = find_column(chain, ["changeinOpenInterest", "changeInOpenInterest", "change_in_open_interest", "change_oi", "chg_oi", "oi_change"])
+    if chg_oi:
+        chain["changeInOpenInterest"] = pd.to_numeric(chain[chg_oi], errors="coerce")
+
+    try:
+        if options is not None:
+            greeks = clean_df(options.greeks_dataframe(symbol, expiry))
+            if not greeks.empty:
+                g_stk = find_column(greeks, ["strikePrice", "strike", "strike_price"])
+              
