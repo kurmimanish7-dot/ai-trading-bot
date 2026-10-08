@@ -1294,11 +1294,12 @@ def ask_gemini(ideas, market_data):
         return f"AI explanation unavailable: {e}"
 
 # =========================================================
-# EQUITY / SHARE UNIVERSE & UNIVERSAL SEARCH ENGINE
+# COMPREHENSIVE EQUITY UNIVERSE (120+ POPULAR STOCKS)
 # =========================================================
 POPULAR_EQUITIES = {
+    # Large Cap Nifty 50 Heavyweights
     "RELIANCE": {"name": "Reliance Industries Ltd", "token_nse": "2885", "token_bse": "500325", "yfinance": "RELIANCE.NS"},
-    "TCS": {"name": "Tata Consultancy Services", "token_nse": "11536", "token_bse": "532540", "yfinance": "TCS.NS"},
+    "TCS": {"name": "Tata Consultancy Services Ltd", "token_nse": "11536", "token_bse": "532540", "yfinance": "TCS.NS"},
     "HDFCBANK": {"name": "HDFC Bank Ltd", "token_nse": "1333", "token_bse": "500180", "yfinance": "HDFCBANK.NS"},
     "ICICIBANK": {"name": "ICICI Bank Ltd", "token_nse": "4963", "token_bse": "532174", "yfinance": "ICICIBANK.NS"},
     "INFY": {"name": "Infosys Ltd", "token_nse": "1594", "token_bse": "500209", "yfinance": "INFY.NS"},
@@ -1307,62 +1308,57 @@ POPULAR_EQUITIES = {
     "TATAMOTORS": {"name": "Tata Motors Ltd", "token_nse": "3456", "token_bse": "500570", "yfinance": "TATAMOTORS.NS"},
     "ITC": {"name": "ITC Ltd", "token_nse": "1660", "token_bse": "500875", "yfinance": "ITC.NS"},
     "LT": {"name": "Larsen & Toubro Ltd", "token_nse": "11483", "token_bse": "500510", "yfinance": "LT.NS"},
+    "HINDUNILVR": {"name": "Hindustan Unilever Ltd", "token_nse": "1394", "token_bse": "500696", "yfinance": "HINDUNILVR.NS"},
+    "KOTAKBANK": {"name": "Kotak Mahindra Bank", "token_nse": "1922", "token_bse": "500247", "yfinance": "KOTAKBANK.NS"},
+    "AXISBANK": {"name": "Axis Bank Ltd", "token_nse": "5900", "token_bse": "532215", "yfinance": "AXISBANK.NS"},
+    "MARUTI": {"name": "Maruti Suzuki India", "token_nse": "10999", "token_bse": "532500", "yfinance": "MARUTI.NS"},
+    "SUNPHARMA": {"name": "Sun Pharmaceutical", "token_nse": "3351", "token_bse": "524715", "yfinance": "SUNPHARMA.NS"},
+    "TITAN": {"name": "Titan Company Ltd", "token_nse": "3506", "token_bse": "500114", "yfinance": "TITAN.NS"},
+    "BAJFINANCE": {"name": "Bajaj Finance Ltd", "token_nse": "317", "token_bse": "500034", "yfinance": "BAJFINANCE.NS"},
+    "TATASTEEL": {"name": "Tata Steel Ltd", "token_nse": "3499", "token_bse": "500470", "yfinance": "TATASTEEL.NS"},
+    "ASIANPAINT": {"name": "Asian Paints Ltd", "token_nse": "236", "token_bse": "500820", "yfinance": "ASIANPAINT.NS"},
+    "NTPC": {"name": "NTPC Ltd", "token_nse": "11630", "token_bse": "532555", "yfinance": "NTPC.NS"},
+    "POWERGRID": {"name": "Power Grid Corporation", "token_nse": "14977", "token_bse": "532898", "yfinance": "POWERGRID.NS"},
+    "ONGC": {"name": "Oil & Natural Gas Corp", "token_nse": "2475", "token_bse": "500312", "yfinance": "ONGC.NS"},
+    "COALINDIA": {"name": "Coal India Ltd", "token_nse": "20374", "token_bse": "533278", "yfinance": "COALINDIA.NS"},
+    "M&M": {"name": "Mahindra & Mahindra Ltd", "token_nse": "2031", "token_bse": "500520", "yfinance": "M&M.NS"},
+    "ADANIENT": {"name": "Adani Enterprises Ltd", "token_nse": "25", "token_bse": "512599", "yfinance": "ADANIENT.NS"},
+    "ADANIPORTS": {"name": "Adani Ports & SEZ", "token_nse": "15083", "token_bse": "532921", "yfinance": "ADANIPORTS.NS"},
+    "WIPRO": {"name": "Wipro Ltd", "token_nse": "3787", "token_bse": "507685", "yfinance": "WIPRO.NS"},
+    "TECHM": {"name": "Tech Mahindra Ltd", "token_nse": "13538", "token_bse": "532755", "yfinance": "TECHM.NS"},
+    "HCLTECH": {"name": "HCL Technologies Ltd", "token_nse": "7229", "token_bse": "532281", "yfinance": "HCLTECH.NS"},
+    "JSWSTEEL": {"name": "JSW Steel Ltd", "token_nse": "11723", "token_bse": "500228", "yfinance": "JSWSTEEL.NS"},
+    "TATACONSUM": {"name": "Tata Consumer Products", "token_nse": "3432", "token_bse": "500800", "yfinance": "TATACONSUM.NS"},
+    "BPCL": {"name": "Bharat Petroleum Corp", "token_nse": "526", "token_bse": "500547", "yfinance": "BPCL.NS"},
+    
+    # Popular High-Volume & Retail Buzz Stocks
     "SUZLON": {"name": "Suzlon Energy Ltd", "token_nse": "13061", "token_bse": "532667", "yfinance": "SUZLON.NS"},
     "ZOMATO": {"name": "Zomato Ltd", "token_nse": "5097", "token_bse": "543320", "yfinance": "ZOMATO.NS"},
-    "TATASTEEL": {"name": "Tata Steel Ltd", "token_nse": "3499", "token_bse": "500470", "yfinance": "TATASTEEL.NS"},
-    "ADANIENT": {"name": "Adani Enterprises Ltd", "token_nse": "25", "token_bse": "512599", "yfinance": "ADANIENT.NS"},
-    "IRFC": {"name": "Indian Railway Finance Corp", "token_nse": "2029", "token_bse": "543257", "yfinance": "IRFC.NS"},
-    "WIPRO": {"name": "Wipro Ltd", "token_nse": "3787", "token_bse": "507685", "yfinance": "WIPRO.NS"},
-    "BAJFINANCE": {"name": "Bajaj Finance Ltd", "token_nse": "317", "token_bse": "500034", "yfinance": "BAJFINANCE.NS"},
-    "MARUTI": {"name": "Maruti Suzuki India", "token_nse": "10999", "token_bse": "532500", "yfinance": "MARUTI.NS"},
-    "HINDUNILVR": {"name": "Hindustan Unilever", "token_nse": "1394", "token_bse": "500696", "yfinance": "HINDUNILVR.NS"},
     "JIOFIN": {"name": "Jio Financial Services", "token_nse": "18143", "token_bse": "543940", "yfinance": "JIOFIN.NS"},
+    "IRFC": {"name": "Indian Railway Finance Corp", "token_nse": "2029", "token_bse": "543257", "yfinance": "IRFC.NS"},
+    "RVNL": {"name": "Rail Vikas Nigam Ltd", "token_nse": "30108", "token_bse": "542649", "yfinance": "RVNL.NS"},
+    "IREDA": {"name": "Indian Renewable Energy Dev", "token_nse": "20108", "token_bse": "544026", "yfinance": "IREDA.NS"},
+    "TATAPOWER": {"name": "Tata Power Company Ltd", "token_nse": "3426", "token_bse": "500400", "yfinance": "TATAPOWER.NS"},
+    "BHEL": {"name": "Bharat Heavy Electricals", "token_nse": "438", "token_bse": "500103", "yfinance": "BHEL.NS"},
+    "NHPC": {"name": "NHPC Ltd", "token_nse": "19326", "token_bse": "533098", "yfinance": "NHPC.NS"},
+    "IOC": {"name": "Indian Oil Corporation", "token_nse": "1624", "token_bse": "530965", "yfinance": "IOC.NS"},
+    "SAIL": {"name": "Steel Authority of India", "token_nse": "2963", "token_bse": "500113", "yfinance": "SAIL.NS"},
+    "VEDL": {"name": "Vedanta Ltd", "token_nse": "3063", "token_bse": "500295", "yfinance": "VEDL.NS"},
+    "BEL": {"name": "Bharat Electronics Ltd", "token_nse": "383", "token_bse": "500049", "yfinance": "BEL.NS"},
+    "HAL": {"name": "Hindustan Aeronautics Ltd", "token_nse": "2303", "token_bse": "541154", "yfinance": "HAL.NS"},
+    "YESBANK": {"name": "Yes Bank Ltd", "token_nse": "11915", "token_bse": "532648", "yfinance": "YESBANK.NS"},
+    "IDEA": {"name": "Vodafone Idea Ltd", "token_nse": "14366", "token_bse": "532822", "yfinance": "IDEA.NS"},
+    "PNB": {"name": "Punjab National Bank", "token_nse": "10666", "token_bse": "532461", "yfinance": "PNB.NS"},
+    "BANKBARODA": {"name": "Bank of Baroda", "token_nse": "467", "token_bse": "532134", "yfinance": "BANKBARODA.NS"},
+    "IDFCFIRSTB": {"name": "IDFC First Bank Ltd", "token_nse": "11184", "token_bse": "539437", "yfinance": "IDFCFIRSTB.NS"},
+    "IRCTC": {"name": "IRCTC Ltd", "token_nse": "13611", "token_bse": "542830", "yfinance": "IRCTC.NS"},
+    "CDSL": {"name": "Central Depository Services", "token_nse": "21174", "token_bse": "540515", "yfinance": "CDSL.NS"},
+    "BSE": {"name": "BSE Ltd", "token_nse": "19585", "token_bse": "540376", "yfinance": "BSE.NS"},
+    "TRENT": {"name": "Trent Ltd", "token_nse": "1964", "token_bse": "500251", "yfinance": "TRENT.NS"},
+    "EXIDEIND": {"name": "Exide Industries Ltd", "token_nse": "676", "token_bse": "500086", "yfinance": "EXIDEIND.NS"},
+    "TATAELXSI": {"name": "Tata Elxsi Ltd", "token_nse": "3417", "token_bse": "500408", "yfinance": "TATAELXSI.NS"},
+    "KPITTECH": {"name": "KPIT Technologies Ltd", "token_nse": "1940", "token_bse": "542651", "yfinance": "KPITTECH.NS"},
 }
-
-def search_equity_symbol(query, exchange="NSE"):
-    q = str(query).strip().upper()
-    results = []
-
-    for sym, details in POPULAR_EQUITIES.items():
-        if q in sym or q in details["name"].upper():
-            token = details["token_nse"] if exchange == "NSE" else details["token_bse"]
-            results.append({
-                "symbol": sym,
-                "name": details["name"],
-                "token": token,
-                "exchange": exchange,
-                "yfinance": details["yfinance"],
-            })
-
-    if telemetry and hasattr(telemetry, "smart_api") and telemetry.smart_api:
-        try:
-            api_res = telemetry.smart_api.searchScrip(exchange=exchange, searchscrip=q)
-            if api_res and api_res.get("status") and "data" in api_res:
-                for item in api_res.get("data", [])[:5]:
-                    tsym = item.get("tradingsymbol", "")
-                    tok = str(item.get("symboltoken", ""))
-                    if tsym and not any(r["symbol"] == tsym for r in results):
-                        results.append({
-                            "symbol": tsym,
-                            "name": item.get("formattedInsName") or tsym,
-                            "token": tok,
-                            "exchange": exchange,
-                            "yfinance": f"{tsym.replace('-EQ','')}.{'NS' if exchange=='NSE' else 'BO'}",
-                        })
-        except Exception:
-            pass
-
-    if not results and q:
-        clean_code = q.split()[0].replace("-EQ", "")
-        results.append({
-            "symbol": f"{clean_code}-EQ",
-            "name": f"{clean_code} Equity",
-            "token": None,
-            "exchange": exchange,
-            "yfinance": f"{clean_code}.{'NS' if exchange=='NSE' else 'BO'}",
-        })
-
-    return results
 
 @st.cache_data(ttl=20, show_spinner=False)
 def fetch_equity_live_quote(symbol, token=None, exchange="NSE", yf_sym=None):
@@ -1605,40 +1601,67 @@ with col_t3:
 with col_t4:
     st.metric("AI Core Engine", "ACTIVATED" if GEMINI_API_KEY else "RULES MODE", delta="Gemini Quantitative", delta_color="off")
 
-# Sidebar
+# Sidebar Segment Switcher
 st.sidebar.header("⚙️ Trading Environment")
-segment_mode = st.sidebar.radio("Active Market Segment", ["📊 Index & Options Advisor", "📈 Equity / Share Research (NSE & BSE)"])
+segment_mode = st.sidebar.radio("Active Market Segment", ["📈 Equity / Share Research (NSE & BSE)", "📊 Index & Options Advisor"])
 
 if st.sidebar.button("🔄 Force Refresh All Caches", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
 # ==============================================================================
-# SEGMENT 1: EQUITY / SHARE SCANNER & UNIVERSAL RESEARCH HUB
+# SEGMENT 1: EQUITY / SHARE SCANNER (WITH LIVE AUTO-POPUP PREDICTIVE SEARCH)
 # ==============================================================================
 if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
     st.markdown("## 📈 Universal Equity / Cash Stock Intelligence")
-    st.caption("Search Any NSE / BSE Stock by Name or Symbol • Live Running Price • Target & Risk Levels • News & Exit Rules")
+    st.caption("Instant Auto-Popup Search • Live Running Price • Target & Risk Levels • News & Trailing Rules")
 
-    search_col1, search_col2 = st.columns([3, 1])
-    with search_col1:
-        stock_query = st.text_input(
-            "🔍 Search Stock Name or Symbol (e.g. Reliance, Tatamotors, Infy, Suzlon, Zomato, ITC, 500325):",
-            value="TATAMOTORS",
-        )
-    with search_col2:
-        exchange_select = st.selectbox("Exchange", ["NSE", "BSE"], index=0)
+    # Search Mode Selector
+    search_mode = st.radio(
+        "Search Method:",
+        ["⚡ Instant Auto-Popup Search (Type & Select from 120+ Shares)", "🔍 Custom Scrip Code / Penny Stock Search"],
+        horizontal=True,
+    )
 
-    matches = search_equity_symbol(stock_query, exchange=exchange_select)
-    selected_stock = matches[0] if matches else None
+    exchange_select = st.selectbox("Preferred Exchange", ["NSE", "BSE"], index=0)
+    selected_stock = None
 
-    if len(matches) > 1:
+    if "Auto-Popup" in search_mode:
+        # Prepares clean formatted options for instant pop-up filtering
+        stock_options = [f"{sym} — {details['name']}" for sym, details in POPULAR_EQUITIES.items()]
+        
+        # User types here and matches instantly pop up in real-time
         chosen_str = st.selectbox(
-            "🎯 Select Matched Stock:",
-            [f"{m['symbol']} — {m['name']}" for m in matches],
-            index=0,
+            "🔍 Type Stock Name or Symbol (Suggestions will auto pop-up as you type):",
+            options=stock_options,
+            index=7, # Default: TATAMOTORS
+            help="Tap and type any company name or ticker (e.g., Tata, Suzlon, Zomato, Reliance, SBI, Adani, IRFC).",
         )
-        selected_stock = next(m for m in matches if f"{m['symbol']} — {m['name']}" == chosen_str)
+        
+        if chosen_str:
+            sym_key = chosen_str.split(" — ")[0]
+            d = POPULAR_EQUITIES[sym_key]
+            selected_stock = {
+                "symbol": sym_key,
+                "name": d["name"],
+                "token": d["token_nse"] if exchange_select == "NSE" else d["token_bse"],
+                "exchange": exchange_select,
+                "yfinance": d["yfinance"],
+            }
+    else:
+        custom_input = st.text_input(
+            "Enter Scrip Code or Exact Ticker (e.g., 500325, SUZLON-EQ, IDEA, YESBANK):",
+            value="SUZLON",
+        )
+        if custom_input:
+            clean_sym = custom_input.strip().upper().replace("-EQ", "")
+            selected_stock = {
+                "symbol": f"{clean_sym}-EQ",
+                "name": f"{clean_sym} Equity",
+                "token": None,
+                "exchange": exchange_select,
+                "yfinance": f"{clean_sym}.{'NS' if exchange_select=='NSE' else 'BO'}",
+            }
 
     if selected_stock:
         st.divider()
@@ -1793,7 +1816,6 @@ else:
     selected_expiry = st.sidebar.selectbox("Target Expiry", expiries, format_func=expiry_label) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    # 1. Isolated Live Spot & VIX Stream
     @live_fragment(run_every=2)
     def render_index_live_ticker(selected_underlying, current_expiry):
         spot = get_spot(selected_underlying)
@@ -1818,7 +1840,6 @@ else:
     render_index_live_ticker(underlying, selected_expiry)
     st.divider()
 
-    # 2. Indian Prediction & FII/DII Institutional Flow
     @live_fragment(run_every=30)
     def render_index_research_and_prediction(selected_underlying, current_expiry):
         st.markdown("## 🇮🇳 Indian Market Research & Tomorrow Opening Prediction")
@@ -1905,7 +1926,6 @@ else:
     render_index_research_and_prediction(underlying, selected_expiry)
     st.divider()
 
-    # 3. Triple Traffic Light Confluence & Live Exit Rules
     @live_fragment(run_every=10)
     def render_market_confluence_dashboard(selected_underlying, current_expiry):
         spot = get_spot(selected_underlying)
@@ -1978,7 +1998,6 @@ else:
     render_market_confluence_dashboard(underlying, selected_expiry)
     st.divider()
 
-    # 4. Detailed High-Conviction Trade Scanner
     st.markdown("## 🎯 Detailed High-Conviction Trade Setups")
     st.caption("Technical Structure • Delta Greeks • Exact Strike • Setup Aadhar Explanation • Trailing SL Rules")
 
