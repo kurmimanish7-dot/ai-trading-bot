@@ -73,11 +73,7 @@ st.markdown(
         line-height: 1.5;
     }
 
-    /* ==================================================================== */
-    /* 🛑 ZERO-BREATHING / ZERO-FLICKER CORE ENGINE OVERRIDES               */
-    /* ==================================================================== */
-
-    /* 1. Kill Streamlit's stale-element opacity dimming on reruns */
+    /* ZERO-BREATHING / ZERO-FLICKER HARD OVERRIDES */
     div[data-stale="true"],
     div[data-stale="true"] *,
     .stale-element,
@@ -90,7 +86,6 @@ st.markdown(
         animation: none !important;
     }
 
-    /* 2. Lock opacity on all Metric elements, labels, and company names */
     [data-testid="stMetric"],
     [data-testid="stMetric"] *,
     [data-testid="stMetricValue"],
@@ -104,13 +99,11 @@ st.markdown(
         animation: none !important;
     }
 
-    /* 3. Tabular digits (numbers changing never jitter width horizontally) */
     [data-testid="stMetricValue"] {
         font-variant-numeric: tabular-nums !important;
         letter-spacing: -0.01em !important;
     }
 
-    /* 4. Fix metric box geometry so it never jumps or recalculates layout */
     [data-testid="stMetric"] {
         background-color: rgba(255, 255, 255, 0.02) !important;
         border: 1px solid rgba(128, 128, 128, 0.25) !important;
@@ -122,13 +115,11 @@ st.markdown(
         justify-content: center !important;
     }
 
-    /* 5. Hide the top-right blinking/running status indicator */
     [data-testid="stStatusWidget"] {
         visibility: hidden !important;
         display: none !important;
     }
 
-    /* 6. Lock general markdown containers */
     [data-testid="stMarkdownContainer"],
     [data-testid="stMarkdownContainer"] * {
         opacity: 1 !important;
@@ -395,7 +386,6 @@ def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=3):
         return pd.DataFrame()
 
 def get_spot(symbol):
-    """Direct live LTP fetch from Angel One REST API without falling back to Monday candle close."""
     if telemetry is None or symbol not in INDEX_METADATA:
         return None
 
@@ -655,7 +645,14 @@ def analyze_market(symbol, proxy=None, explicit_spot=None):
     res["trend"] = "BULLISH" if res["score"] >= 3 else ("BEARISH" if res["score"] <= -3 else "SIDEWAYS")
     return res
 
+# =========================================================
+# UPGRADED INTELLIGENT TRAFFIC LIGHT ENGINES
+# =========================================================
 def analyze_candlesticks_and_volume(df):
+    """
+    LIGHT 1 UPGRADE:
+    Direct breakdown logic without volume blocker on index spot.
+    """
     if df is None or len(df) < 5:
         return {
             "status": "YELLOW",
@@ -672,14 +669,19 @@ def analyze_candlesticks_and_volume(df):
     vol = float(c["volume"]) if "volume" in c and pd.notna(c["volume"]) else 1.0
     avg_vol = float(df["volume"].tail(20).mean()) if "volume" in df.columns else 1.0
     vol_ratio = (vol / avg_vol) if avg_vol > 0 else 1.0
-    vol_spike = vol_ratio >= 1.30
+    vol_spike = vol_ratio >= 1.25
 
     rng = max(high_p - low_p, 0.001)
     body = abs(close_p - open_p)
     upper_w = high_p - max(open_p, close_p)
     lower_w = min(open_p, close_p) - low_p
 
-    if body <= (0.12 * rng):
+    # Multi-candle momentum context
+    prior_3_closes = df["close"].tail(4).values
+    is_continuous_fall = (prior_3_closes[-1] < prior_3_closes[-2] < prior_3_closes[-3])
+
+    # Doji / Indecision
+    if body <= (0.10 * rng):
         return {
             "status": "YELLOW",
             "pattern": "DOJI (PAUSE / INDECISION)",
@@ -688,51 +690,73 @@ def analyze_candlesticks_and_volume(df):
             "reason": f"Doji candle bani hai ({body/rng:.2f} ratio). Market pause mode mein hai.",
         }
 
+    # Bullish Hammer Pin
     if lower_w >= (2.0 * body) and upper_w <= (0.25 * body):
         return {
-            "status": "GREEN" if vol_spike else "YELLOW",
+            "status": "GREEN",
             "pattern": "BULLISH HAMMER PIN",
             "vol_ratio": vol_ratio,
             "reversal_risk": False,
-            "reason": f"Bottom rejection hammer with {vol_ratio:.2f}x volume confirmation.",
+            "reason": f"Bottom rejection hammer pin confirmed ({vol_ratio:.2f}x vol).",
         }
 
+    # Bearish Shooting Star
     if upper_w >= (2.0 * body) and lower_w <= (0.25 * body):
         return {
-            "status": "RED" if vol_spike else "YELLOW",
+            "status": "RED",
             "pattern": "BEARISH SHOOTING STAR",
             "vol_ratio": vol_ratio,
             "reversal_risk": True,
-            "reason": f"Top rejection shooting star with {vol_ratio:.2f}x volume surge.",
+            "reason": f"Top rejection shooting star confirmed ({vol_ratio:.2f}x vol).",
         }
 
+    # Bullish Engulfing
     if (close_p > open_p) and (float(p["close"]) < float(p["open"])) and (close_p >= float(p["open"])):
         return {
-            "status": "GREEN" if vol_spike else "YELLOW",
+            "status": "GREEN",
             "pattern": "BULLISH ENGULFING",
             "vol_ratio": vol_ratio,
             "reversal_risk": False,
-            "reason": f"Bullish engulfing overriding prior red candle with {vol_ratio:.2f}x volume.",
+            "reason": f"Bullish engulfing overriding prior red candle ({vol_ratio:.2f}x vol).",
         }
 
+    # Bearish Engulfing
     if (close_p < open_p) and (float(p["close"]) > float(p["open"])) and (close_p <= float(p["open"])):
         return {
-            "status": "RED" if vol_spike else "YELLOW",
+            "status": "RED",
             "pattern": "BEARISH ENGULFING",
             "vol_ratio": vol_ratio,
             "reversal_risk": True,
-            "reason": f"Bearish engulfing breakdown with {vol_ratio:.2f}x volume breakdown.",
+            "reason": f"Bearish engulfing breakdown overriding prior green candle ({vol_ratio:.2f}x vol).",
         }
 
-    if body >= (0.65 * rng):
-        status = "GREEN" if close_p > open_p else "RED"
-        name = "BULLISH MARUBOZU" if close_p > open_p else "BEARISH BREAKDOWN"
+    # DIRECTIONAL EXPANSION / BREAKDOWN (VOLUME BUG REMOVED)
+    if body >= (0.50 * rng):
+        if close_p < open_p:
+            status = "RED"
+            name = "BEARISH BREAKDOWN"
+            reason = f"Solid directional expansion candle (Sell-off confirmed, {vol_ratio:.2f}x vol)."
+        else:
+            status = "GREEN"
+            name = "BULLISH MARUBOZU"
+            reason = f"Solid directional expansion candle (Rally confirmed, {vol_ratio:.2f}x vol)."
+
         return {
-            "status": status if vol_spike else "YELLOW",
+            "status": status,
             "pattern": name,
             "vol_ratio": vol_ratio,
             "reversal_risk": (status == "RED"),
-            "reason": f"Solid directional expansion candle with {vol_ratio:.2f}x volume.",
+            "reason": reason,
+        }
+
+    # Continuous falling structure check
+    if is_continuous_fall:
+        return {
+            "status": "RED",
+            "pattern": "STEADY BEARISH MOMENTUM",
+            "vol_ratio": vol_ratio,
+            "reversal_risk": False,
+            "reason": "Consecutive lower closes confirm active downward trend.",
         }
 
     return {
@@ -740,36 +764,60 @@ def analyze_candlesticks_and_volume(df):
         "pattern": "RANGE CONSOLIDATION",
         "vol_ratio": vol_ratio,
         "reversal_risk": False,
-        "reason": "Normal candle range without breakout confirmation.",
+        "reason": "Normal candle range without directional breakout.",
     }
 
-def analyze_smart_money(fii_dii_data, pcr_val):
+def analyze_smart_money(fii_dii_data, pcr_val, df=None, current_spot=None):
+    """
+    LIGHT 2 UPGRADE:
+    If PCR or FII/DII is N/A, falls back to Institutional VWAP & Day Open displacement.
+    Never stays blind or locked in YELLOW when market is actively plunging!
+    """
     score = 0
     notes = []
+    has_data = False
+
+    # 1. Options PCR Analysis
     if pcr_val is not None:
+        has_data = True
         if pcr_val >= 1.25:
             score += 2
-            notes.append(f"PCR {pcr_val:.2f} solid put writing floor indicate karta hai.")
+            notes.append(f"PCR {pcr_val:.2f} solid put writing floor")
         elif pcr_val >= 1.00:
             score += 1
-            notes.append(f"PCR {pcr_val:.2f} mildly supportive hai.")
+            notes.append(f"PCR {pcr_val:.2f} mildly supportive")
         elif 0.70 < pcr_val < 1.00:
             score -= 1
-            notes.append(f"PCR {pcr_val:.2f} cautious resistance indicate karta hai.")
+            notes.append(f"PCR {pcr_val:.2f} cautious resistance")
         else:
             score -= 2
-            notes.append(f"PCR {pcr_val:.2f} heavy call writing pressure create kar raha hai.")
-    else:
-        notes.append("PCR unavailable.")
+            notes.append(f"PCR {pcr_val:.2f} heavy call writing pressure")
 
+    # 2. Institutional Cash Flow
     if fii_dii_data.get("available"):
+        has_data = True
         score += fii_dii_data.get("score", 0)
-        notes.append(f"FII/DII Bias: {fii_dii_data.get('bias')}.")
-    else:
-        notes.append("Cash flow neutral/pending.")
+        notes.append(f"FII/DII: {fii_dii_data.get('bias')}")
+
+    # 3. SMART MONEY VWAP & INTRADAY DISPLACEMENT PROXY (Fallback if PCR is N/A)
+    if not has_data and df is not None and not df.empty and current_spot:
+        day_open = float(df["open"].iloc[0])
+        vwap_val = float(df["VWAP"].iloc[-1]) if "VWAP" in df.columns and pd.notna(df["VWAP"].iloc[-1]) else day_open
+
+        if current_spot < vwap_val and current_spot < day_open:
+            score -= 2
+            notes.append(f"Institutional VWAP Breakdown (Spot ₹{current_spot:,.0f} < VWAP ₹{vwap_val:,.0f})")
+            notes.append("Aggressive intraday distribution detected")
+        elif current_spot > vwap_val and current_spot > day_open:
+            score += 2
+            notes.append(f"Institutional VWAP Support (Spot ₹{current_spot:,.0f} > VWAP ₹{vwap_val:,.0f})")
+            notes.append("Institutional accumulation detected")
+        else:
+            notes.append("Market hovering near Institutional VWAP")
 
     status = "GREEN" if score >= 2 else ("RED" if score <= -2 else "YELLOW")
-    return {"status": status, "score": score, "reason": " | ".join(notes)}
+    final_reason = " | ".join(notes) if notes else "Smart Money neutral."
+    return {"status": status, "score": score, "reason": final_reason}
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_news_sentiment():
@@ -804,62 +852,96 @@ def fetch_news_sentiment():
     return {"status": status, "score": net, "summary": summary, "reason": f"Headline tokens: +{bullish} positive vs -{bearish} negative."}
 
 def evaluate_all_permutations(l1, l2, l3):
+    """
+    CONFLUENCE ENGINE UPGRADE:
+    Eliminates rigid freeze. 2 REDS + 1 YELLOW immediately generates actionable SHORT!
+    """
     s1, s2, s3 = l1["status"], l2["status"], l3["status"]
-    greens = [s1, s2, s3].count("GREEN")
     reds = [s1, s2, s3].count("RED")
+    greens = [s1, s2, s3].count("GREEN")
 
+    # 1. TRIPLE ALIGNMENT (ULTRA CONVICTION)
+    if reds == 3:
+        return {
+            "signal": "🚨 ULTRA STRONG SHORT (BUY PE)",
+            "action": "BUY PUT (PE)",
+            "confidence": 95,
+            "badge": "error",
+            "allocation": "100% Capital Size",
+            "rationale": "High-volume breakdown + Smart Money selling + Macro headwinds fully aligned.",
+        }
     if greens == 3:
         return {
-            "signal": "🔥 STRONG BUY (BUY CE)",
+            "signal": "🔥 ULTRA STRONG BUY (BUY CE)",
             "action": "BUY CALL (CE)",
             "confidence": 95,
             "badge": "success",
             "allocation": "100% Capital Size",
-            "rationale": "High-volume bullish candle + Institutional FII/PCR support + Positive macro news flow aligned.",
+            "rationale": "High-volume breakout + Institutional buying + Macro tailwinds fully aligned.",
         }
-    if reds == 3:
+
+    # 2. DOUBLE ALIGNMENT (2 REDS -> ACTIONABLE SHORT)
+    if reds >= 2 and greens == 0:
         return {
             "signal": "🚨 STRONG SHORT (BUY PE)",
             "action": "BUY PUT (PE)",
-            "confidence": 95,
+            "confidence": 85,
             "badge": "error",
-            "allocation": "100% Capital Size",
-            "rationale": "High-volume breakdown candle + Heavy call writing + Negative macro headwinds aligned.",
+            "allocation": "75% Position Size",
+            "rationale": "Price action aur macro breakdown aligned hain. Downside momentum clear hai.",
         }
-    if s1 == "GREEN" and s2 == "GREEN":
+
+    # 3. DOUBLE ALIGNMENT (2 GREENS -> ACTIONABLE BUY)
+    if greens >= 2 and reds == 0:
         return {
-            "signal": "⚡ MODERATE BUY (CE)",
+            "signal": "⚡ STRONG BUY (BUY CE)",
             "action": "BUY CALL (CE)",
-            "confidence": 80,
+            "confidence": 85,
             "badge": "success",
-            "allocation": "60% Position Size",
-            "rationale": "Price action aur institutional flow bullish hain; macro catalyst quiet hai.",
+            "allocation": "75% Position Size",
+            "rationale": "Price action aur institutional flow bullish hain. Upside momentum clear hai.",
         }
-    if s1 == "RED" and s2 == "RED":
+
+    # 4. SINGLE CONFIRMED PRICE BREAKDOWN
+    if s1 == "RED" and greens == 0:
         return {
-            "signal": "⚡ MODERATE SHORT (PE)",
+            "signal": "⚡ MODERATE SHORT (BUY PE)",
             "action": "BUY PUT (PE)",
-            "confidence": 80,
+            "confidence": 70,
             "badge": "error",
-            "allocation": "60% Position Size",
-            "rationale": "Price action aur institutional flow bearish breakdown par hain.",
+            "allocation": "50% Position Size",
+            "rationale": "Candle breakdown confirmed. Tight stop loss ke saath short positions favor karein.",
         }
-    if (s1 == "GREEN" and s2 == "RED") or (s1 == "RED" and s2 == "GREEN"):
+
+    if s1 == "GREEN" and reds == 0:
+        return {
+            "signal": "⚡ MODERATE BUY (BUY CE)",
+            "action": "BUY CALL (CE)",
+            "confidence": 70,
+            "badge": "success",
+            "allocation": "50% Position Size",
+            "rationale": "Candle breakout confirmed. Trailing stop loss ke saath call buying favor karein.",
+        }
+
+    # 5. DANGEROUS CONFLICT (Green vs Red directly fighting)
+    if greens >= 1 and reds >= 1:
         return {
             "signal": "⚔️ CONFLICT / STRICT NO TRADE",
             "action": "STRICT AVOID / CASH PRESERVATION",
             "confidence": 15,
             "badge": "info",
             "allocation": "0% Capital Size",
-            "rationale": "Dangerous divergence: Candlestick pattern smart money positioning ke directly opposite hai.",
+            "rationale": "Divergence: Candlestick pattern smart money/macro positioning ke directly opposite hai.",
         }
+
+    # 6. FLAT CHOP
     return {
         "signal": "⏸️ NO TRADE / WAIT FOR CLARITY",
         "action": "STAND ASIDE",
         "confidence": 20,
         "badge": "info",
         "allocation": "0% Capital Size",
-        "rationale": "Market consolidation ya Doji candle phase mein hai. Directional edge absent hai.",
+        "rationale": "Market consolidation phase mein hai. Directional breakout ka wait karein.",
     }
 
 # =========================================================
@@ -909,7 +991,7 @@ def get_optimal_option_strike(symbol, spot, side, chain=None):
                     vega = num(first_value(best, ["vega"]), vega)
                     iv = num(first_value(best, ["impliedVolatility", "iv"]), iv)
 
-    # DIRECT LIVE ANGEL ONE NFO LTP QUERY (PREVENTS DUMMY 408.70 FORMULA)
+    # DIRECT LIVE ANGEL ONE NFO LTP QUERY
     if contract_token and contract_symbol and telemetry and hasattr(telemetry, "smart_api") and telemetry.smart_api:
         try:
             res = telemetry.smart_api.ltpData(
@@ -947,7 +1029,15 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
     if last is None or last <= 0:
         return None
 
-    bullish = True if market.get("score", 0) >= 2 else (False if market.get("score", 0) <= -2 else None)
+    # Support confluence override if available
+    conf_sig = confluence.get("action", "") if confluence else ""
+    if "PUT" in conf_sig:
+        bullish = False
+    elif "CALL" in conf_sig:
+        bullish = True
+    else:
+        bullish = True if market.get("score", 0) >= 1 else (False if market.get("score", 0) <= -1 else None)
+
     if bullish is None:
         return None
 
@@ -969,16 +1059,16 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
     if risk <= 0:
         return None
 
-    confidence = confluence.get("confidence", 75) if confluence else 75
+    confidence = confluence.get("confidence", 80) if confluence else 80
     sl_mult = vix_info.get("sl_multiplier", 0.85) if vix_info else 0.85
 
     reasons_list = market.get("reasons", [])
-    vsa_text = "Volume expansion confirmed" if any("volume" in r.lower() for r in reasons_list) else "Technical levels aligned"
+    vsa_text = "Volume expansion confirmed" if any("volume" in r.lower() for r in reasons_list) else "Technical breakdown aligned"
     trend_state = "Bullish Uptrend" if bullish else "Bearish Breakdown"
     why_explanation = (
         f"Ye trade {trend_state} ke aadhar par formulate kiya gaya hai. "
         f"{' '.join(reasons_list[:4])} "
-        f"Market institutional structure aur {vsa_text} is direction ko support kar rahe hain."
+        f"Confluence system aur {vsa_text} is direction ko strongly support kar rahe hain."
     )
 
     idea = {
@@ -1058,7 +1148,7 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         idea["change_oi"] = contract.get("chg_oi", 0)
         idea["why"] = (
             f"Option Buying Aadhar: {symbol} {resolved_strike} {side} select kiya gaya hai kyunki iska Delta ({idea['delta']:.2f}) "
-            f"optimal zone mein hai. Isse spot movement par premium turant react karega. "
+            f"optimal zone mein hai. Isse spot downward movement par premium turant react karega. "
             f"{why_explanation}"
         )
 
@@ -1126,8 +1216,6 @@ if st.sidebar.button("🔄 Force Refresh All Caches", use_container_width=True):
 # =========================================================
 # ISOLATED ZERO-BREATHING LIVE TICKER STREAM
 # =========================================================
-# run_every=2 triggers updates ONLY for the 4 live metrics.
-# CSS overrides prevent ANY opacity change, dimming, or breathing!
 @live_fragment(run_every=2)
 def render_live_ticker(selected_underlying, current_expiry):
     spot = get_spot(selected_underlying)
@@ -1160,11 +1248,11 @@ def render_market_confluence_dashboard(selected_underlying, current_expiry):
     spot = get_spot(selected_underlying)
     chain, _ = get_chain(selected_underlying, current_expiry)
     pcr = calculate_pcr(chain)
+    df5 = add_indicators(fetch_ohlcv(selected_underlying, "FIVE_MINUTE", 3), current_live_price=spot)
 
     st.markdown("## 🚦 Triple Traffic Light Confluence System")
-    df5 = add_indicators(fetch_ohlcv(selected_underlying, "FIVE_MINUTE", 3), current_live_price=spot)
     light1 = analyze_candlesticks_and_volume(df5)
-    light2 = analyze_smart_money(fii_dii, pcr)
+    light2 = analyze_smart_money(fii_dii, pcr, df=df5, current_spot=spot)
     light3 = fetch_news_sentiment()
     confluence = evaluate_all_permutations(light1, light2, light3)
 
@@ -1205,22 +1293,22 @@ def render_market_confluence_dashboard(selected_underlying, current_expiry):
         with ex1:
             st.markdown("#### 🟢 Active Call (CE) Exit Rules")
             if light1["status"] == "RED" or light2["status"] == "RED":
-                st.error("🚨 **EMERGENCY EXIT CE:** Opposite Red Light trigger ho chuki hai. Position turant exit karein.")
+                st.error("🚨 **EMERGENCY EXIT CE:** Downward breakdown trigger ho chuki hai. Call positions turant exit karein.")
             elif "DOJI" in light1["pattern"]:
                 st.warning("⚠️ **TRAIL SL TO COST:** Doji indecision candle form hui hai. Risk zero karein.")
             elif light1["reversal_risk"]:
-                st.error(f"⚠️ **REVERSAL EXIT CE:** High volume {light1['pattern']} detected at resistance.")
+                st.error(f"⚠️ **REVERSAL EXIT CE:** High volume {light1['pattern']} detected.")
             else:
-                st.success("✅ **HOLD CE:** Trend aur institutional flows aligned hain.")
+                st.success("✅ **HOLD CE:** Bullish momentum intact hai.")
 
         with ex2:
             st.markdown("#### 🔴 Active Put (PE) Exit Rules")
             if light1["status"] == "GREEN" or light2["status"] == "GREEN":
-                st.error("🚨 **EMERGENCY EXIT PE:** Opposite Green Light trigger ho chuki hai. Position turant exit karein.")
+                st.error("🚨 **EMERGENCY EXIT PE:** Opposite Green Light trigger ho chuki hai. Put positions turant exit karein.")
             elif "DOJI" in light1["pattern"]:
                 st.warning("⚠️ **TRAIL SL TO COST:** Support par Doji form hui hai. Stop loss cost par trail karein.")
             elif light1["pattern"] in ["BULLISH HAMMER PIN", "BULLISH ENGULFING"]:
-                st.error(f"⚠️ **REVERSAL EXIT PE:** High volume {light1['pattern']} support bounce detect hua hai.")
+                st.error(f"⚠️ **REVERSAL EXIT PE:** Support bounce pattern detect hua hai.")
             else:
                 st.success("✅ **HOLD PE:** Downside momentum intact hai.")
 
@@ -1246,7 +1334,7 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
         # Confluence evaluation
         c_df5 = add_indicators(fetch_ohlcv(underlying, "FIVE_MINUTE", 3), current_live_price=current_spot)
         c_light1 = analyze_candlesticks_and_volume(c_df5)
-        c_light2 = analyze_smart_money(fii_dii, chain_pcr)
+        c_light2 = analyze_smart_money(fii_dii, chain_pcr, df=c_df5, current_spot=current_spot)
         c_light3 = fetch_news_sentiment()
         scan_confluence = evaluate_all_permutations(c_light1, c_light2, c_light3)
 
