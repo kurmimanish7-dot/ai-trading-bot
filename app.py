@@ -288,7 +288,8 @@ ANGEL_PIN = secret("ANGEL_PIN")
 ANGEL_TOTP_SECRET = secret("ANGEL_TOTP_SECRET")
 ANGEL_JWT_TOKEN = secret("ANGEL_JWT_TOKEN")
 GEMINI_API_KEY = secret("GEMINI_API_KEY") or secret("GOOGLE_API_KEY")
-GEMINI_MODEL = secret("GEMINI_MODEL") or "gemini-2.5-flash"
+# Default model updated to gemini-3.8-flash
+GEMINI_MODEL = secret("GEMINI_MODEL") or "gemini-3.8-flash"
 
 # =========================================================
 # UTILITIES & NORMALIZATION
@@ -1261,10 +1262,62 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
 
     return idea
 
-def ask_gemini(ideas, market_data):
+# =========================================================
+# UNIVERSAL GEMINI CALLER WITH MODEL CASCADE FALLBACK
+# =========================================================
+def call_gemini_cascade(prompt):
     if not GEMINI_API_KEY:
-        return None
+        return "Gemini API Key missing in Streamlit Secrets."
 
+    # Robust model sequence: latest first, then legacy fallbacks
+    models_to_attempt = [
+        GEMINI_MODEL,
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-pro",
+    ]
+    # Remove duplicates
+    models_to_attempt = list(dict.fromkeys([m for m in models_to_attempt if m]))
+
+    last_error = None
+
+    # Try modern google-genai library
+    try:
+        from google import genai
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        for m in models_to_attempt:
+            try:
+                resp = client.models.generate_content(model=m, contents=prompt)
+                if hasattr(resp, "text") and resp.text:
+                    return resp.text
+            except Exception as e:
+                last_error = e
+                continue
+    except Exception:
+        pass
+
+    # Try legacy google.generativeai library
+    try:
+        import google.generativeai as legacy_genai
+        legacy_genai.configure(api_key=GEMINI_API_KEY)
+        for m in models_to_attempt:
+            try:
+                mod = legacy_genai.GenerativeModel(m)
+                resp = mod.generate_content(prompt)
+                if hasattr(resp, "text") and resp.text:
+                    return resp.text
+            except Exception as e:
+                last_error = e
+                continue
+    except Exception as e:
+        last_error = e
+
+    return f"AI Generation error: {last_error}"
+
+def ask_gemini(ideas, market_data):
     payload = {"market": market_data, "ideas": ideas, "fii_dii": fii_dii}
     prompt = f"""
     You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY).
@@ -1276,28 +1329,13 @@ def ask_gemini(ideas, market_data):
     DATA PAYLOAD:
     {json.dumps(payload, default=str)}
     """
-    try:
-        from google import genai
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        return getattr(resp, "text", None)
-    except Exception:
-        pass
-
-    try:
-        import google.generativeai as legacy_genai
-        legacy_genai.configure(api_key=GEMINI_API_KEY)
-        model = legacy_genai.GenerativeModel(GEMINI_MODEL)
-        resp = model.generate_content(prompt)
-        return getattr(resp, "text", None)
-    except Exception as e:
-        return f"AI explanation unavailable: {e}"
+    return call_gemini_cascade(prompt)
 
 # =========================================================
-# COMPREHENSIVE EQUITY UNIVERSE (120+ POPULAR STOCKS)
+# COMPREHENSIVE EQUITY MASTER DATABASE (250+ STOCKS)
 # =========================================================
 POPULAR_EQUITIES = {
-    # Large Cap Nifty 50 Heavyweights
+    # Nifty 50 Heavyweights
     "RELIANCE": {"name": "Reliance Industries Ltd", "token_nse": "2885", "token_bse": "500325", "yfinance": "RELIANCE.NS"},
     "TCS": {"name": "Tata Consultancy Services Ltd", "token_nse": "11536", "token_bse": "532540", "yfinance": "TCS.NS"},
     "HDFCBANK": {"name": "HDFC Bank Ltd", "token_nse": "1333", "token_bse": "500180", "yfinance": "HDFCBANK.NS"},
@@ -1315,6 +1353,7 @@ POPULAR_EQUITIES = {
     "SUNPHARMA": {"name": "Sun Pharmaceutical", "token_nse": "3351", "token_bse": "524715", "yfinance": "SUNPHARMA.NS"},
     "TITAN": {"name": "Titan Company Ltd", "token_nse": "3506", "token_bse": "500114", "yfinance": "TITAN.NS"},
     "BAJFINANCE": {"name": "Bajaj Finance Ltd", "token_nse": "317", "token_bse": "500034", "yfinance": "BAJFINANCE.NS"},
+    "BAJAJFINSV": {"name": "Bajaj Finserv Ltd", "token_nse": "16675", "token_bse": "532978", "yfinance": "BAJAJFINSV.NS"},
     "TATASTEEL": {"name": "Tata Steel Ltd", "token_nse": "3499", "token_bse": "500470", "yfinance": "TATASTEEL.NS"},
     "ASIANPAINT": {"name": "Asian Paints Ltd", "token_nse": "236", "token_bse": "500820", "yfinance": "ASIANPAINT.NS"},
     "NTPC": {"name": "NTPC Ltd", "token_nse": "11630", "token_bse": "532555", "yfinance": "NTPC.NS"},
@@ -1330,34 +1369,63 @@ POPULAR_EQUITIES = {
     "JSWSTEEL": {"name": "JSW Steel Ltd", "token_nse": "11723", "token_bse": "500228", "yfinance": "JSWSTEEL.NS"},
     "TATACONSUM": {"name": "Tata Consumer Products", "token_nse": "3432", "token_bse": "500800", "yfinance": "TATACONSUM.NS"},
     "BPCL": {"name": "Bharat Petroleum Corp", "token_nse": "526", "token_bse": "500547", "yfinance": "BPCL.NS"},
-    
-    # Popular High-Volume & Retail Buzz Stocks
+    "GRASIM": {"name": "Grasim Industries Ltd", "token_nse": "1232", "token_bse": "500300", "yfinance": "GRASIM.NS"},
+    "ULTRACEMCO": {"name": "UltraTech Cement Ltd", "token_nse": "11532", "token_bse": "532538", "yfinance": "ULTRACEMCO.NS"},
+    "HEROMOTOCO": {"name": "Hero MotoCorp Ltd", "token_nse": "1348", "token_bse": "500182", "yfinance": "HEROMOTOCO.NS"},
+    "EICHERMOT": {"name": "Eicher Motors Ltd", "token_nse": "910", "token_bse": "505200", "yfinance": "EICHERMOT.NS"},
+    "CIPLA": {"name": "Cipla Ltd", "token_nse": "694", "token_bse": "500087", "yfinance": "CIPLA.NS"},
+    "DRREDDY": {"name": "Dr. Reddy's Laboratories", "token_nse": "881", "token_bse": "500124", "yfinance": "DRREDDY.NS"},
+    "APOLLOHOSP": {"name": "Apollo Hospitals Enterprise", "token_nse": "157", "token_bse": "508869", "yfinance": "APOLLOHOSP.NS"},
+    "DIVISLAB": {"name": "Divi's Laboratories Ltd", "token_nse": "10940", "token_bse": "532488", "yfinance": "DIVISLAB.NS"},
+    "BRITANNIA": {"name": "Britannia Industries Ltd", "token_nse": "547", "token_bse": "500825", "yfinance": "BRITANNIA.NS"},
+    "NESTLEIND": {"name": "Nestle India Ltd", "token_nse": "17963", "token_bse": "500790", "yfinance": "NESTLEIND.NS"},
+
+    # High-Growth, Buzz & Defence / Railway / Energy Stocks
     "SUZLON": {"name": "Suzlon Energy Ltd", "token_nse": "13061", "token_bse": "532667", "yfinance": "SUZLON.NS"},
     "ZOMATO": {"name": "Zomato Ltd", "token_nse": "5097", "token_bse": "543320", "yfinance": "ZOMATO.NS"},
     "JIOFIN": {"name": "Jio Financial Services", "token_nse": "18143", "token_bse": "543940", "yfinance": "JIOFIN.NS"},
     "IRFC": {"name": "Indian Railway Finance Corp", "token_nse": "2029", "token_bse": "543257", "yfinance": "IRFC.NS"},
     "RVNL": {"name": "Rail Vikas Nigam Ltd", "token_nse": "30108", "token_bse": "542649", "yfinance": "RVNL.NS"},
     "IREDA": {"name": "Indian Renewable Energy Dev", "token_nse": "20108", "token_bse": "544026", "yfinance": "IREDA.NS"},
+    "IRCTC": {"name": "IRCTC Ltd", "token_nse": "13611", "token_bse": "542830", "yfinance": "IRCTC.NS"},
+    "MAZDOCK": {"name": "Mazagon Dock Shipbuilders", "token_nse": "2032", "token_bse": "543237", "yfinance": "MAZDOCK.NS"},
+    "COCHINSHIP": {"name": "Cochin Shipyard Ltd", "token_nse": "21808", "token_bse": "540678", "yfinance": "COCHINSHIP.NS"},
+    "HAL": {"name": "Hindustan Aeronautics Ltd", "token_nse": "2303", "token_bse": "541154", "yfinance": "HAL.NS"},
+    "BEL": {"name": "Bharat Electronics Ltd", "token_nse": "383", "token_bse": "500049", "yfinance": "BEL.NS"},
+    "BDL": {"name": "Bharat Dynamics Ltd", "token_nse": "2142", "token_bse": "541143", "yfinance": "BDL.NS"},
     "TATAPOWER": {"name": "Tata Power Company Ltd", "token_nse": "3426", "token_bse": "500400", "yfinance": "TATAPOWER.NS"},
+    "TATACOMM": {"name": "Tata Communications Ltd", "token_nse": "3413", "token_bse": "500483", "yfinance": "TATACOMM.NS"},
+    "TRENT": {"name": "Trent Ltd", "token_nse": "1964", "token_bse": "500251", "yfinance": "TRENT.NS"},
     "BHEL": {"name": "Bharat Heavy Electricals", "token_nse": "438", "token_bse": "500103", "yfinance": "BHEL.NS"},
     "NHPC": {"name": "NHPC Ltd", "token_nse": "19326", "token_bse": "533098", "yfinance": "NHPC.NS"},
+    "SJVN": {"name": "SJVN Ltd", "token_nse": "19584", "token_bse": "533206", "yfinance": "SJVN.NS"},
     "IOC": {"name": "Indian Oil Corporation", "token_nse": "1624", "token_bse": "530965", "yfinance": "IOC.NS"},
     "SAIL": {"name": "Steel Authority of India", "token_nse": "2963", "token_bse": "500113", "yfinance": "SAIL.NS"},
     "VEDL": {"name": "Vedanta Ltd", "token_nse": "3063", "token_bse": "500295", "yfinance": "VEDL.NS"},
-    "BEL": {"name": "Bharat Electronics Ltd", "token_nse": "383", "token_bse": "500049", "yfinance": "BEL.NS"},
-    "HAL": {"name": "Hindustan Aeronautics Ltd", "token_nse": "2303", "token_bse": "541154", "yfinance": "HAL.NS"},
+    "HINDALCO": {"name": "Hindalco Industries Ltd", "token_nse": "1363", "token_bse": "500440", "yfinance": "HINDALCO.NS"},
     "YESBANK": {"name": "Yes Bank Ltd", "token_nse": "11915", "token_bse": "532648", "yfinance": "YESBANK.NS"},
     "IDEA": {"name": "Vodafone Idea Ltd", "token_nse": "14366", "token_bse": "532822", "yfinance": "IDEA.NS"},
     "PNB": {"name": "Punjab National Bank", "token_nse": "10666", "token_bse": "532461", "yfinance": "PNB.NS"},
     "BANKBARODA": {"name": "Bank of Baroda", "token_nse": "467", "token_bse": "532134", "yfinance": "BANKBARODA.NS"},
+    "CANBK": {"name": "Canara Bank", "token_nse": "10940", "token_bse": "532486", "yfinance": "CANBK.NS"},
+    "UNIONBANK": {"name": "Union Bank of India", "token_nse": "10996", "token_bse": "532477", "yfinance": "UNIONBANK.NS"},
     "IDFCFIRSTB": {"name": "IDFC First Bank Ltd", "token_nse": "11184", "token_bse": "539437", "yfinance": "IDFCFIRSTB.NS"},
-    "IRCTC": {"name": "IRCTC Ltd", "token_nse": "13611", "token_bse": "542830", "yfinance": "IRCTC.NS"},
+    "FEDERALBNK": {"name": "Federal Bank Ltd", "token_nse": "1023", "token_bse": "500469", "yfinance": "FEDERALBNK.NS"},
     "CDSL": {"name": "Central Depository Services", "token_nse": "21174", "token_bse": "540515", "yfinance": "CDSL.NS"},
     "BSE": {"name": "BSE Ltd", "token_nse": "19585", "token_bse": "540376", "yfinance": "BSE.NS"},
-    "TRENT": {"name": "Trent Ltd", "token_nse": "1964", "token_bse": "500251", "yfinance": "TRENT.NS"},
-    "EXIDEIND": {"name": "Exide Industries Ltd", "token_nse": "676", "token_bse": "500086", "yfinance": "EXIDEIND.NS"},
+    "MCX": {"name": "Multi Commodity Exchange", "token_nse": "31181", "token_bse": "534091", "yfinance": "MCX.NS"},
+    "KALYANKJIL": {"name": "Kalyan Jewellers India", "token_nse": "2412", "token_bse": "543278", "yfinance": "KALYANKJIL.NS"},
+    "DMART": {"name": "Avenue Supermarts (DMart)", "token_nse": "19913", "token_bse": "540376", "yfinance": "DMART.NS"},
+    "POLYCAB": {"name": "Polycab India Ltd", "token_nse": "9590", "token_bse": "542652", "yfinance": "POLYCAB.NS"},
+    "HAVELLS": {"name": "Havells India Ltd", "token_nse": "9819", "token_bse": "517354", "yfinance": "HAVELLS.NS"},
+    "DIXON": {"name": "Dixon Technologies Ltd", "token_nse": "21690", "token_bse": "540699", "yfinance": "DIXON.NS"},
+    "PERSISTENT": {"name": "Persistent Systems Ltd", "token_nse": "18365", "token_bse": "533179", "yfinance": "PERSISTENT.NS"},
+    "COFORGE": {"name": "Coforge Ltd", "token_nse": "11543", "token_bse": "532541", "yfinance": "COFORGE.NS"},
+    "MPHASIS": {"name": "Mphasis Ltd", "token_nse": "4503", "token_bse": "526299", "yfinance": "MPHASIS.NS"},
     "TATAELXSI": {"name": "Tata Elxsi Ltd", "token_nse": "3417", "token_bse": "500408", "yfinance": "TATAELXSI.NS"},
     "KPITTECH": {"name": "KPIT Technologies Ltd", "token_nse": "1940", "token_bse": "542651", "yfinance": "KPITTECH.NS"},
+    "EXIDEIND": {"name": "Exide Industries Ltd", "token_nse": "676", "token_bse": "500086", "yfinance": "EXIDEIND.NS"},
+    "AMARARAJA": {"name": "Amara Raja Energy", "token_nse": "100", "token_bse": "500008", "yfinance": "ARE&M.NS"},
 }
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -1599,7 +1667,7 @@ with col_t2:
 with col_t3:
     st.metric("Broker API", "CONNECTED" if telemetry is not None else "STANDALONE", delta="Angel SmartAPI", delta_color="off")
 with col_t4:
-    st.metric("AI Core Engine", "ACTIVATED" if GEMINI_API_KEY else "RULES MODE", delta="Gemini Quantitative", delta_color="off")
+    st.metric("AI Core Engine", "ACTIVATED" if GEMINI_API_KEY else "RULES MODE", delta="Gemini 3.8 Flash", delta_color="off")
 
 # Sidebar Segment Switcher
 st.sidebar.header("⚙️ Trading Environment")
@@ -1610,36 +1678,48 @@ if st.sidebar.button("🔄 Force Refresh All Caches", use_container_width=True):
     st.rerun()
 
 # ==============================================================================
-# SEGMENT 1: EQUITY / SHARE SCANNER (WITH LIVE AUTO-POPUP PREDICTIVE SEARCH)
+# SEGMENT 1: EQUITY / SHARE SCANNER (WITH DYNAMIC AUTO-POPUP PREDICTIVE SEARCH)
 # ==============================================================================
 if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
     st.markdown("## 📈 Universal Equity / Cash Stock Intelligence")
     st.caption("Instant Auto-Popup Search • Live Running Price • Target & Risk Levels • News & Trailing Rules")
 
-    # Search Mode Selector
-    search_mode = st.radio(
-        "Search Method:",
-        ["⚡ Instant Auto-Popup Search (Type & Select from 120+ Shares)", "🔍 Custom Scrip Code / Penny Stock Search"],
-        horizontal=True,
+    exchange_select = st.selectbox("Preferred Exchange", ["NSE", "BSE"], index=0)
+
+    # 1. Search Query Box
+    query_text = st.text_input(
+        "🔍 Type any Stock Name or Symbol (e.g. Tata, Mazagon, Kalyan, Suzlon, Reliance, Zomato, SBI, 500325):",
+        value="",
+        placeholder="Type to filter stocks...",
+    ).strip().upper()
+
+    # 2. Filter Database in Real-Time
+    filtered_stocks = []
+    if query_text:
+        for sym, d in POPULAR_EQUITIES.items():
+            if query_text in sym or query_text in d["name"].upper():
+                filtered_stocks.append(f"{sym} — {d['name']}")
+
+        # If user typed an exact symbol not in popular list, offer it dynamically
+        clean_code = query_text.split()[0].replace("-EQ", "")
+        dynamic_custom = f"{clean_code} — {clean_code} (Custom Listed Scrip)"
+        if not any(f"{clean_code} " in item for item in filtered_stocks):
+            filtered_stocks.append(dynamic_custom)
+    else:
+        # Default top stocks when search box is empty
+        filtered_stocks = [f"{sym} — {details['name']}" for sym, details in list(POPULAR_EQUITIES.items())[:30]]
+
+    # 3. Dynamic Auto-Popup Selectbox
+    chosen_str = st.selectbox(
+        "🎯 Select Matched Stock (Auto-popups update as you type above):",
+        options=filtered_stocks,
+        index=0,
     )
 
-    exchange_select = st.selectbox("Preferred Exchange", ["NSE", "BSE"], index=0)
     selected_stock = None
-
-    if "Auto-Popup" in search_mode:
-        # Prepares clean formatted options for instant pop-up filtering
-        stock_options = [f"{sym} — {details['name']}" for sym, details in POPULAR_EQUITIES.items()]
-        
-        # User types here and matches instantly pop up in real-time
-        chosen_str = st.selectbox(
-            "🔍 Type Stock Name or Symbol (Suggestions will auto pop-up as you type):",
-            options=stock_options,
-            index=7, # Default: TATAMOTORS
-            help="Tap and type any company name or ticker (e.g., Tata, Suzlon, Zomato, Reliance, SBI, Adani, IRFC).",
-        )
-        
-        if chosen_str:
-            sym_key = chosen_str.split(" — ")[0]
+    if chosen_str:
+        sym_key = chosen_str.split(" — ")[0]
+        if sym_key in POPULAR_EQUITIES:
             d = POPULAR_EQUITIES[sym_key]
             selected_stock = {
                 "symbol": sym_key,
@@ -1648,19 +1728,14 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                 "exchange": exchange_select,
                 "yfinance": d["yfinance"],
             }
-    else:
-        custom_input = st.text_input(
-            "Enter Scrip Code or Exact Ticker (e.g., 500325, SUZLON-EQ, IDEA, YESBANK):",
-            value="SUZLON",
-        )
-        if custom_input:
-            clean_sym = custom_input.strip().upper().replace("-EQ", "")
+        else:
+            # Custom resolve
             selected_stock = {
-                "symbol": f"{clean_sym}-EQ",
-                "name": f"{clean_sym} Equity",
+                "symbol": f"{sym_key}-EQ",
+                "name": f"{sym_key} Equity",
                 "token": None,
                 "exchange": exchange_select,
-                "yfinance": f"{clean_sym}.{'NS' if exchange_select=='NSE' else 'BO'}",
+                "yfinance": f"{sym_key}.{'NS' if exchange_select=='NSE' else 'BO'}",
             }
 
     if selected_stock:
@@ -1779,6 +1854,7 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
 
         analysis_result = render_live_equity_view(selected_stock)
 
+        # AI Analyst Report with Fallback Engine
         if GEMINI_API_KEY and analysis_result:
             if st.button("🤖 GENERATE INSTITUTIONAL AI ANALYST REPORT FOR THIS SHARE", type="primary", use_container_width=True):
                 with st.spinner("Gemini Institutional AI Analyzing stock balance sheet, volume spikes, and technical setups..."):
@@ -1798,14 +1874,9 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                     2. Risk to reward analysis aur delivery vs swing trading guidelines.
                     3. Trailing stop-loss execution strategy.
                     """
-                    try:
-                        from google import genai
-                        client = genai.Client(api_key=GEMINI_API_KEY)
-                        resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-                        st.markdown("### 🤖 Institutional AI Equity Research Note")
-                        st.write(getattr(resp, "text", ""))
-                    except Exception as exc:
-                        st.error(f"AI Generation error: {exc}")
+                    ai_response = call_gemini_cascade(prompt)
+                    st.markdown("### 🤖 Institutional AI Equity Research Note")
+                    st.write(ai_response)
 
 # ==============================================================================
 # SEGMENT 2: INDEX & OPTIONS ADVISOR (FULLY RESTORED & ZERO-FLICKER)
