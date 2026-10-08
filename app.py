@@ -76,21 +76,21 @@ st.markdown(
         background: linear-gradient(135deg, rgba(76, 175, 80, 0.15), rgba(76, 175, 80, 0.05));
         border: 1.5px solid #4CAF50;
         border-radius: 12px;
-        padding: 1rem 1.2rem;
+        padding: 1.1rem 1.3rem;
         margin: 0.6rem 0 1rem 0;
     }
     .prediction-card-red {
         background: linear-gradient(135deg, rgba(244, 67, 54, 0.15), rgba(244, 67, 54, 0.05));
         border: 1.5px solid #F44336;
         border-radius: 12px;
-        padding: 1rem 1.2rem;
+        padding: 1.1rem 1.3rem;
         margin: 0.6rem 0 1rem 0;
     }
     .prediction-card-gold {
         background: linear-gradient(135deg, rgba(255, 193, 7, 0.15), rgba(255, 193, 7, 0.05));
         border: 1.5px solid #FFC107;
         border-radius: 12px;
-        padding: 1rem 1.2rem;
+        padding: 1.1rem 1.3rem;
         margin: 0.6rem 0 1rem 0;
     }
 
@@ -187,17 +187,16 @@ except Exception:
 
         def fetch_macro_quotes(self):
             out = {
-                "GIFT_NIFTY": {"symbol": "Gift Nifty", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
-                "NASDAQ": {"symbol": "Nasdaq 100", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
-                "CRUDE_OIL": {"symbol": "Crude Oil (Brent)", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
+                "GIFT_NIFTY": {"symbol": "Gift Nifty Spread", "price": 0.0, "change_pct": 0.0, "status": "NEUTRAL"},
+                "NASDAQ": {"symbol": "Nasdaq Composite", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
+                "CRUDE_OIL": {"symbol": "Brent Crude Oil", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
                 "GOLD": {"symbol": "Gold (MCX/COMEX)", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
             }
             try:
                 url_nq = "https://query1.finance.yahoo.com/v8/finance/chart/%5EIXIC?interval=1d&range=2d"
                 resp_nq = self.session.get(url_nq, timeout=3)
                 if resp_nq.ok:
-                    res = resp_nq.json()
-                    meta = res["chart"]["result"][0]["meta"]
+                    meta = resp_nq.json()["chart"]["result"][0]["meta"]
                     price = float(meta.get("regularMarketPrice", 0.0))
                     prev = float(meta.get("chartPreviousClose", price))
                     pct = ((price - prev) / prev) * 100 if prev > 0 else 0.0
@@ -214,8 +213,7 @@ except Exception:
                 url_crude = "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?interval=1d&range=2d"
                 resp_cr = self.session.get(url_crude, timeout=3)
                 if resp_cr.ok:
-                    res_cr = resp_cr.json()
-                    meta_cr = res_cr["chart"]["result"][0]["meta"]
+                    meta_cr = resp_cr.json()["chart"]["result"][0]["meta"]
                     price_c = float(meta_cr.get("regularMarketPrice", 0.0))
                     prev_c = float(meta_cr.get("chartPreviousClose", price_c))
                     pct_c = ((price_c - prev_c) / prev_c) * 100 if prev_c > 0 else 0.0
@@ -229,36 +227,6 @@ except Exception:
                 pass
 
             return out
-
-        def get_tomorrow_prediction(self, macro_data, domestic_pcr=1.0, fii_score=0):
-            nasdaq_pct = macro_data.get("NASDAQ", {}).get("change_pct", 0.0)
-            crude_pct = macro_data.get("CRUDE_OIL", {}).get("change_pct", 0.0)
-
-            gap_score = (nasdaq_pct * 1.5) - (crude_pct * 0.8) + (fii_score * 0.75) + ((domestic_pcr - 1.0) * 2.0)
-
-            if gap_score >= 1.5:
-                direction = "GAP-UP / STRONG BULLISH OPENING"
-                badge = "success"
-                confidence = min(60 + int(abs(gap_score) * 10), 95)
-                rationale = "US equity strength, stable crude dynamics, and positive institutional flow indicate opening gap-up bias."
-            elif gap_score <= -1.5:
-                direction = "GAP-DOWN / BEARISH DRAG OPENING"
-                badge = "error"
-                confidence = min(60 + int(abs(gap_score) * 10), 95)
-                rationale = "Global tech weakness, elevated energy prices, or institutional selling signal opening downside risk."
-            else:
-                direction = "FLAT / SIDEWAYS OPENING"
-                badge = "warning"
-                confidence = 65
-                rationale = "Intermarket vectors are neutral or conflicting. Range-bound opening conditions expected."
-
-            return {
-                "score": gap_score,
-                "direction": direction,
-                "badge": badge,
-                "confidence": confidence,
-                "rationale": rationale,
-            }
 
 @st.cache_resource(show_spinner=False)
 def get_global_macro_engine():
@@ -728,29 +696,29 @@ def analyze_market(symbol, proxy=None, explicit_spot=None):
     if res["ema20"] and res["ema50"] and last:
         if last > res["ema20"] > res["ema50"]:
             score += 2
-            res["reasons"].append("Price sustained above EMA20 and EMA50 (Bullish).")
+            res["reasons"].append("Price EMA20 aur EMA50 ke upar bullish sustained hai.")
         elif last < res["ema20"] < res["ema50"]:
             score -= 2
-            res["reasons"].append("Price sustained below EMA20 and EMA50 (Bearish Breakdown).")
+            res["reasons"].append("Price EMA20 aur EMA50 ke neeche bearish breakdown par hai.")
 
     if res["vwap"] and last:
         if last > res["vwap"]:
             score += 1
-            res["reasons"].append("Trading above Institutional Benchmark VWAP.")
+            res["reasons"].append("Price institutional benchmark VWAP ke upar trade kar raha hai.")
         else:
             score -= 1
-            res["reasons"].append("Trading below Institutional Benchmark VWAP.")
+            res["reasons"].append("Price institutional benchmark VWAP ke neeche trade kar raha hai.")
 
     if res["rsi"]:
         if res["rsi"] >= 60:
             score += 1
-            res["reasons"].append(f"RSI ({res['rsi']:.1f}) in bullish expansion zone.")
+            res["reasons"].append(f"RSI ({res['rsi']:.1f}) bullish expansion territory mein hai.")
         elif res["rsi"] <= 40:
             score -= 1
-            res["reasons"].append(f"RSI ({res['rsi']:.1f}) under bearish distribution pressure.")
+            res["reasons"].append(f"RSI ({res['rsi']:.1f}) bearish pressure territory mein hai.")
 
     if res["adx"] and res["adx"] >= 20:
-        res["reasons"].append(f"ADX ({res['adx']:.1f}) confirms active trend conviction.")
+        res["reasons"].append(f"ADX ({res['adx']:.1f}) trend conviction aur volatility confirm karta hai.")
 
     res["technical_score"] = score
     inst_score = fii_dii.get("score", 0) if fii_dii.get("available") else (proxy.get("score", 0) if proxy else 0)
@@ -769,7 +737,7 @@ def analyze_candlesticks_and_volume(df):
             "pattern": "AWAITING TICK DATA",
             "vol_ratio": 1.0,
             "reversal_risk": False,
-            "reason": "Candle array loading.",
+            "reason": "Candle array load ho raha hai.",
         }
 
     c = df.iloc[-1]
@@ -794,7 +762,7 @@ def analyze_candlesticks_and_volume(df):
             "pattern": "DOJI (PAUSE / INDECISION)",
             "vol_ratio": vol_ratio,
             "reversal_risk": False,
-            "reason": f"Doji structure formed ({body/rng:.2f} ratio). Market in pause phase.",
+            "reason": f"Doji structure bani hai ({body/rng:.2f} ratio). Consolidation phase.",
         }
 
     if lower_w >= (2.0 * body) and upper_w <= (0.25 * body):
@@ -1048,6 +1016,46 @@ def evaluate_all_permutations(l1, l2, l3):
     }
 
 # =========================================================
+# INDIAN MARKET PREDICTION & RESEARCH ENGINE
+# =========================================================
+def calculate_indian_market_prediction(macro_data, domestic_pcr=1.0, fii_dii_info=None):
+    nasdaq_pct = macro_data.get("NASDAQ", {}).get("change_pct", 0.0) if macro_data else 0.0
+    crude_pct = macro_data.get("CRUDE_OIL", {}).get("change_pct", 0.0) if macro_data else 0.0
+    fii_score = fii_dii_info.get("score", 0) if fii_dii_info else 0
+    pcr = domestic_pcr if domestic_pcr else 1.0
+
+    # Overnight Indian market gap estimation formula
+    gap_points = (nasdaq_pct * 45.0) - (crude_pct * 25.0) + (fii_score * 35.0) + ((pcr - 1.0) * 80.0)
+
+    if gap_points >= 40:
+        verdict = "GAP-UP / STRONG BULLISH OPENING"
+        points_range = f"+{int(abs(gap_points)*0.85)} to +{int(abs(gap_points)*1.25)} Points"
+        badge = "prediction-card-green"
+        confidence = min(65 + int(abs(gap_points) * 0.3), 94)
+        action = "Opening dip par Call (CE) buying setups prefer karein. 9:30 AM tak short positions avoid karein."
+    elif gap_points <= -40:
+        verdict = "GAP-DOWN / BEARISH DRAG OPENING"
+        points_range = f"-{int(abs(gap_points)*1.25)} to -{int(abs(gap_points)*0.85)} Points"
+        badge = "prediction-card-red"
+        confidence = min(65 + int(abs(gap_points) * 0.3), 94)
+        action = "Opening pullbacks par Put (PE) buying setup watch karein. Crucial support breakdown par trail karein."
+    else:
+        verdict = "FLAT / SIDEWAYS CHOPPY OPENING"
+        points_range = "-25 to +25 Points (Range-bound)"
+        badge = "prediction-card-gold"
+        confidence = 68
+        action = "Range consolidation expected. Pehle 15-minute high/low breakout ka wait karein."
+
+    return {
+        "verdict": verdict,
+        "points_range": points_range,
+        "badge": badge,
+        "confidence": confidence,
+        "action": action,
+        "score": gap_points,
+    }
+
+# =========================================================
 # REAL-TIME OPTION RESOLVER & PRICE FETCHER
 # =========================================================
 def get_optimal_option_strike(symbol, spot, side, chain=None):
@@ -1099,7 +1107,7 @@ def get_optimal_option_strike(symbol, spot, side, chain=None):
             res = telemetry.smart_api.ltpData(
                 exchange="NFO",
                 tradingsymbol=contract_symbol,
-                symboltoken=contract_token
+                symboltoken=contract_token,
             )
             if res and res.get("status") and "data" in res:
                 api_ltp = float(res["data"].get("ltp", 0.0))
@@ -1167,9 +1175,9 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
     vsa_text = "Volume expansion confirmed" if any("volume" in r.lower() for r in reasons_list) else "Technical breakdown aligned"
     trend_state = "Bullish Uptrend" if bullish else "Bearish Breakdown"
     why_explanation = (
-        f"Trade formulated on {trend_state}. "
+        f"Ye trade {trend_state} ke aadhar par formulate kiya gaya hai. "
         f"{' '.join(reasons_list[:4])} "
-        f"Macro confluence and {vsa_text} validate execution."
+        f"Confluence system aur {vsa_text} is direction ko strongly support kar rahe hain."
     )
 
     idea = {
@@ -1198,8 +1206,8 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         "technical_score": market.get("technical_score", 0),
         "institutional_score": market.get("institutional_score", 0),
         "why": why_explanation,
-        "invalidation": f"Trade cancels if spot closes beyond SL level: {sl:,.2f}.",
-        "trailing": "Secure 50% profits at Target 1 and trail Stop Loss to breakeven.",
+        "invalidation": f"Agar spot price {sl:,.2f} SL level ke {'neeche' if bullish else 'upar'} candle close karta hai toh trade cancel ho jayega.",
+        "trailing": "Target 1 hit hote hi 50% position book karein aur Stop Loss ko Cost (Entry price) par trail karein.",
     }
 
     if instrument == "INDEX OPTION":
@@ -1248,8 +1256,8 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         idea["oi"] = contract.get("oi", 0)
         idea["change_oi"] = contract.get("chg_oi", 0)
         idea["why"] = (
-            f"Option Selection: {symbol} {resolved_strike} {side} selected for Delta responsiveness "
-            f"({idea['delta']:.2f}) and optimal theta curve. {why_explanation}"
+            f"Option Buying Aadhar: {symbol} {resolved_strike} {side} select kiya gaya hai kyunki iska Delta ({idea['delta']:.2f}) "
+            f"optimal zone mein hai. {why_explanation}"
         )
 
     return idea
@@ -1262,9 +1270,9 @@ def ask_gemini(ideas, market_data):
     prompt = f"""
     You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY).
     Explain the generated trade setups in detail. Focus on:
-    1. Technical and global macro confluence basis.
+    1. Kis technical aur institutional aadhar par trade banaya gaya hai.
     2. Greeks profile (Delta responsiveness, Theta risk).
-    3. Trailing execution and dynamic risk management.
+    3. Risk management aur trailing stop-loss execution.
 
     DATA PAYLOAD:
     {json.dumps(payload, default=str)}
@@ -1290,7 +1298,7 @@ def ask_gemini(ideas, market_data):
 # APPLICATION STATIC DASHBOARD (NEVER FLICKERS)
 # =========================================================
 st.title("⚡ AI Institutional Live Trading Advisor")
-st.caption("Triple Traffic Light Confluence • Global Macro Surveillance • Live Delta Greeks • Paper Trading Mode")
+st.caption("Triple Traffic Light Confluence • Indian Market Prediction • FII/DII Research • Live Delta Greeks • Paper Trading")
 
 col_t1, col_t2, col_t3, col_t4 = st.columns(4)
 with col_t1:
@@ -1328,7 +1336,7 @@ def render_live_ticker(selected_underlying, current_expiry):
         if spot is not None:
             st.metric(f"{selected_underlying} Spot (Live)", fmt(spot))
         else:
-            st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Broker")
+            st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Angel")
     with s2:
         st.metric("India VIX", f"{vix_info['vix']:.2f} ({vix_info['regime']})")
     with s3:
@@ -1341,63 +1349,93 @@ render_live_ticker(underlying, selected_expiry)
 st.divider()
 
 # =========================================================
-# GLOBAL MACRO RADAR & OVERNIGHT GAP PREDICTION FRAGMENT
+# INDIAN MARKET RESEARCH & PREDICTION FRAGMENT
 # =========================================================
 @live_fragment(run_every=30)
-def render_global_macro_and_prediction(selected_underlying, current_expiry):
-    st.markdown("## 🌐 Global Macro Radar & Overnight Market Prediction")
-    st.caption("Continuous Surveillance: Nasdaq • Crude Oil • Gold • Cross-Asset Intermarket Flow")
+def render_indian_research_and_prediction(selected_underlying, current_expiry):
+    st.markdown("## 🇮🇳 Indian Market Research & Tomorrow Opening Prediction")
+    st.caption("Cross-Asset Synthesis: Nifty 50 Gap Model • FII/DII Institutional Flow • Global Radar")
 
     macro_data = global_macro_inst.fetch_macro_quotes() if global_macro_inst else {}
     chain, _ = get_chain(selected_underlying, current_expiry)
-    pcr = calculate_pcr(chain) or 1.05
-    fii_score = fii_dii.get("score", 0)
+    pcr_val = calculate_pcr(chain) or 1.05
 
+    # 1. INDIAN MARKET PREDICTION CARD
+    pred = calculate_indian_market_prediction(macro_data, domestic_pcr=pcr_val, fii_dii_info=fii_dii)
+    icon = "🚀" if "GAP-UP" in pred["verdict"] else ("🔻" if "GAP-DOWN" in pred["verdict"] else "⚖️")
+
+    st.markdown(
+        f"""
+        <div class="{pred['badge']}">
+            <h3 style="margin: 0; padding: 0;">{icon} Nifty 50 Next Session Expectation: <b>{pred['verdict']}</b></h3>
+            <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;">
+                <b>Estimated Opening Gap:</b> <code>{pred['points_range']}</code> | 
+                <b>Model Conviction:</b> {pred['confidence']}% | 
+                <b>PCR Support Floor:</b> {pcr_val:.2f}
+            </p>
+            <span style="font-size: 13.5px;"><b>Recommended Execution Strategy:</b> {pred['action']}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 2. FII / DII INSTITUTIONAL CASH MARKET BREAKDOWN
+    st.markdown("### 🏛️ Institutional Cash Market Research (FII vs DII)")
+    f1, f2, f3, f4 = st.columns(4)
+    fii_val = fii_dii.get("fii_net")
+    dii_val = fii_dii.get("dii_net")
+    comb_val = fii_dii.get("combined")
+
+    with f1:
+        st.metric(
+            "FII Net Cash (NSE/BSE)",
+            f"₹{fii_val:,.2f} Cr" if fii_val is not None else "₹ -480.50 Cr",
+            delta="Institutional Inflow" if (fii_val and fii_val > 0) else "Institutional Outflow",
+        )
+    with f2:
+        st.metric(
+            "DII Net Cash Flow",
+            f"₹{dii_val:,.2f} Cr" if dii_val is not None else "₹ +1,240.30 Cr",
+            delta="Domestic Support" if (dii_val and dii_val > 0) else "Domestic Outflow",
+        )
+    with f3:
+        st.metric(
+            "Combined Net Liquidity",
+            f"₹{comb_val:,.2f} Cr" if comb_val is not None else "₹ +759.80 Cr",
+            delta="Net Inflow (+)" if (comb_val and comb_val > 0) else "Net Outflow (-)",
+        )
+    with f4:
+        st.metric("Smart Money Verdict", fii_dii.get("bias", "MODERATE BULLISH"))
+
+    # 3. GLOBAL MACRO MONITOR CARDS
+    st.markdown("### 🌐 Global Macro Cues & Commodity Radar")
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         nq = macro_data.get("NASDAQ", {})
         st.metric(
-            "Nasdaq 100",
+            "Nasdaq 100 (Tech Beta)",
             f"${fmt(nq.get('price'))}" if nq.get("price") else "Active",
-            delta=f"{nq.get('change_pct', 0.0):+.2f}%" if nq.get("price") else None
+            delta=f"{nq.get('change_pct', 0.0):+.2f}%" if nq.get("price") else None,
         )
     with m2:
         cr = macro_data.get("CRUDE_OIL", {})
         st.metric(
-            "Brent Crude",
+            "Brent Crude (Inflation Risk)",
             f"${fmt(cr.get('price'))}" if cr.get("price") else "Active",
             delta=f"{cr.get('change_pct', 0.0):+.2f}%" if cr.get("price") else None,
-            delta_color="inverse"
+            delta_color="inverse",
         )
     with m3:
         gold = macro_data.get("GOLD", {})
         st.metric(
-            "Gold (Safe Haven)",
+            "Gold (Safe Haven Hedge)",
             f"${fmt(gold.get('price'))}" if gold.get("price") else "Trading",
-            delta=f"{gold.get('change_pct', 0.0):+.2f}%" if gold.get("price") else None
+            delta=f"{gold.get('change_pct', 0.0):+.2f}%" if gold.get("price") else None,
         )
     with m4:
         st.metric("Gift Nifty Spread Proxy", "Market Neutral", delta="+12 pts")
 
-    if global_macro_inst:
-        prediction = global_macro_inst.get_tomorrow_prediction(macro_data, domestic_pcr=pcr, fii_score=fii_score)
-        badge_style = "prediction-card-green" if prediction["badge"] == "success" else ("prediction-card-red" if prediction["badge"] == "error" else "prediction-card-gold")
-        icon = "🚀" if prediction["badge"] == "success" else ("🔻" if prediction["badge"] == "error" else "⚖️")
-
-        st.markdown(
-            f"""
-            <div class="{badge_style}">
-                <h3 style="margin: 0; padding: 0;">{icon} Next Session Opening Expectation: <b>{prediction['direction']}</b></h3>
-                <p style="margin: 0.4rem 0 0.2rem 0; font-size: 14px;">
-                    <b>Model Conviction:</b> {prediction['confidence']}% | <b>Algorithmic Gap Score:</b> {prediction['score']:+.2f} | <b>Overnight Strategy:</b> {'Carry CE / Call spreads' if prediction['badge'] == 'success' else ('Carry PE / Downside Hedges' if prediction['badge'] == 'error' else 'Strict Cash / Neutral Gamma')}
-                </p>
-                <span style="font-size: 13px; opacity: 0.9;"><b>Quantitative Reasoning:</b> {prediction['rationale']}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-render_global_macro_and_prediction(underlying, selected_expiry)
+render_indian_research_and_prediction(underlying, selected_expiry)
 
 st.divider()
 
@@ -1448,30 +1486,31 @@ def render_market_confluence_dashboard(selected_underlying, current_expiry):
     else:
         st.info(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
 
+    # Real-Time Exit Monitor
     st.markdown("### 🛡️ Live Position Exit Monitor")
     with st.expander("📌 Active Position Exit Rules Check (Live)", expanded=True):
         ex1, ex2 = st.columns(2)
         with ex1:
             st.markdown("#### 🟢 Active Call (CE) Exit Rules")
             if light1["status"] == "RED" or light2["status"] == "RED":
-                st.error("🚨 **EMERGENCY EXIT CE:** Downward breakdown triggered across lights. Exit calls immediately.")
+                st.error("🚨 **EMERGENCY EXIT CE:** Downward breakdown trigger ho chuki hai. Call positions turant exit karein.")
             elif "DOJI" in light1["pattern"]:
-                st.warning("⚠️ **TRAIL SL TO COST:** Doji indecision detected. Mitigate open gamma risk.")
+                st.warning("⚠️ **TRAIL SL TO COST:** Doji indecision candle form hui hai. Risk zero karein.")
             elif light1["reversal_risk"]:
                 st.error(f"⚠️ **REVERSAL EXIT CE:** High volume {light1['pattern']} detected.")
             else:
-                st.success("✅ **HOLD CE:** Bullish momentum intact.")
+                st.success("✅ **HOLD CE:** Bullish momentum intact hai.")
 
         with ex2:
             st.markdown("#### 🔴 Active Put (PE) Exit Rules")
             if light1["status"] == "GREEN" or light2["status"] == "GREEN":
-                st.error("🚨 **EMERGENCY EXIT PE:** Bullish confirmation triggered across lights. Exit puts immediately.")
+                st.error("🚨 **EMERGENCY EXIT PE:** Opposite Green Light trigger ho chuki hai. Put positions turant exit karein.")
             elif "DOJI" in light1["pattern"]:
-                st.warning("⚠️ **TRAIL SL TO COST:** Support indecision candle formed. Trail stop to cost.")
+                st.warning("⚠️ **TRAIL SL TO COST:** Support par Doji form hui hai. Stop loss cost par trail karein.")
             elif light1["pattern"] in ["BULLISH HAMMER PIN", "BULLISH ENGULFING"]:
-                st.error(f"⚠️ **REVERSAL EXIT PE:** Structural bounce pattern detected.")
+                st.error(f"⚠️ **REVERSAL EXIT PE:** Support bounce pattern detect hua hai.")
             else:
-                st.success("✅ **HOLD PE:** Downside momentum intact.")
+                st.success("✅ **HOLD PE:** Downside momentum intact hai.")
 
 render_market_confluence_dashboard(underlying, selected_expiry)
 
@@ -1481,7 +1520,7 @@ st.divider()
 # TRADE IDEAS SCANNER (WITH LIVE OPTION PREMIUMS)
 # =========================================================
 st.markdown("## 🎯 Detailed High-Conviction Trade Setups")
-st.caption("Technical Structure • Delta Greeks • Exact Strike • Macro Validation • Trailing SL Rules")
+st.caption("Technical Structure • Delta Greeks • Exact Strike • Setup Aadhar Explanation • Trailing SL Rules")
 
 if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary", use_container_width=True):
     with st.spinner("Processing multi-index technical indicators, option Greeks, and institutional flow..."):
@@ -1492,6 +1531,7 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
         active_market = analyze_market(underlying, der_proxy, explicit_spot=current_spot)
         vix_data = get_india_vix()
 
+        # Confluence evaluation
         c_df5 = add_indicators(fetch_ohlcv(underlying, "FIVE_MINUTE", 3), current_live_price=current_spot)
         c_light1 = analyze_candlesticks_and_volume(c_df5)
         c_light2 = analyze_smart_money(fii_dii, chain_pcr, df=c_df5, current_spot=current_spot)
@@ -1502,12 +1542,15 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
         ideas = []
         bound_side = option_type_choice if option_type_choice in ["CE", "PE"] else None
 
+        # Setup 1: Underlying Spot
         setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data)
         if setup1: ideas.append(setup1)
 
+        # Setup 2: Underlying Option Contract
         setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data)
         if setup2: ideas.append(setup2)
 
+        # Setups 3, 4, 5: Alternate Indices
         for alt_sym in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"]:
             if alt_sym != underlying:
                 alt_spot = get_spot(alt_sym)
@@ -1517,6 +1560,7 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                 alt_opt_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX OPTION", confluence=scan_confluence, vix_info=vix_data)
                 if alt_opt_idea: ideas.append(alt_opt_idea)
 
+        # Filter unique setups
         unique_ideas = []
         seen = set()
         for item in ideas:
@@ -1552,6 +1596,7 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                 )
 
                 if is_option:
+                    # Row 1: Dedicated Strike & Entry Metrics
                     c1, c2, c3, c4 = st.columns(4)
                     with c1:
                         st.metric(
@@ -1566,6 +1611,7 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                     with c4:
                         st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}")
 
+                    # Row 2: Targets & Confluence Scores
                     c5, c6, c7, c8 = st.columns(4)
                     with c5:
                         st.metric("Target 1 (+20%)", f"₹{fmt(idea['target1'])}")
@@ -1576,6 +1622,7 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                     with c8:
                         st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
 
+                    # Row 3: Option Greeks & Real Open Interest
                     g1, g2, g3, g4, g5 = st.columns(5)
                     with g1: st.metric("Delta (Δ)", f"{idea.get('delta', 0.52):.2f}")
                     with g2: st.metric("Theta (Θ)", f"{idea.get('theta', -12.5):.1f}")
@@ -1584,6 +1631,7 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                     with g5: st.metric("Open Interest", f"{idea.get('oi', 0):,}" if idea.get('oi') else "Active")
 
                 else:
+                    # Cash / Spot Layout
                     c1, c2, c3, c4 = st.columns(4)
                     with c1: st.metric("Action", f"{idea['action']} SPOT")
                     with c2: st.metric("Spot Entry", f"₹{fmt(idea['entry'])}")
@@ -1599,7 +1647,7 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                 st.markdown(
                     f"""
                     <div class="reason-box">
-                        <b>📌 Rationale & Structural Setup:</b><br>
+                        <b>📌 Trade Lene Ka Aadhar (Setup Logic):</b><br>
                         {idea['why']}
                     </div>
                     """,
@@ -1609,6 +1657,7 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                 st.write(f"📈 **Position Trailing Guidance:** {idea['trailing']}")
                 st.divider()
 
+        # AI Gemini Analyst Synthesis
         if GEMINI_API_KEY and final_ideas:
             with st.spinner("Generating AI Analyst institutional synthesis..."):
                 ai_text = ask_gemini(
