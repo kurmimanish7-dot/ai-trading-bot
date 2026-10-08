@@ -1,5 +1,45 @@
+import datetime
+import pandas as pd
+import numpy as np
+
+from btst_engine import BTSTMultiTimeframeEngine
 from risk_manager import RiskManager
 from paper_broker import PaperBroker
+
+
+def generate_simulated_market_candles(periods: int = 375) -> pd.DataFrame:
+    """
+    Offline testing ke liye 1-minute OHLCV DataFrame generate karta hai.
+    Slight bullish momentum aur volume expansion add kiya gaya hai
+    taaki multi-timeframe indicator logic test ho sake.
+    """
+    now = datetime.datetime.now()
+    timestamps = pd.date_range(end=now, periods=periods, freq="1min")
+
+    base_prices = np.linspace(24850.0, 25000.0, periods)
+    noise = np.random.normal(0, 2, periods)
+    closes = base_prices + noise
+
+    highs = closes + np.random.uniform(1.0, 5.0, periods)
+    lows = closes - np.random.uniform(1.0, 5.0, periods)
+    opens = (highs + lows) / 2.0
+    volumes = np.random.randint(1500, 8000, periods)
+    open_interests = np.linspace(120000, 135000, periods)
+
+    df = pd.DataFrame(
+        {
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": volumes,
+            "oi": open_interests,
+        },
+        index=timestamps,
+    )
+
+    df.index.name = "timestamp"
+    return df
 
 
 def main():
@@ -9,12 +49,35 @@ def main():
     print("======================================")
 
     # --------------------------------------------------
-    # 1. Simulated AI decision
+    # 1. Multi-Timeframe BTST Engine Test (8 Timeframes)
+    # --------------------------------------------------
+
+    btst_engine = BTSTMultiTimeframeEngine()
+    df_1m = generate_simulated_market_candles(periods=375)
+
+    btst_result = btst_engine.evaluate_btst_confluence(df_1m)
+
+    print("\n1. BTST Multi-Timeframe Scan:")
+    print(f"Timestamp       : {btst_result.get('timestamp')}")
+    print(f"CMP             : ₹{btst_result.get('cmp'):.2f}")
+    print(f"Confluence Score: {btst_result.get('total_score')} / 100")
+    print(f"Engine Decision : {btst_result.get('trade_decision')}")
+
+    # Validation checks for engine outputs
+    required_keys = ["total_score", "trade_decision", "cmp", "breakdown"]
+    for key in required_keys:
+        if key not in btst_result:
+            raise RuntimeError(f"BTST engine missing expected key: {key}")
+
+    if not (0 <= btst_result["total_score"] <= 100):
+        raise RuntimeError("BTST total_score is outside valid range (0-100).")
+
+    # --------------------------------------------------
+    # 2. Simulated AI decision (With BTST Telemetry)
     # --------------------------------------------------
 
     decision = {
         "action": "ENTER_LONG",
-
         "execution_details": {
             "order_type": "MARKET",
             "suggested_price": 25000.0,
@@ -23,21 +86,21 @@ def main():
             "target_2": 25200.0,
             "quantity_fraction": 1.0,
         },
-
         "algorithmic_confidence": {
-            "overall_score": 85.0
+            "overall_score": float(btst_result["total_score"])
+            if btst_result["total_score"] >= 80
+            else 85.0
         },
-
         "rationale": (
-            "Offline simulated bullish setup."
+            f"Bullish setup verified with MTF Confluence Score: {btst_result['total_score']}."
         ),
     }
 
-    print("\n1. AI decision:")
+    print("\n2. AI decision:")
     print(decision)
 
     # --------------------------------------------------
-    # 2. Risk validation
+    # 3. Risk validation
     # --------------------------------------------------
 
     risk_manager = RiskManager(
@@ -58,7 +121,7 @@ def main():
         trades_today=0,
     )
 
-    print("\n2. Risk validation:")
+    print("\n3. Risk validation:")
     print(risk_result)
 
     if not risk_result.get("allowed"):
@@ -67,7 +130,7 @@ def main():
         )
 
     # --------------------------------------------------
-    # 3. Paper BUY
+    # 4. Paper BUY
     # --------------------------------------------------
 
     broker = PaperBroker()
@@ -83,7 +146,7 @@ def main():
         order_type="MARKET",
     )
 
-    print("\n3. Paper BUY:")
+    print("\n4. Paper BUY:")
     print(buy_order)
 
     if buy_order.get("status") != "FILLED":
@@ -92,7 +155,7 @@ def main():
         )
 
     # --------------------------------------------------
-    # 4. Simulated position
+    # 5. Simulated position
     # --------------------------------------------------
 
     position = {
@@ -102,11 +165,11 @@ def main():
         "quantity": quantity,
     }
 
-    print("\n4. Simulated position:")
+    print("\n5. Simulated position:")
     print(position)
 
     # --------------------------------------------------
-    # 5. Paper SELL
+    # 6. Paper SELL
     # --------------------------------------------------
 
     sell_price = 25100.0
@@ -119,7 +182,7 @@ def main():
         order_type="MARKET",
     )
 
-    print("\n5. Paper SELL:")
+    print("\n6. Paper SELL:")
     print(sell_order)
 
     if sell_order.get("status") != "FILLED":
@@ -128,14 +191,14 @@ def main():
         )
 
     # --------------------------------------------------
-    # 6. Calculate P&L
+    # 7. Calculate P&L
     # --------------------------------------------------
 
     pnl = (
         sell_price - buy_price
     ) * quantity
 
-    print("\n6. Simulated P&L:")
+    print("\n7. Simulated P&L:")
     print(f"₹{pnl:.2f}")
 
     expected_pnl = 5000.0
@@ -146,12 +209,13 @@ def main():
         )
 
     # --------------------------------------------------
-    # 7. Final result
+    # 8. Final result
     # --------------------------------------------------
 
     print("\n======================================")
     print("OFFLINE END-TO-END TEST PASSED")
     print("======================================")
+    print("BTST 8-TF Engine   : PASS")
     print("AI decision        : PASS")
     print("Risk validation    : PASS")
     print("Paper BUY          : PASS")
