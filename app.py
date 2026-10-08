@@ -78,6 +78,19 @@ st.markdown(
 )
 
 # =========================================================
+# FRAGMENT COMPATIBILITY (PREVENTS FULL PAGE BREATHING)
+# =========================================================
+if hasattr(st, "fragment"):
+    live_fragment = st.fragment
+elif hasattr(st, "experimental_fragment"):
+    live_fragment = st.experimental_fragment
+else:
+    def live_fragment(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
+# =========================================================
 # OPTIONAL ENGINE IMPORTS WITH FAIL-SAFE FALLBACKS
 # =========================================================
 try:
@@ -233,7 +246,6 @@ options_engine = create_options()
 
 UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"]
 
-# Angel One Official Instrument Specs
 INDEX_METADATA = {
     "NIFTY": {
         "exchange": "NSE",
@@ -290,16 +302,11 @@ def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=3):
         rename = {}
         for c in df.columns:
             lc = str(c).lower()
-            if lc in ["open", "o"]:
-                rename[c] = "open"
-            elif lc in ["high", "h"]:
-                rename[c] = "high"
-            elif lc in ["low", "l"]:
-                rename[c] = "low"
-            elif lc in ["close", "c", "ltp"]:
-                rename[c] = "close"
-            elif lc in ["volume", "vol"]:
-                rename[c] = "volume"
+            if lc in ["open", "o"]: rename[c] = "open"
+            elif lc in ["high", "h"]: rename[c] = "high"
+            elif lc in ["low", "l"]: rename[c] = "low"
+            elif lc in ["close", "c", "ltp"]: rename[c] = "close"
+            elif lc in ["volume", "vol"]: rename[c] = "volume"
         df = df.rename(columns=rename)
 
         needed = ["open", "high", "low", "close"]
@@ -311,10 +318,7 @@ def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=3):
         return pd.DataFrame()
 
 def get_spot(symbol):
-    """
-    Direct live LTP fetch from Angel One REST API.
-    Does NOT fall back to historical candle close to prevent Monday stale data.
-    """
+    """Direct live LTP fetch without falling back to historical Monday candle close."""
     if telemetry is None or symbol not in INDEX_METADATA:
         return None
 
@@ -322,7 +326,6 @@ def get_spot(symbol):
     exchange = meta["exchange"]
     tradingsymbol = meta["symbol"]
 
-    # 1. Direct query to Angel One ltpData
     for token in meta["live_tokens"]:
         try:
             if hasattr(telemetry, "smart_api") and telemetry.smart_api:
@@ -338,7 +341,6 @@ def get_spot(symbol):
         except Exception:
             pass
 
-    # 2. Telemetry helper fallback
     try:
         res = telemetry.get_ltp(tradingsymbol)
         val = num(res.get("ltp") if isinstance(res, dict) else res)
@@ -349,9 +351,6 @@ def get_spot(symbol):
 
     return None
 
-# =========================================================
-# INDIA VIX VOLATILITY PROFILE
-# =========================================================
 def get_india_vix():
     vix = get_spot("INDIA_VIX")
     if vix is None:
@@ -372,9 +371,6 @@ def get_india_vix():
 
     return {"vix": vix, "regime": regime, "sl_multiplier": sl_multiplier}
 
-# =========================================================
-# INSTITUTIONAL FLOW & BLOCK DEALS
-# =========================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_fii_dii():
     fii_net, dii_net = None, None
@@ -412,9 +408,6 @@ def fetch_fii_dii():
 
 fii_dii = fetch_fii_dii()
 
-# =========================================================
-# EXPIRIES & OPTIONS CHAIN
-# =========================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def load_expiries(symbol):
     if options_engine is None:
@@ -464,15 +457,11 @@ def calculate_live_derivatives_proxy(chain, pcr):
     bias = "BULLISH" if score > 0 else ("BEARISH" if score < 0 else "NEUTRAL")
     return {"available": True, "score": score, "bias": bias}
 
-# =========================================================
-# TECHNICAL INDICATORS ENGINE
-# =========================================================
 def add_indicators(df, current_live_price=None):
     if df is None or df.empty:
         return pd.DataFrame()
     df = df.copy()
 
-    # Update latest candle close with active live tick
     if current_live_price and current_live_price > 0:
         last_idx = df.index[-1]
         df.at[last_idx, "close"] = current_live_price
@@ -585,11 +574,7 @@ def analyze_market(symbol, proxy=None, explicit_spot=None):
     res["trend"] = "BULLISH" if res["score"] >= 3 else ("BEARISH" if res["score"] <= -3 else "SIDEWAYS")
     return res
 
-# =========================================================
-# TRAFFIC LIGHT CONFLUENCE ENGINES
-# =========================================================
 def analyze_candlesticks_and_volume(df):
-    """LIGHT 1: Candlestick Pattern Recognition & Volume Spread Analysis"""
     if df is None or len(df) < 5:
         return {
             "status": "YELLOW",
@@ -678,7 +663,6 @@ def analyze_candlesticks_and_volume(df):
     }
 
 def analyze_smart_money(fii_dii_data, pcr_val):
-    """LIGHT 2: Institutional FII/DII Cash Flow & Options Put-Call Ratio"""
     score = 0
     notes = []
     if pcr_val is not None:
@@ -708,7 +692,6 @@ def analyze_smart_money(fii_dii_data, pcr_val):
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_news_sentiment():
-    """LIGHT 3: Live Macro News Feed & Sentiment Polarity"""
     rss_url = "https://news.google.com/rss/search?q=Indian+stock+market+Nifty&hl=en-IN&gl=IN&ceid=IN:en"
     headlines = []
     try:
@@ -798,9 +781,6 @@ def evaluate_all_permutations(l1, l2, l3):
         "rationale": "Market consolidation ya Doji candle phase mein hai. Directional edge absent hai.",
     }
 
-# =========================================================
-# DETAILED MULTI-TRADE IDEA GENERATOR ENGINE
-# =========================================================
 def get_optimal_option_strike(symbol, spot, side, chain=None):
     step = 50 if symbol in ["NIFTY", "FINNIFTY"] else 100
     base_strike = int(round(spot / step) * step)
@@ -952,9 +932,6 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
 
     return idea
 
-# =========================================================
-# AI GEMINI SYNTHESIS ENGINE
-# =========================================================
 def ask_gemini(ideas, market_data):
     if not GEMINI_API_KEY:
         return None
@@ -988,7 +965,7 @@ def ask_gemini(ideas, market_data):
         return f"AI explanation unavailable: {e}"
 
 # =========================================================
-# APPLICATION DASHBOARD RENDERING
+# APPLICATION STATIC DASHBOARD (NEVER FLICKERS)
 # =========================================================
 st.title("⚡ AI Institutional Live Trading Advisor")
 st.caption("Triple Traffic Light Confluence • Live Delta Greeks • 4-5 High Conviction Trade Ideas • Paper Trading Only")
@@ -1010,145 +987,152 @@ expiries = load_expiries(underlying)
 selected_expiry = st.sidebar.selectbox("Target Expiry", expiries, format_func=expiry_label) if expiries else None
 option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-# Live Auto-Refresh Stream Settings
-st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Live Market Stream")
-auto_stream = st.sidebar.checkbox("Continuous Live Stream", value=True)
-refresh_rate = st.sidebar.slider("Refresh Interval (Seconds)", min_value=2, max_value=15, value=3)
-
-if st.sidebar.button("🔄 Force Refresh Now", use_container_width=True):
+if st.sidebar.button("🔄 Force Refresh All Caches", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
-# SPOT PRICE CALCULATION (Live with zero Monday stale fallback)
-spot = get_spot(underlying)
-chain, _ = get_chain(underlying, selected_expiry, spot)
-pcr = calculate_pcr(chain)
-proxy = calculate_live_derivatives_proxy(chain, pcr)
-vix_info = get_india_vix()
-market = analyze_market(underlying, proxy, explicit_spot=spot)
+# =========================================================
+# ISOLATED LIVE STREAMING FRAGMENT (UPDATES IN-PLACE)
+# =========================================================
+# run_every=3s triggers updates ONLY inside this block.
+# The outer page, CSS, sidebar, and trade buttons NEVER reload or breathe.
+@live_fragment(run_every=3)
+def render_live_market_dashboard(selected_underlying, current_expiry):
+    spot = get_spot(selected_underlying)
+    chain, _ = get_chain(selected_underlying, current_expiry, spot)
+    pcr = calculate_pcr(chain)
+    proxy = calculate_live_derivatives_proxy(chain, pcr)
+    vix_info = get_india_vix()
 
-# Header Metric Row
-s1, s2, s3, s4 = st.columns(4)
-with s1:
-    if spot is not None:
-        st.metric(f"{underlying} Spot (Live)", fmt(spot))
+    # Header Metric Row
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        if spot is not None:
+            st.metric(f"{selected_underlying} Spot (Live)", fmt(spot))
+        else:
+            st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Angel")
+    with s2:
+        st.metric("India VIX", f"{vix_info['vix']:.2f} ({vix_info['regime']})")
+    with s3:
+        st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "1.12")
+    with s4:
+        st.metric("FII/DII Net Bias", fii_dii.get("bias", "NEUTRAL"))
+
+    st.divider()
+
+    # Traffic Light Confluence
+    st.markdown("## 🚦 Triple Traffic Light Confluence System")
+    df5 = add_indicators(fetch_ohlcv(selected_underlying, "FIVE_MINUTE", 3), current_live_price=spot)
+    light1 = analyze_candlesticks_and_volume(df5)
+    light2 = analyze_smart_money(fii_dii, pcr)
+    light3 = fetch_news_sentiment()
+    confluence = evaluate_all_permutations(light1, light2, light3)
+
+    icon_map = {"GREEN": "🟢 GREEN", "RED": "🔴 RED", "YELLOW": "🟡 YELLOW"}
+
+    tl1, tl2, tl3 = st.columns(3)
+    with tl1:
+        st.markdown(f'<div class="light-box"><h3>{icon_map[light1["status"]]}</h3><b>Light 1: Price Action</b><br><span style="font-size:12px;">Candlestick Patterns & Volume</span></div>', unsafe_allow_html=True)
+        st.write(f"**Pattern:** {light1['pattern']}")
+        st.write(f"**Volume Factor:** {light1['vol_ratio']:.2f}x")
+        st.caption(light1["reason"])
+
+    with tl2:
+        st.markdown(f'<div class="light-box"><h3>{icon_map[light2["status"]]}</h3><b>Light 2: Smart Money</b><br><span style="font-size:12px;">FII/DII Cash & Options PCR</span></div>', unsafe_allow_html=True)
+        st.write(f"**Institutional Skew:** {fii_dii.get('bias', 'NEUTRAL')}")
+        st.write(f"**PCR Level:** {fmt(pcr, 2) if pcr else 'N/A'}")
+        st.caption(light2["reason"])
+
+    with tl3:
+        st.markdown(f'<div class="light-box"><h3>{icon_map[light3["status"]]}</h3><b>Light 3: Macro News</b><br><span style="font-size:12px;">Headlines Polarity Score</span></div>', unsafe_allow_html=True)
+        st.write(f"**Macro Summary:** {light3['summary']}")
+        st.write(f"**Factor:** {light3['score']:+d}")
+        st.caption(light3["reason"])
+
+    st.write("")
+
+    if confluence["badge"] == "success":
+        st.success(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
+    elif confluence["badge"] == "error":
+        st.error(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
     else:
-        st.metric(f"{underlying} Spot", "Awaiting Tick...", delta="Connecting Angel")
-with s2:
-    st.metric("India VIX", f"{vix_info['vix']:.2f} ({vix_info['regime']})")
-with s3:
-    st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "1.12")
-with s4:
-    st.metric("FII/DII Net Bias", fii_dii.get("bias", "NEUTRAL"))
+        st.info(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
+
+    # Real-Time Exit Monitor
+    st.markdown("### 🛡️ Live Position Exit Monitor")
+    with st.expander("📌 Active Position Exit Rules Check (Live)", expanded=True):
+        ex1, ex2 = st.columns(2)
+        with ex1:
+            st.markdown("#### 🟢 Active Call (CE) Exit Rules")
+            if light1["status"] == "RED" or light2["status"] == "RED":
+                st.error("🚨 **EMERGENCY EXIT CE:** Opposite Red Light trigger ho chuki hai. Position turant exit karein.")
+            elif "DOJI" in light1["pattern"]:
+                st.warning("⚠️ **TRAIL SL TO COST:** Doji indecision candle form hui hai. Risk zero karein.")
+            elif light1["reversal_risk"]:
+                st.error(f"⚠️ **REVERSAL EXIT CE:** High volume {light1['pattern']} detected at resistance.")
+            else:
+                st.success("✅ **HOLD CE:** Trend aur institutional flows aligned hain.")
+
+        with ex2:
+            st.markdown("#### 🔴 Active Put (PE) Exit Rules")
+            if light1["status"] == "GREEN" or light2["status"] == "GREEN":
+                st.error("🚨 **EMERGENCY EXIT PE:** Opposite Green Light trigger ho chuki hai. Position turant exit karein.")
+            elif "DOJI" in light1["pattern"]:
+                st.warning("⚠️ **TRAIL SL TO COST:** Support par Doji form hui hai. Stop loss cost par trail karein.")
+            elif light1["pattern"] in ["BULLISH HAMMER PIN", "BULLISH ENGULFING"]:
+                st.error(f"⚠️ **REVERSAL EXIT PE:** High volume {light1['pattern']} support bounce detect hua hai.")
+            else:
+                st.success("✅ **HOLD PE:** Downside momentum intact hai.")
+
+# Live dashboard fragment ko render karein
+render_live_market_dashboard(underlying, selected_expiry)
 
 st.divider()
 
 # =========================================================
-# TRAFFIC LIGHTS & DYNAMIC EXIT MONITOR
-# =========================================================
-st.markdown("## 🚦 Triple Traffic Light Confluence System")
-df5 = add_indicators(fetch_ohlcv(underlying, "FIVE_MINUTE", 3), current_live_price=spot)
-light1 = analyze_candlesticks_and_volume(df5)
-light2 = analyze_smart_money(fii_dii, pcr)
-light3 = fetch_news_sentiment()
-confluence = evaluate_all_permutations(light1, light2, light3)
-
-icon_map = {"GREEN": "🟢 GREEN", "RED": "🔴 RED", "YELLOW": "🟡 YELLOW"}
-
-tl1, tl2, tl3 = st.columns(3)
-with tl1:
-    st.markdown(f'<div class="light-box"><h3>{icon_map[light1["status"]]}</h3><b>Light 1: Price Action</b><br><span style="font-size:12px;">Candlestick Patterns & Volume</span></div>', unsafe_allow_html=True)
-    st.write(f"**Pattern:** {light1['pattern']}")
-    st.write(f"**Volume Factor:** {light1['vol_ratio']:.2f}x")
-    st.caption(light1["reason"])
-
-with tl2:
-    st.markdown(f'<div class="light-box"><h3>{icon_map[light2["status"]]}</h3><b>Light 2: Smart Money</b><br><span style="font-size:12px;">FII/DII Cash & Options PCR</span></div>', unsafe_allow_html=True)
-    st.write(f"**Institutional Skew:** {fii_dii.get('bias', 'NEUTRAL')}")
-    st.write(f"**PCR Level:** {fmt(pcr, 2) if pcr else 'N/A'}")
-    st.caption(light2["reason"])
-
-with tl3:
-    st.markdown(f'<div class="light-box"><h3>{icon_map[light3["status"]]}</h3><b>Light 3: Macro News</b><br><span style="font-size:12px;">Headlines Polarity Score</span></div>', unsafe_allow_html=True)
-    st.write(f"**Macro Summary:** {light3['summary']}")
-    st.write(f"**Factor:** {light3['score']:+d}")
-    st.caption(light3["reason"])
-
-st.write("")
-
-# Action Alert
-if confluence["badge"] == "success":
-    st.success(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
-elif confluence["badge"] == "error":
-    st.error(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
-else:
-    st.info(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
-
-# Real-Time Exit Monitor
-st.markdown("### 🛡️ Live Position Exit Monitor")
-with st.expander("📌 Active Position Exit Rules Check (Live)", expanded=True):
-    ex1, ex2 = st.columns(2)
-    with ex1:
-        st.markdown("#### 🟢 Active Call (CE) Exit Rules")
-        if light1["status"] == "RED" or light2["status"] == "RED":
-            st.error("🚨 **EMERGENCY EXIT CE:** Opposite Red Light trigger ho chuki hai. Position turant exit karein.")
-        elif "DOJI" in light1["pattern"]:
-            st.warning("⚠️ **TRAIL SL TO COST:** Doji indecision candle form hui hai. Risk zero karein.")
-        elif light1["reversal_risk"]:
-            st.error(f"⚠️ **REVERSAL EXIT CE:** High volume {light1['pattern']} detected at resistance.")
-        else:
-            st.success("✅ **HOLD CE:** Trend aur institutional flows aligned hain.")
-
-    with ex2:
-        st.markdown("#### 🔴 Active Put (PE) Exit Rules")
-        if light1["status"] == "GREEN" or light2["status"] == "GREEN":
-            st.error("🚨 **EMERGENCY EXIT PE:** Opposite Green Light trigger ho chuki hai. Position turant exit karein.")
-        elif "DOJI" in light1["pattern"]:
-            st.warning("⚠️ **TRAIL SL TO COST:** Support par Doji form hui hai. Stop loss cost par trail karein.")
-        elif light1["pattern"] in ["BULLISH HAMMER PIN", "BULLISH ENGULFING"]:
-            st.error(f"⚠️ **REVERSAL EXIT PE:** High volume {light1['pattern']} support bounce detect hua hai.")
-        else:
-            st.success("✅ **HOLD PE:** Downside momentum intact hai.")
-
-st.divider()
-
-# =========================================================
-# DETAILED MULTI-TRADE IDEA GENERATOR ENGINE
+# TRADE IDEAS SCANNER (STABLE & PERSISTENT)
 # =========================================================
 st.markdown("## 🎯 Detailed High-Conviction Trade Setups")
 st.caption("Technical Structure • Delta Greeks • Exact Strike • Setup Aadhar Explanation • Trailing SL Rules")
 
 if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary", use_container_width=True):
     with st.spinner("Processing multi-index technical indicators, option Greeks, and institutional flow..."):
+        current_spot = get_spot(underlying)
+        opt_chain, _ = get_chain(underlying, selected_expiry, current_spot)
+        chain_pcr = calculate_pcr(opt_chain)
+        der_proxy = calculate_live_derivatives_proxy(opt_chain, chain_pcr)
+        active_market = analyze_market(underlying, der_proxy, explicit_spot=current_spot)
+        vix_data = get_india_vix()
+
+        # Confluence evaluation
+        c_df5 = add_indicators(fetch_ohlcv(underlying, "FIVE_MINUTE", 3), current_live_price=current_spot)
+        c_light1 = analyze_candlesticks_and_volume(c_df5)
+        c_light2 = analyze_smart_money(fii_dii, chain_pcr)
+        c_light3 = fetch_news_sentiment()
+        scan_confluence = evaluate_all_permutations(c_light1, c_light2, c_light3)
+
         ideas = []
         bound_side = option_type_choice if option_type_choice in ["CE", "PE"] else None
 
-        # Setup 1: Selected Underlying Cash/Spot
-        setup1 = make_trade_idea(market, underlying, instrument="INDEX", expiry=selected_expiry, chain=chain, confluence=confluence, vix_info=vix_info)
-        if setup1:
-            ideas.append(setup1)
+        # Setup 1: Underlying Spot
+        setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data)
+        if setup1: ideas.append(setup1)
 
-        # Setup 2: Selected Underlying Option Contract
-        setup2 = make_trade_idea(market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=chain, confluence=confluence, vix_info=vix_info)
-        if setup2:
-            ideas.append(setup2)
+        # Setup 2: Underlying Option
+        setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data)
+        if setup2: ideas.append(setup2)
 
-        # Setup 3, 4, 5: Alternate Indices
+        # Setups 3, 4, 5: Other Indices
         for alt_sym in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"]:
             if alt_sym != underlying:
                 alt_spot = get_spot(alt_sym)
-                alt_market = analyze_market(alt_sym, proxy, explicit_spot=alt_spot)
+                alt_market = analyze_market(alt_sym, der_proxy, explicit_spot=alt_spot)
+                alt_spot_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX", confluence=scan_confluence, vix_info=vix_data)
+                if alt_spot_idea: ideas.append(alt_spot_idea)
+                alt_opt_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX OPTION", confluence=scan_confluence, vix_info=vix_data)
+                if alt_opt_idea: ideas.append(alt_opt_idea)
 
-                alt_spot_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX", confluence=confluence, vix_info=vix_info)
-                if alt_spot_idea:
-                    ideas.append(alt_spot_idea)
-
-                alt_opt_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX OPTION", confluence=confluence, vix_info=vix_info)
-                if alt_opt_idea:
-                    ideas.append(alt_opt_idea)
-
-        # Filter unique and cap at 5
+        # Remove duplicates
         unique_ideas = []
         seen = set()
         for item in ideas:
@@ -1157,13 +1141,13 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                 seen.add(key)
                 unique_ideas.append(item)
 
-        ideas = unique_ideas[:5]
+        final_ideas = unique_ideas[:5]
 
-        if not ideas:
+        if not final_ideas:
             st.warning("Market conditions indicate neutral consolidation or conflict across indices. No safe trade setup found.")
         else:
-            st.success(f"{len(ideas)} high-conviction trade setup(s) identified with complete execution parameters.")
-            for i, idea in enumerate(ideas, start=1):
+            st.success(f"{len(final_ideas)} high-conviction trade setup(s) identified with complete execution parameters.")
+            for i, idea in enumerate(final_ideas, start=1):
                 st.markdown(
                     f"""
                     <div class="trade-card">
@@ -1175,37 +1159,24 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                 )
 
                 c1, c2, c3, c4 = st.columns(4)
-                with c1:
-                    st.metric("Action", f"{idea['action']} {'(' + idea['option'] + ')' if idea.get('option') else ''}")
-                with c2:
-                    st.metric("Target Entry", f"₹{fmt(idea['entry'])}")
-                with c3:
-                    st.metric("Stop Loss (SL)", f"₹{fmt(idea['sl'])}")
-                with c4:
-                    st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}")
+                with c1: st.metric("Action", f"{idea['action']} {'(' + idea['option'] + ')' if idea.get('option') else ''}")
+                with c2: st.metric("Target Entry", f"₹{fmt(idea['entry'])}")
+                with c3: st.metric("Stop Loss (SL)", f"₹{fmt(idea['sl'])}")
+                with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}")
 
                 c5, c6, c7, c8 = st.columns(4)
-                with c5:
-                    st.metric("Target 1 (+20%)", f"₹{fmt(idea['target1'])}")
-                with c6:
-                    st.metric("Target 2 (+35%)", f"₹{fmt(idea['target2'])}")
-                with c7:
-                    st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
-                with c8:
-                    st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
+                with c5: st.metric("Target 1 (+20%)", f"₹{fmt(idea['target1'])}")
+                with c6: st.metric("Target 2 (+35%)", f"₹{fmt(idea['target2'])}")
+                with c7: st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
+                with c8: st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
 
                 if idea.get("option"):
                     g1, g2, g3, g4, g5 = st.columns(5)
-                    with g1:
-                        st.metric("Delta (Δ)", f"{idea.get('delta', 0.54):.2f}")
-                    with g2:
-                        st.metric("Theta (Θ)", f"{idea.get('theta', -12.5):.1f}")
-                    with g3:
-                        st.metric("Vega", f"{idea.get('vega', 14.2):.1f}")
-                    with g4:
-                        st.metric("IV (%)", f"{idea.get('iv', 14.8):.1f}%")
-                    with g5:
-                        st.metric("Open Interest", f"{idea.get('oi', 0):,}")
+                    with g1: st.metric("Delta (Δ)", f"{idea.get('delta', 0.54):.2f}")
+                    with g2: st.metric("Theta (Θ)", f"{idea.get('theta', -12.5):.1f}")
+                    with g3: st.metric("Vega", f"{idea.get('vega', 14.2):.1f}")
+                    with g4: st.metric("IV (%)", f"{idea.get('iv', 14.8):.1f}%")
+                    with g5: st.metric("Open Interest", f"{idea.get('oi', 0):,}")
 
                 st.markdown(
                     f"""
@@ -1221,15 +1192,15 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                 st.divider()
 
         # AI Gemini Analyst Synthesis
-        if GEMINI_API_KEY:
+        if GEMINI_API_KEY and final_ideas:
             with st.spinner("Generating AI Analyst institutional synthesis..."):
                 ai_text = ask_gemini(
-                    ideas,
+                    final_ideas,
                     {
                         "underlying": underlying,
-                        "spot": spot,
-                        "vix": vix_info["vix"],
-                        "pcr": pcr,
+                        "spot": current_spot,
+                        "vix": vix_data["vix"],
+                        "pcr": chain_pcr,
                         "fii_dii": fii_dii,
                     },
                 )
@@ -1239,10 +1210,3 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                     st.divider()
 
 st.caption("Paper Trading Engine Active • Real Broker Order Routing Disabled • Strictly Educational Quantitative Research.")
-
-# =========================================================
-# LIVE STREAM AUTO-RERUN LOOP
-# =========================================================
-if auto_stream and market_open():
-    time.sleep(refresh_rate)
-    st.rerun()
