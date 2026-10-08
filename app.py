@@ -199,6 +199,90 @@ else:
         return decorator
 
 # =========================================================
+# TIMEFRAME CONFIGURATION & MATRIX
+# =========================================================
+TIMEFRAME_CONFIG = {
+    "1m": {
+        "label": "⚡ 1 Minute (Scalping / High-Speed)",
+        "smartapi": "ONE_MINUTE",
+        "yfinance": "1m",
+        "yf_range": "2d",
+        "days": 2,
+        "holding": "Quick Scalp (1-5 Mins)",
+        "target1_mult": 1.15,
+        "target2_mult": 1.25,
+        "sl_mult": 0.92,
+        "atr_mult": 0.8,
+        "desc": "Ultra-fast scalp setup. High sensitivity, tight SL.",
+    },
+    "5m": {
+        "label": "📊 5 Minutes (Standard Intraday)",
+        "smartapi": "FIVE_MINUTE",
+        "yfinance": "5m",
+        "yf_range": "5d",
+        "days": 5,
+        "holding": "Intraday Momentum (15-45 Mins)",
+        "target1_mult": 1.20,
+        "target2_mult": 1.35,
+        "sl_mult": 0.85,
+        "atr_mult": 1.0,
+        "desc": "Standard institutional intraday timeframe for liquid momentum.",
+    },
+    "10m": {
+        "label": "🎯 10 Minutes (Noise-Filtered Scalp)",
+        "smartapi": "TEN_MINUTE",
+        "yfinance": "10m",
+        "yf_range": "5d",
+        "days": 5,
+        "holding": "Intraday Trend (30-60 Mins)",
+        "target1_mult": 1.22,
+        "target2_mult": 1.38,
+        "sl_mult": 0.84,
+        "atr_mult": 1.2,
+        "desc": "Smooth momentum timeframe filtering out minor whipsaws.",
+    },
+    "15m": {
+        "label": "🏛️ 15 Minutes (Institutional Intraday)",
+        "smartapi": "FIFTEEN_MINUTE",
+        "yfinance": "15m",
+        "yf_range": "5d",
+        "days": 7,
+        "holding": "Multi-Hour Trend (1-3 Hours)",
+        "target1_mult": 1.25,
+        "target2_mult": 1.45,
+        "sl_mult": 0.82,
+        "atr_mult": 1.5,
+        "desc": "Key institutional breakout timeframe for major intraday moves.",
+    },
+    "30m": {
+        "label": "📈 30 Minutes (Positional / BTST)",
+        "smartapi": "THIRTY_MINUTE",
+        "yfinance": "30m",
+        "yf_range": "1mo",
+        "days": 15,
+        "holding": "BTST / Positional (1-3 Days)",
+        "target1_mult": 1.30,
+        "target2_mult": 1.55,
+        "sl_mult": 0.78,
+        "atr_mult": 2.0,
+        "desc": "Strong trend conviction for overnight holding and multi-day swings.",
+    },
+    "60m": {
+        "label": "🧭 60 Minutes (1 Hour Macro Swing)",
+        "smartapi": "ONE_HOUR",
+        "yfinance": "60m",
+        "yf_range": "1mo",
+        "days": 30,
+        "holding": "Swing Trend (3-7 Days)",
+        "target1_mult": 1.40,
+        "target2_mult": 1.70,
+        "sl_mult": 0.75,
+        "atr_mult": 2.8,
+        "desc": "Macro hourly trend framework for swing traders.",
+    },
+}
+
+# =========================================================
 # ENGINE IMPORTS & RESILIENT FALLBACKS
 # =========================================================
 try:
@@ -288,7 +372,6 @@ ANGEL_PIN = secret("ANGEL_PIN")
 ANGEL_TOTP_SECRET = secret("ANGEL_TOTP_SECRET")
 ANGEL_JWT_TOKEN = secret("ANGEL_JWT_TOKEN")
 GEMINI_API_KEY = secret("GEMINI_API_KEY") or secret("GOOGLE_API_KEY")
-# Default model updated to gemini-3.8-flash
 GEMINI_MODEL = secret("GEMINI_MODEL") or "gemini-3.8-flash"
 
 # =========================================================
@@ -379,6 +462,19 @@ def normalize_option_type(value):
         return "PE"
     return ""
 
+def resample_5m_to_10m(df):
+    if df.empty or len(df) < 2:
+        return df
+    groups = df.groupby(df.index // 2)
+    res = pd.DataFrame({
+        "open": groups["open"].first(),
+        "high": groups["high"].max(),
+        "low": groups["low"].min(),
+        "close": groups["close"].last(),
+        "volume": groups["volume"].sum() if "volume" in df.columns else 0
+    })
+    return res.reset_index(drop=True)
+
 # =========================================================
 # BROKER SESSION & TELEMETRY
 # =========================================================
@@ -444,7 +540,7 @@ INDEX_METADATA = {
 # ESSENTIAL DATA FETCHERS & INSTITUTIONAL INDICATORS
 # =========================================================
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=3):
+def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=5):
     if telemetry is None or symbol not in INDEX_METADATA:
         return pd.DataFrame()
 
@@ -669,7 +765,10 @@ def add_indicators(df, current_live_price=None):
 
     return df
 
-def analyze_market(symbol, proxy=None, explicit_spot=None):
+def analyze_market(symbol, proxy=None, explicit_spot=None, tf_cfg=None):
+    if tf_cfg is None:
+        tf_cfg = TIMEFRAME_CONFIG["5m"]
+
     res = {
         "symbol": symbol,
         "trend": "UNKNOWN",
@@ -687,11 +786,14 @@ def analyze_market(symbol, proxy=None, explicit_spot=None):
         "reasons": [],
     }
 
-    df5 = add_indicators(fetch_ohlcv(symbol, "FIVE_MINUTE", 3), current_live_price=explicit_spot)
-    if df5.empty:
+    df = add_indicators(
+        fetch_ohlcv(symbol, tf_cfg["smartapi"], tf_cfg["days"]),
+        current_live_price=explicit_spot
+    )
+    if df.empty:
         return res
 
-    row = df5.iloc[-1]
+    row = df.iloc[-1]
     last = explicit_spot or num(row.get("close"))
     res["last"] = last
     res["rsi"] = num(row.get("RSI"))
@@ -699,33 +801,33 @@ def analyze_market(symbol, proxy=None, explicit_spot=None):
     res["ema20"] = num(row.get("EMA20"))
     res["ema50"] = num(row.get("EMA50"))
     res["vwap"] = num(row.get("VWAP"))
-    res["support"] = num(df5["low"].tail(30).min())
-    res["resistance"] = num(df5["high"].tail(30).max())
+    res["support"] = num(df["low"].tail(30).min())
+    res["resistance"] = num(df["high"].tail(30).max())
 
     score = 0
     if res["ema20"] and res["ema50"] and last:
         if last > res["ema20"] > res["ema50"]:
             score += 2
-            res["reasons"].append("Price EMA20 aur EMA50 ke upar sustained hai.")
+            res["reasons"].append(f"Price EMA20 aur EMA50 ke upar sustained hai ({tf_cfg['smartapi']}).")
         elif last < res["ema20"] < res["ema50"]:
             score -= 2
-            res["reasons"].append("Price EMA20 aur EMA50 ke neeche bearish breakdown par hai.")
+            res["reasons"].append(f"Price EMA20 aur EMA50 ke neeche breakdown par hai ({tf_cfg['smartapi']}).")
 
     if res["vwap"] and last:
         if last > res["vwap"]:
             score += 1
-            res["reasons"].append("Price institutional VWAP benchmark ke upar trade kar raha hai.")
+            res["reasons"].append("Price Institutional VWAP benchmark ke upar trade kar raha hai.")
         else:
             score -= 1
-            res["reasons"].append("Price institutional VWAP benchmark ke neeche trade kar raha hai.")
+            res["reasons"].append("Price Institutional VWAP benchmark ke neeche trade kar raha hai.")
 
     if res["rsi"]:
         if res["rsi"] >= 60:
             score += 1
-            res["reasons"].append(f"RSI ({res['rsi']:.1f}) bullish expansion territory mein hai.")
+            res["reasons"].append(f"RSI ({res['rsi']:.1f}) bullish expansion zone mein hai.")
         elif res["rsi"] <= 40:
             score -= 1
-            res["reasons"].append(f"RSI ({res['rsi']:.1f}) bearish distribution territory mein hai.")
+            res["reasons"].append(f"RSI ({res['rsi']:.1f}) bearish distribution zone mein hai.")
 
     if res["adx"] and res["adx"] >= 20:
         res["reasons"].append(f"ADX ({res['adx']:.1f}) trend conviction confirm karta hai.")
@@ -1134,7 +1236,10 @@ def get_optimal_option_strike(symbol, spot, side, chain=None):
         "symbol": contract_symbol,
     }
 
-def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry=None, chain=None, confluence=None, vix_info=None):
+def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry=None, chain=None, confluence=None, vix_info=None, tf_cfg=None):
+    if tf_cfg is None:
+        tf_cfg = TIMEFRAME_CONFIG["5m"]
+
     last = market.get("last")
     if last is None or last <= 0:
         return None
@@ -1154,14 +1259,16 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
     support = num(market.get("support"))
     resistance = num(market.get("resistance"))
 
+    atr_mult = tf_cfg.get("atr_mult", 1.0)
+
     if bullish:
         action = "BUY"
-        sl = support if (support and support < entry_spot) else (entry_spot * 0.997)
+        sl = support if (support and support < entry_spot) else (entry_spot * (1 - 0.003 * atr_mult))
         risk = entry_spot - sl
         t1, t2 = entry_spot + (risk * 1.5), entry_spot + (risk * 2.5)
     else:
         action = "SELL"
-        sl = resistance if (resistance and resistance > entry_spot) else (entry_spot * 1.003)
+        sl = resistance if (resistance and resistance > entry_spot) else (entry_spot * (1 + 0.003 * atr_mult))
         risk = sl - entry_spot
         t1, t2 = entry_spot - (risk * 1.5), entry_spot - (risk * 2.5)
 
@@ -1169,13 +1276,13 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         return None
 
     confidence = confluence.get("confidence", 80) if confluence else 80
-    sl_mult = vix_info.get("sl_multiplier", 0.85) if vix_info else 0.85
+    sl_mult = tf_cfg.get("sl_mult", 0.85)
 
     reasons_list = market.get("reasons", [])
     vsa_text = "Volume expansion confirmed" if any("volume" in r.lower() for r in reasons_list) else "Technical breakdown aligned"
     trend_state = "Bullish Uptrend" if bullish else "Bearish Breakdown"
     why_explanation = (
-        f"Ye trade {trend_state} ke aadhar par formulate kiya gaya hai. "
+        f"Ye trade {trend_state} aur [{tf_cfg['label']}] resolution par formulate kiya gaya hai. "
         f"{' '.join(reasons_list[:4])} "
         f"Confluence system aur {vsa_text} is direction ko strongly support kar rahe hain."
     )
@@ -1191,7 +1298,8 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         "risk_reward": abs(t1 - entry_spot) / risk,
         "target2_rr": abs(t2 - entry_spot) / risk,
         "confidence": confidence,
-        "holding": "Intraday" if market_open() else "NEXT SESSION",
+        "holding": tf_cfg["holding"] if market_open() else "NEXT SESSION",
+        "timeframe": tf_cfg["label"],
         "expiry": expiry,
         "option": None,
         "strike": None,
@@ -1207,7 +1315,7 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         "institutional_score": market.get("institutional_score", 0),
         "why": why_explanation,
         "invalidation": f"Agar spot price {sl:,.2f} SL level ke {'neeche' if bullish else 'upar'} candle close karta hai toh trade cancel ho jayega.",
-        "trailing": "Target 1 hit hote hi 50% position book karein aur Stop Loss ko Cost (Entry price) par trail karein.",
+        "trailing": f"Target 1 hit hote hi 50% position book karein aur Stop Loss ko Cost (Entry price) par trail karein. [{tf_cfg['desc']}]",
     }
 
     if instrument == "INDEX OPTION":
@@ -1234,8 +1342,8 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
 
         opt_entry = float(contract.get("ltp", 0.0))
         opt_sl = opt_entry * sl_mult
-        opt_t1 = opt_entry * 1.20
-        opt_t2 = opt_entry * 1.35
+        opt_t1 = opt_entry * tf_cfg.get("target1_mult", 1.20)
+        opt_t2 = opt_entry * tf_cfg.get("target2_mult", 1.35)
         opt_risk = max(opt_entry - opt_sl, 1.0)
 
         idea["option"] = side
@@ -1256,7 +1364,7 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         idea["oi"] = contract.get("oi", 0)
         idea["change_oi"] = contract.get("chg_oi", 0)
         idea["why"] = (
-            f"Option Buying Aadhar: {symbol} {resolved_strike} {side} select kiya gaya hai kyunki iska Delta ({idea['delta']:.2f}) "
+            f"Option Buying Aadhar: {symbol} {resolved_strike} {side} ({tf_cfg['label']}) select kiya gaya hai kyunki iska Delta ({idea['delta']:.2f}) "
             f"optimal zone mein hai. {why_explanation}"
         )
 
@@ -1269,7 +1377,6 @@ def call_gemini_cascade(prompt):
     if not GEMINI_API_KEY:
         return "Gemini API Key missing in Streamlit Secrets."
 
-    # Robust model sequence: latest first, then legacy fallbacks
     models_to_attempt = [
         GEMINI_MODEL,
         "gemini-3.8-flash",
@@ -1279,12 +1386,10 @@ def call_gemini_cascade(prompt):
         "gemini-2.0-flash",
         "gemini-pro",
     ]
-    # Remove duplicates
     models_to_attempt = list(dict.fromkeys([m for m in models_to_attempt if m]))
 
     last_error = None
 
-    # Try modern google-genai library
     try:
         from google import genai
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -1299,7 +1404,6 @@ def call_gemini_cascade(prompt):
     except Exception:
         pass
 
-    # Try legacy google.generativeai library
     try:
         import google.generativeai as legacy_genai
         legacy_genai.configure(api_key=GEMINI_API_KEY)
@@ -1322,7 +1426,7 @@ def ask_gemini(ideas, market_data):
     prompt = f"""
     You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY).
     Explain the generated trade setups in detail. Focus on:
-    1. Kis technical aur institutional aadhar par trade banaya gaya hai.
+    1. Kis technical timeframe aur institutional aadhar par trade banaya gaya hai.
     2. Greeks profile (Delta responsiveness, Theta risk).
     3. Risk management aur trailing stop-loss execution.
 
@@ -1465,18 +1569,31 @@ def fetch_equity_live_quote(symbol, token=None, exchange="NSE", yf_sym=None):
     return {"price": price, "prev_close": prev_close, "change_pct": pct_chg}
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_equity_candles(symbol, token=None, exchange="NSE", yf_sym=None):
+def fetch_equity_candles(symbol, token=None, exchange="NSE", yf_sym=None, tf_cfg=None):
+    if tf_cfg is None:
+        tf_cfg = TIMEFRAME_CONFIG["5m"]
+
+    # 1. Try Angel One SmartAPI
     if token and telemetry and hasattr(telemetry, "fetch_ohlcv"):
         try:
-            df = clean_df(telemetry.fetch_ohlcv(exchange=exchange, token=str(token), interval="FIVE_MINUTE", days=5))
+            df = clean_df(telemetry.fetch_ohlcv(
+                exchange=exchange,
+                token=str(token),
+                interval=tf_cfg["smartapi"],
+                days=tf_cfg["days"]
+            ))
             if not df.empty:
                 return df
         except Exception:
             pass
 
+    # 2. Yahoo Finance Fallback
     target_yf = yf_sym or f"{symbol.replace('-EQ','')}.{'NS' if exchange=='NSE' else 'BO'}"
+    yf_interval = "5m" if tf_cfg["yfinance"] == "10m" else tf_cfg["yfinance"]
+    yf_range = tf_cfg["yf_range"]
+
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{target_yf}?interval=5m&range=5d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{target_yf}?interval={yf_interval}&range={yf_range}"
         resp = requests.get(url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
         if resp.ok:
             data = resp.json()["chart"]["result"][0]
@@ -1489,6 +1606,10 @@ def fetch_equity_candles(symbol, token=None, exchange="NSE", yf_sym=None):
                 "volume": quotes.get("volume", []),
             })
             df = df.dropna(subset=["close"]).reset_index(drop=True)
+
+            if tf_cfg["yfinance"] == "10m":
+                df = resample_5m_to_10m(df)
+
             return df
     except Exception:
         pass
@@ -1539,7 +1660,10 @@ def fetch_stock_news_sentiment(stock_name):
         "headlines": headlines[:3],
     }
 
-def analyze_equity_setup(stock_info, quote, df):
+def analyze_equity_setup(stock_info, quote, df, tf_cfg=None):
+    if tf_cfg is None:
+        tf_cfg = TIMEFRAME_CONFIG["5m"]
+
     last = quote.get("price")
     if last is None or df.empty or len(df) < 5:
         return None
@@ -1561,10 +1685,10 @@ def analyze_equity_setup(stock_info, quote, df):
 
     if last > ema20 > ema50:
         tech_score += 2
-        reasons.append("Price EMA20 aur EMA50 ke upar sustained hai (Short-term Bullish Trend).")
+        reasons.append(f"Price EMA20 aur EMA50 ke upar sustained hai ({tf_cfg['label']}).")
     elif last < ema20 < ema50:
         tech_score -= 2
-        reasons.append("Price EMA20 aur EMA50 ke neeche sustained hai (Bearish Breakdown Structure).")
+        reasons.append(f"Price EMA20 aur EMA50 ke neeche sustained hai ({tf_cfg['label']}).")
 
     if last > ema200:
         tech_score += 1
@@ -1593,14 +1717,16 @@ def analyze_equity_setup(stock_info, quote, df):
     sideways_notes = ""
     if adx < 20:
         is_sideways = True
-        sideways_notes = f"ADX {adx:.1f} (< 20) hai. Stock range consolidation mein hai. Fresh directional move ₹{resistance:,.2f} ke breakout par trigger hoga."
+        sideways_notes = f"ADX {adx:.1f} (< 20) hai. Stock [{tf_cfg['label']}] range consolidation mein hai. Fresh directional move ₹{resistance:,.2f} breakout par aayega."
     else:
         sideways_notes = f"ADX {adx:.1f} (> 20) hai. Active directional trend chal raha hai. Momentum intact hai."
+
+    atr_mult = tf_cfg.get("atr_mult", 1.0)
 
     if tech_score >= 2 and not (is_sideways and abs(tech_score) < 3):
         stance = "BUY / LONG"
         badge = "prediction-card-green"
-        sl = max(support, last - (atr * 1.5))
+        sl = max(support, last - (atr * 1.5 * atr_mult))
         risk = max(last - sl, 0.5)
         t1 = last + (risk * 1.6)
         t2 = last + (risk * 2.8)
@@ -1611,7 +1737,7 @@ def analyze_equity_setup(stock_info, quote, df):
     elif tech_score <= -2:
         stance = "SELL / SHORT"
         badge = "prediction-card-red"
-        sl = min(resistance, last + (atr * 1.5))
+        sl = min(resistance, last + (atr * 1.5 * atr_mult))
         risk = max(sl - last, 0.5)
         t1 = last - (risk * 1.6)
         t2 = last - (risk * 2.8)
@@ -1624,7 +1750,7 @@ def analyze_equity_setup(stock_info, quote, df):
         badge = "prediction-card-gold"
         sl = support
         t1 = resistance
-        t2 = resistance + atr
+        t2 = resistance + (atr * atr_mult)
         upside_pts = resistance - last
         upside_pct = (upside_pts / last) * 100
         downside_pts = last - support
@@ -1657,19 +1783,19 @@ def analyze_equity_setup(stock_info, quote, df):
 # APPLICATION STATIC DASHBOARD HEADER
 # =========================================================
 st.title("⚡ AI Institutional Live Trading Advisor")
-st.caption("Multi-Asset Intelligence: Index Derivatives • Equity / Cash Shares (NSE & BSE) • Smart Money Telemetry")
+st.caption("Multi-Asset Intelligence: Index Derivatives • Equity / Cash Shares (NSE & BSE) • Multi-Timeframe Signals")
 
-col_t1, col_t2, col_t3, col_t4 = st.columns(4)
-with col_t1:
-    st.metric("System Mode", "PAPER SIMULATION", delta="Live Simulated", delta_color="off")
-with col_t2:
-    st.metric("Market Status", "AFTER MARKET" if not market_open() else "LIVE SESSION", delta="Closed" if not market_open() else "Active", delta_color="off")
-with col_t3:
-    st.metric("Broker API", "CONNECTED" if telemetry is not None else "STANDALONE", delta="Angel SmartAPI", delta_color="off")
-with col_t4:
-    st.metric("AI Core Engine", "ACTIVATED" if GEMINI_API_KEY else "RULES MODE", delta="Gemini 3.8 Flash", delta_color="off")
+# SIDEBAR CONFIGURATION
+st.sidebar.header("⏱️ Strategy Timeframe")
+selected_tf_key = st.sidebar.selectbox(
+    "Candle Resolution / Timeframe",
+    options=["1m", "5m", "10m", "15m", "30m", "60m"],
+    index=1,
+    format_func=lambda k: TIMEFRAME_CONFIG[k]["label"],
+    help="Select timeframe: 1 min, 5 min, 10 min, 15 min, 30 min, or 60 min. All indicators and confluence signals adapt to this resolution."
+)
+active_tf = TIMEFRAME_CONFIG[selected_tf_key]
 
-# Sidebar Segment Switcher
 st.sidebar.header("⚙️ Trading Environment")
 segment_mode = st.sidebar.radio("Active Market Segment", ["📈 Equity / Share Research (NSE & BSE)", "📊 Index & Options Advisor"])
 
@@ -1677,39 +1803,46 @@ if st.sidebar.button("🔄 Force Refresh All Caches", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
+col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+with col_t1:
+    st.metric("System Mode", "PAPER SIMULATION", delta=active_tf["holding"], delta_color="off")
+with col_t2:
+    st.metric("Market Status", "AFTER MARKET" if not market_open() else "LIVE SESSION", delta="Closed" if not market_open() else "Active", delta_color="off")
+with col_t3:
+    st.metric("Active Timeframe", active_tf["smartapi"], delta=selected_tf_key.upper(), delta_color="normal")
+with col_t4:
+    st.metric("AI Core Engine", "ACTIVATED" if GEMINI_API_KEY else "RULES MODE", delta="Gemini 3.8 Flash", delta_color="off")
+
 # ==============================================================================
 # SEGMENT 1: EQUITY / SHARE SCANNER (WITH DYNAMIC AUTO-POPUP PREDICTIVE SEARCH)
 # ==============================================================================
 if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
-    st.markdown("## 📈 Universal Equity / Cash Stock Intelligence")
-    st.caption("Instant Auto-Popup Search • Live Running Price • Target & Risk Levels • News & Trailing Rules")
+    st.markdown(f"## 📈 Universal Equity Stock Intelligence — [{active_tf['label']}]")
+    st.caption("Search Any Share • Instant Predictive Popup • Target & Risk Levels • Multi-Timeframe Confluence")
 
     exchange_select = st.selectbox("Preferred Exchange", ["NSE", "BSE"], index=0)
 
-    # 1. Search Query Box
+    # Search Query Box
     query_text = st.text_input(
         "🔍 Type any Stock Name or Symbol (e.g. Tata, Mazagon, Kalyan, Suzlon, Reliance, Zomato, SBI, 500325):",
         value="",
         placeholder="Type to filter stocks...",
     ).strip().upper()
 
-    # 2. Filter Database in Real-Time
+    # Filter Database in Real-Time
     filtered_stocks = []
     if query_text:
         for sym, d in POPULAR_EQUITIES.items():
             if query_text in sym or query_text in d["name"].upper():
                 filtered_stocks.append(f"{sym} — {d['name']}")
 
-        # If user typed an exact symbol not in popular list, offer it dynamically
         clean_code = query_text.split()[0].replace("-EQ", "")
         dynamic_custom = f"{clean_code} — {clean_code} (Custom Listed Scrip)"
         if not any(f"{clean_code} " in item for item in filtered_stocks):
             filtered_stocks.append(dynamic_custom)
     else:
-        # Default top stocks when search box is empty
-        filtered_stocks = [f"{sym} — {details['name']}" for sym, details in list(POPULAR_EQUITIES.items())[:30]]
+        filtered_stocks = [f"{sym} — {details['name']}" for sym, details in list(POPULAR_EQUITIES.items())[:35]]
 
-    # 3. Dynamic Auto-Popup Selectbox
     chosen_str = st.selectbox(
         "🎯 Select Matched Stock (Auto-popups update as you type above):",
         options=filtered_stocks,
@@ -1729,7 +1862,6 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                 "yfinance": d["yfinance"],
             }
         else:
-            # Custom resolve
             selected_stock = {
                 "symbol": f"{sym_key}-EQ",
                 "name": f"{sym_key} Equity",
@@ -1742,7 +1874,7 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
         st.divider()
 
         @live_fragment(run_every=5)
-        def render_live_equity_view(stock):
+        def render_live_equity_view(stock, tf):
             quote = fetch_equity_live_quote(
                 symbol=stock["symbol"],
                 token=stock.get("token"),
@@ -1755,13 +1887,14 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                     token=stock.get("token"),
                     exchange=stock["exchange"],
                     yf_sym=stock.get("yfinance"),
+                    tf_cfg=tf,
                 ),
                 current_live_price=quote.get("price"),
             )
-            analysis = analyze_equity_setup(stock, quote, df)
+            analysis = analyze_equity_setup(stock, quote, df, tf_cfg=tf)
             news = fetch_stock_news_sentiment(stock["name"])
 
-            st.markdown(f"### 🏢 {stock['name']} (`{stock['symbol']}` • {stock['exchange']})")
+            st.markdown(f"### 🏢 {stock['name']} (`{stock['symbol']}` • {stock['exchange']}) — [{tf['label']}]")
             
             p1, p2, p3, p4 = st.columns(4)
             with p1:
@@ -1796,7 +1929,7 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                 st.markdown(
                     f"""
                     <div class="{analysis['badge']}">
-                        <h3 style="margin: 0; padding: 0;">{icon} Algorithmic Stance: <b>{analysis['stance']}</b></h3>
+                        <h3 style="margin: 0; padding: 0;">{icon} Algorithmic Stance: <b>{analysis['stance']}</b> ({tf['label']})</h3>
                         <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;">
                             <b>Recommended Entry Range:</b> ₹{fmt(analysis['price'])} | 
                             <b>Target 1:</b> ₹{fmt(analysis['t1'])} | 
@@ -1809,7 +1942,7 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                     unsafe_allow_html=True,
                 )
 
-                st.markdown("#### 📐 Exact Target & Downside Levels")
+                st.markdown(f"#### 📐 Exact Target & Downside Levels ({tf['smartapi']})")
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
                 with t_col1:
                     st.metric("Primary Target (T1)", f"₹{fmt(analysis['t1'])}", delta="+1.6 Risk Multiple")
@@ -1820,7 +1953,7 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                 with t_col4:
                     st.metric("Risk-Reward Ratio", "1:2.4", delta="Institutional Favorable")
 
-                st.markdown("#### 🚦 Indicator & News Confluence Engine")
+                st.markdown(f"#### 🚦 Indicator Confluence Matrix ({tf['label']})")
                 i1, i2, i3, i4 = st.columns(4)
                 with i1:
                     st.metric("RSI (14-Candle)", f"{analysis['rsi']:.1f}", delta="Bullish (>60)" if analysis['rsi']>=60 else ("Bearish (<40)" if analysis['rsi']<=40 else "Neutral Range"), delta_color="off")
@@ -1840,19 +1973,19 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                 st.markdown(
                     f"""
                     <div class="reason-box">
-                        <b>📌 Trade Lene Ka Institutional Aadhar:</b><br>
+                        <b>📌 Trade Lene Ka Institutional Aadhar ({tf['label']}):</b><br>
                         {' '.join(analysis['reasons'])}
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-                st.write(f"🛑 **Position Invalidation:** Agar share ₹{fmt(analysis['sl'])} ke paar 5-minute candle close karta hai, to trade se turant exit karein.")
-                st.write(f"📈 **Trailing Stop Loss Rule:** Target 1 (₹{fmt(analysis['t1'])}) aate hi 50% profit book karein aur Stop Loss ko Cost (₹{fmt(analysis['price'])}) par trail karein.")
+                st.write(f"🛑 **Position Invalidation:** Agar share ₹{fmt(analysis['sl'])} ke paar {tf['smartapi']} candle close karta hai, to trade se turant exit karein.")
+                st.write(f"📈 **Trailing Stop Loss Rule:** Target 1 (₹{fmt(analysis['t1'])}) aate hi 50% profit book karein aur Stop Loss ko Cost (₹{fmt(analysis['price'])}) par trail karein. [{tf['desc']}]")
 
             return analysis
 
-        analysis_result = render_live_equity_view(selected_stock)
+        analysis_result = render_live_equity_view(selected_stock, active_tf)
 
         # AI Analyst Report with Fallback Engine
         if GEMINI_API_KEY and analysis_result:
@@ -1860,7 +1993,7 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                 with st.spinner("Gemini Institutional AI Analyzing stock balance sheet, volume spikes, and technical setups..."):
                     prompt = f"""
                     You are a senior institutional equity research analyst covering Indian stock markets (NSE & BSE).
-                    Analyze this stock setup in depth:
+                    Analyze this stock setup in depth on timeframe [{active_tf['label']}]:
                     Stock: {analysis_result['name']} ({analysis_result['symbol']})
                     Current Price: ₹{analysis_result['price']}
                     Stance: {analysis_result['stance']}
@@ -1870,7 +2003,7 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                     Technical Factors: {analysis_result['reasons']}
 
                     Explain:
-                    1. Kab buy karein, kab short karein, kab tak sideways rehne ki sambhavna hai.
+                    1. Timeframe {active_tf['label']} ke aadhar par kab buy karein, kab short karein, kab tak sideways rehne ki sambhavna hai.
                     2. Risk to reward analysis aur delivery vs swing trading guidelines.
                     3. Trailing stop-loss execution strategy.
                     """
@@ -1879,7 +2012,7 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                     st.write(ai_response)
 
 # ==============================================================================
-# SEGMENT 2: INDEX & OPTIONS ADVISOR (FULLY RESTORED & ZERO-FLICKER)
+# SEGMENT 2: INDEX & OPTIONS ADVISOR (MULTI-TIMEFRAME ADAPTIVE)
 # ==============================================================================
 else:
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
@@ -1888,7 +2021,7 @@ else:
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
     @live_fragment(run_every=2)
-    def render_index_live_ticker(selected_underlying, current_expiry):
+    def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain, _ = get_chain(selected_underlying, current_expiry)
         pcr = calculate_pcr(chain)
@@ -1898,7 +2031,7 @@ else:
         s1, s2, s3, s4 = st.columns(4)
         with s1:
             if spot is not None:
-                st.metric(f"{selected_underlying} Spot (Live)", fmt(spot), delta="Real-time Quote", delta_color="off")
+                st.metric(f"{selected_underlying} Spot (Live)", fmt(spot), delta=f"TF: {tf['smartapi']}", delta_color="off")
             else:
                 st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Angel")
         with s2:
@@ -1908,7 +2041,7 @@ else:
         with s4:
             st.metric("FII/DII Net Bias", fii_dii_info.get("bias", "NEUTRAL"), delta="Cash Flow Stance", delta_color="off")
 
-    render_index_live_ticker(underlying, selected_expiry)
+    render_index_live_ticker(underlying, selected_expiry, active_tf)
     st.divider()
 
     @live_fragment(run_every=30)
@@ -1998,16 +2131,19 @@ else:
     st.divider()
 
     @live_fragment(run_every=10)
-    def render_market_confluence_dashboard(selected_underlying, current_expiry):
+    def render_market_confluence_dashboard(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain, _ = get_chain(selected_underlying, current_expiry)
         pcr = calculate_pcr(chain)
-        df5 = add_indicators(fetch_ohlcv(selected_underlying, "FIVE_MINUTE", 3), current_live_price=spot)
+        df_candles = add_indicators(
+            fetch_ohlcv(selected_underlying, tf["smartapi"], tf["days"]),
+            current_live_price=spot
+        )
         macro_quotes = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
 
-        st.markdown("## 🚦 Triple Traffic Light Confluence System")
-        light1 = analyze_candlesticks_and_volume(df5)
-        light2 = analyze_smart_money(fii_dii, pcr, df=df5, current_spot=spot)
+        st.markdown(f"## 🚦 Triple Traffic Light Confluence System — [{tf['label']}]")
+        light1 = analyze_candlesticks_and_volume(df_candles)
+        light2 = analyze_smart_money(fii_dii, pcr, df=df_candles, current_spot=spot)
         light3 = fetch_composite_macro_news(macro_quotes)
         confluence = evaluate_all_permutations(light1, light2, light3)
 
@@ -2041,7 +2177,7 @@ else:
         else:
             st.info(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
 
-        st.markdown("### 🛡️ Live Position Exit Monitor")
+        st.markdown(f"### 🛡️ Live Position Exit Monitor ({tf['smartapi']})")
         with st.expander("📌 Active Position Exit Rules Check (Live)", expanded=True):
             ex1, ex2 = st.columns(2)
             with ex1:
@@ -2066,24 +2202,27 @@ else:
                 else:
                     st.success("✅ **HOLD PE:** Downside momentum intact hai.")
 
-    render_market_confluence_dashboard(underlying, selected_expiry)
+    render_market_confluence_dashboard(underlying, selected_expiry, active_tf)
     st.divider()
 
-    st.markdown("## 🎯 Detailed High-Conviction Trade Setups")
-    st.caption("Technical Structure • Delta Greeks • Exact Strike • Setup Aadhar Explanation • Trailing SL Rules")
+    st.markdown(f"## 🎯 Detailed High-Conviction Trade Setups — [{active_tf['label']}]")
+    st.caption("Technical Structure • Delta Greeks • Exact Strike • Timeframe Sizing • Trailing SL Rules")
 
     if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary", use_container_width=True):
-        with st.spinner("Processing multi-index technical indicators, option Greeks, and institutional flow..."):
+        with st.spinner(f"Processing multi-index indicators on [{active_tf['label']}], option Greeks, and institutional flow..."):
             current_spot = get_spot(underlying)
             opt_chain, _ = get_chain(underlying, selected_expiry)
             chain_pcr = calculate_pcr(opt_chain)
             der_proxy = calculate_live_derivatives_proxy(opt_chain, chain_pcr)
-            active_market = analyze_market(underlying, der_proxy, explicit_spot=current_spot)
+            active_market = analyze_market(underlying, der_proxy, explicit_spot=current_spot, tf_cfg=active_tf)
             vix_data = get_india_vix()
 
-            c_df5 = add_indicators(fetch_ohlcv(underlying, "FIVE_MINUTE", 3), current_live_price=current_spot)
-            c_light1 = analyze_candlesticks_and_volume(c_df5)
-            c_light2 = analyze_smart_money(fii_dii, chain_pcr, df=c_df5, current_spot=current_spot)
+            c_df = add_indicators(
+                fetch_ohlcv(underlying, active_tf["smartapi"], active_tf["days"]),
+                current_live_price=current_spot
+            )
+            c_light1 = analyze_candlesticks_and_volume(c_df)
+            c_light2 = analyze_smart_money(fii_dii, chain_pcr, df=c_df, current_spot=current_spot)
             macro_q = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
             c_light3 = fetch_composite_macro_news(macro_q)
             scan_confluence = evaluate_all_permutations(c_light1, c_light2, c_light3)
@@ -2091,19 +2230,19 @@ else:
             ideas = []
             bound_side = option_type_choice if option_type_choice in ["CE", "PE"] else None
 
-            setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data)
+            setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup1: ideas.append(setup1)
 
-            setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data)
+            setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup2: ideas.append(setup2)
 
             for alt_sym in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"]:
                 if alt_sym != underlying:
                     alt_spot = get_spot(alt_sym)
-                    alt_market = analyze_market(alt_sym, der_proxy, explicit_spot=alt_spot)
-                    alt_spot_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX", confluence=scan_confluence, vix_info=vix_data)
+                    alt_market = analyze_market(alt_sym, der_proxy, explicit_spot=alt_spot, tf_cfg=active_tf)
+                    alt_spot_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX", confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
                     if alt_spot_idea: ideas.append(alt_spot_idea)
-                    alt_opt_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX OPTION", confluence=scan_confluence, vix_info=vix_data)
+                    alt_opt_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX OPTION", confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
                     if alt_opt_idea: ideas.append(alt_opt_idea)
 
             unique_ideas = []
@@ -2119,7 +2258,7 @@ else:
             if not final_ideas:
                 st.warning("Market conditions indicate neutral consolidation or conflict across indices. No safe trade setup found.")
             else:
-                st.success(f"{len(final_ideas)} high-conviction trade setup(s) identified with complete execution parameters.")
+                st.success(f"{len(final_ideas)} high-conviction trade setup(s) identified on [{active_tf['label']}].")
                 for i, idea in enumerate(final_ideas, start=1):
                     is_option = bool(idea.get("option") and idea.get("strike"))
 
@@ -2134,7 +2273,7 @@ else:
                         f"""
                         <div class="trade-card">
                             <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} — <span style="color: #4CAF50;">{card_title}</span></h3>
-                            <b>Type:</b> {sub_badge} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
+                            <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
                         </div>
                         """,
                         unsafe_allow_html=True,
@@ -2157,9 +2296,9 @@ else:
 
                         c5, c6, c7, c8 = st.columns(4)
                         with c5:
-                            st.metric("Target 1 (+20%)", f"₹{fmt(idea['target1'])}")
+                            st.metric("Target 1", f"₹{fmt(idea['target1'])}")
                         with c6:
-                            st.metric("Target 2 (+35%)", f"₹{fmt(idea['target2'])}")
+                            st.metric("Target 2", f"₹{fmt(idea['target2'])}")
                         with c7:
                             st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
                         with c8:
@@ -2204,6 +2343,7 @@ else:
                         final_ideas,
                         {
                             "underlying": underlying,
+                            "timeframe": active_tf["label"],
                             "spot": current_spot,
                             "vix": vix_data["vix"],
                             "pcr": chain_pcr,
