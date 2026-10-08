@@ -1,18 +1,22 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
+import datetime
 from datetime import datetime, date, time as dtime
 import json
-import requests
+import logging
+import time
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
+import numpy as np
+import pandas as pd
+import requests
+import streamlit as st
+
 IST = ZoneInfo("Asia/Kolkata")
+logger = logging.getLogger(__name__)
 
 # =========================================================
 # PAGE CONFIGURATION & INSTITUTIONAL THEME
 # =========================================================
-
 st.set_page_config(
     page_title="AI Institutional Live Trading Advisor",
     page_icon="⚡",
@@ -21,63 +25,61 @@ st.set_page_config(
 
 PAPER_TRADING = True
 
-st.markdown("""
-<style>
-.block-container {
-    padding-top: 1rem !important;
-    padding-left: 0.7rem !important;
-    padding-right: 0.7rem !important;
-    max-width: 100% !important;
-}
-
-@media(max-width: 768px) {
-    [data-testid="stHorizontalBlock"] {
-        flex-wrap: wrap !important;
-        gap: 0.45rem !important;
-        width: 100% !important;
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 1rem !important;
+        padding-left: 0.7rem !important;
+        padding-right: 0.7rem !important;
+        max-width: 100% !important;
     }
-    [data-testid="column"] {
-        min-width: 48% !important;
-        max-width: 48% !important;
-        flex: 1 1 48% !important;
-        width: 48% !important;
+    @media(max-width: 768px) {
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+            gap: 0.45rem !important;
+            width: 100% !important;
+        }
+        [data-testid="column"] {
+            min-width: 48% !important;
+            max-width: 48% !important;
+            flex: 1 1 48% !important;
+            width: 48% !important;
+        }
     }
-}
-
-.trade-card {
-    width: 100%;
-    box-sizing: border-box;
-    border: 1px solid rgba(128, 128, 128, 0.30);
-    border-radius: 12px;
-    padding: 1.1rem;
-    margin: 0.8rem 0;
-    background-color: rgba(255, 255, 255, 0.02);
-}
-
-.light-box {
-    border: 1px solid rgba(128, 128, 128, 0.25);
-    border-radius: 12px;
-    padding: 0.9rem;
-    text-align: center;
-    background-color: rgba(255, 255, 255, 0.02);
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
-
-.reason-box {
-    background-color: rgba(128, 128, 128, 0.08);
-    border-left: 4px solid #4CAF50;
-    padding: 0.8rem;
-    border-radius: 4px;
-    margin: 0.6rem 0;
-    line-height: 1.5;
-}
-</style>
-""", unsafe_allow_html=True)
+    .trade-card {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid rgba(128, 128, 128, 0.30);
+        border-radius: 12px;
+        padding: 1.1rem;
+        margin: 0.8rem 0;
+        background-color: rgba(255, 255, 255, 0.02);
+    }
+    .light-box {
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: 12px;
+        padding: 0.9rem;
+        text-align: center;
+        background-color: rgba(255, 255, 255, 0.02);
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .reason-box {
+        background-color: rgba(128, 128, 128, 0.08);
+        border-left: 4px solid #4CAF50;
+        padding: 0.8rem;
+        border-radius: 4px;
+        margin: 0.6rem 0;
+        line-height: 1.5;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # =========================================================
 # OPTIONAL ENGINE IMPORTS WITH FAIL-SAFE FALLBACKS
 # =========================================================
-
 try:
     from telemetry_engine import TelemetryEngine
 except Exception:
@@ -91,7 +93,6 @@ except Exception:
 # =========================================================
 # SECRETS & CREDENTIALS MANAGEMENT
 # =========================================================
-
 def secret(name):
     try:
         val = st.secrets.get(name)
@@ -110,7 +111,6 @@ GEMINI_MODEL = secret("GEMINI_MODEL") or "gemini-2.5-flash"
 # =========================================================
 # UTILITIES & NORMALIZATION
 # =========================================================
-
 def num(x, default=None):
     try:
         if x is None:
@@ -199,7 +199,6 @@ def normalize_option_type(value):
 # =========================================================
 # BROKER SESSION & TELEMETRY
 # =========================================================
-
 @st.cache_resource(show_spinner=False)
 def create_telemetry():
     if TelemetryEngine is None or not all([ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, ANGEL_TOTP_SECRET]):
@@ -209,7 +208,7 @@ def create_telemetry():
             api_key=ANGEL_API_KEY,
             client_code=ANGEL_CLIENT_CODE,
             pin=ANGEL_PIN,
-            totp_secret=ANGEL_TOTP_SECRET
+            totp_secret=ANGEL_TOTP_SECRET,
         )
     except Exception:
         return None
@@ -223,7 +222,7 @@ def create_options():
             return OptionsEngine(
                 jwt_token=ANGEL_JWT_TOKEN,
                 api_key=ANGEL_API_KEY,
-                client_code=ANGEL_CLIENT_CODE
+                client_code=ANGEL_CLIENT_CODE,
             )
     except Exception:
         pass
@@ -233,73 +232,128 @@ telemetry = create_telemetry()
 options_engine = create_options()
 
 UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"]
-SPOT_TOKENS = {
-    "NIFTY": ("NSE", "99926000"),
-    "BANKNIFTY": ("NSE", "99926009"),
-    "FINNIFTY": ("NSE", "99926037"),
-    "MIDCPNIFTY": ("NSE", "99926074"),
-    "SENSEX": ("BSE", "99919000"),
-    "INDIA_VIX": ("NSE", "99926017")
+
+# Angel One Official Instrument Specs
+INDEX_METADATA = {
+    "NIFTY": {
+        "exchange": "NSE",
+        "symbol": "Nifty 50",
+        "live_tokens": ["26000", "99926000"],
+        "candle_token": "99926000",
+    },
+    "BANKNIFTY": {
+        "exchange": "NSE",
+        "symbol": "Nifty Bank",
+        "live_tokens": ["26009", "99926009"],
+        "candle_token": "99926009",
+    },
+    "FINNIFTY": {
+        "exchange": "NSE",
+        "symbol": "FINNIFTY",
+        "live_tokens": ["99926037"],
+        "candle_token": "99926037",
+    },
+    "MIDCPNIFTY": {
+        "exchange": "NSE",
+        "symbol": "MIDCPNIFTY",
+        "live_tokens": ["99926074"],
+        "candle_token": "99926074",
+    },
+    "SENSEX": {
+        "exchange": "BSE",
+        "symbol": "SENSEX",
+        "live_tokens": ["99919000"],
+        "candle_token": "99919000",
+    },
+    "INDIA_VIX": {
+        "exchange": "NSE",
+        "symbol": "India VIX",
+        "live_tokens": ["99926017"],
+        "candle_token": "99926017",
+    },
 }
 
-@st.cache_data(ttl=120, show_spinner=False)
-def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=5):
-    if telemetry is None or symbol not in SPOT_TOKENS:
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=3):
+    if telemetry is None or symbol not in INDEX_METADATA:
         return pd.DataFrame()
-    exchange, token = SPOT_TOKENS[symbol]
+
+    meta = INDEX_METADATA[symbol]
+    exchange = meta["exchange"]
+    token = meta["candle_token"]
+
     try:
         df = clean_df(telemetry.fetch_ohlcv(exchange=exchange, token=token, interval=interval, days=days))
         if df.empty:
             return df
+
         rename = {}
         for c in df.columns:
             lc = str(c).lower()
-            if lc in ["open", "o"]: rename[c] = "open"
-            elif lc in ["high", "h"]: rename[c] = "high"
-            elif lc in ["low", "l"]: rename[c] = "low"
-            elif lc in ["close", "c", "ltp"]: rename[c] = "close"
-            elif lc in ["volume", "vol"]: rename[c] = "volume"
+            if lc in ["open", "o"]:
+                rename[c] = "open"
+            elif lc in ["high", "h"]:
+                rename[c] = "high"
+            elif lc in ["low", "l"]:
+                rename[c] = "low"
+            elif lc in ["close", "c", "ltp"]:
+                rename[c] = "close"
+            elif lc in ["volume", "vol"]:
+                rename[c] = "volume"
         df = df.rename(columns=rename)
+
         needed = ["open", "high", "low", "close"]
         for c in needed + (["volume"] if "volume" in df.columns else []):
             df[c] = pd.to_numeric(df[c], errors="coerce")
+
         return df.dropna(subset=needed).reset_index(drop=True)
     except Exception:
         return pd.DataFrame()
 
 def get_spot(symbol):
-    if telemetry is not None:
+    """
+    Direct live LTP fetch from Angel One REST API.
+    Does NOT fall back to historical candle close to prevent Monday stale data.
+    """
+    if telemetry is None or symbol not in INDEX_METADATA:
+        return None
+
+    meta = INDEX_METADATA[symbol]
+    exchange = meta["exchange"]
+    tradingsymbol = meta["symbol"]
+
+    # 1. Direct query to Angel One ltpData
+    for token in meta["live_tokens"]:
         try:
-            res = telemetry.get_ltp(symbol)
-            if isinstance(res, dict):
-                for k in ["ltp", "lastTradedPrice", "close"]:
-                    if k in res and num(res[k]) is not None:
-                        return num(res[k])
-            v = num(res)
-            if v and v > 0:
-                return v
+            if hasattr(telemetry, "smart_api") and telemetry.smart_api:
+                res = telemetry.smart_api.ltpData(
+                    exchange=exchange,
+                    tradingsymbol=tradingsymbol,
+                    symboltoken=token,
+                )
+                if res and res.get("status") and "data" in res:
+                    val = float(res["data"].get("ltp", 0.0))
+                    if val > 0:
+                        return val
         except Exception:
             pass
+
+    # 2. Telemetry helper fallback
     try:
-        df = fetch_ohlcv(symbol, "FIVE_MINUTE", 1)
-        if not df.empty:
-            return float(df["close"].iloc[-1])
+        res = telemetry.get_ltp(tradingsymbol)
+        val = num(res.get("ltp") if isinstance(res, dict) else res)
+        if val and val > 0:
+            return val
     except Exception:
         pass
+
     return None
 
 # =========================================================
 # INDIA VIX VOLATILITY PROFILE
 # =========================================================
-
 def get_india_vix():
-    vix = None
-    if telemetry is not None:
-        try:
-            res = telemetry.get_ltp("INDIA_VIX")
-            vix = num(res.get("ltp") if isinstance(res, dict) else res)
-        except Exception:
-            pass
+    vix = get_spot("INDIA_VIX")
     if vix is None:
         vix = 14.5
 
@@ -321,12 +375,15 @@ def get_india_vix():
 # =========================================================
 # INSTITUTIONAL FLOW & BLOCK DEALS
 # =========================================================
-
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_fii_dii():
     fii_net, dii_net = None, None
     try:
-        resp = requests.get("https://fii-diidata.mrchartist.com/api/data", timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(
+            "https://fii-diidata.mrchartist.com/api/data",
+            timeout=4,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
         if resp.ok:
             data = resp.json()
             if isinstance(data, list) and data:
@@ -350,7 +407,7 @@ def fetch_fii_dii():
         "dii_net": dii_net,
         "combined": (fii_net + dii_net) if (fii_net is not None and dii_net is not None) else None,
         "score": score,
-        "bias": bias
+        "bias": bias,
     }
 
 fii_dii = fetch_fii_dii()
@@ -358,7 +415,6 @@ fii_dii = fetch_fii_dii()
 # =========================================================
 # EXPIRIES & OPTIONS CHAIN
 # =========================================================
-
 @st.cache_data(ttl=300, show_spinner=False)
 def load_expiries(symbol):
     if options_engine is None:
@@ -369,7 +425,8 @@ def load_expiries(symbol):
         for item in res or []:
             v = item.get("value") or item.get("expiry") if isinstance(item, dict) else item
             v = expiry_norm(v)
-            if v: vals.append(v)
+            if v:
+                vals.append(v)
         return sorted(set(vals))
     except Exception:
         return []
@@ -410,13 +467,21 @@ def calculate_live_derivatives_proxy(chain, pcr):
 # =========================================================
 # TECHNICAL INDICATORS ENGINE
 # =========================================================
-
-def add_indicators(df):
+def add_indicators(df, current_live_price=None):
     if df is None or df.empty:
         return pd.DataFrame()
     df = df.copy()
+
+    # Update latest candle close with active live tick
+    if current_live_price and current_live_price > 0:
+        last_idx = df.index[-1]
+        df.at[last_idx, "close"] = current_live_price
+        if current_live_price > df.at[last_idx, "high"]:
+            df.at[last_idx, "high"] = current_live_price
+        if current_live_price < df.at[last_idx, "low"]:
+            df.at[last_idx, "low"] = current_live_price
+
     close, high, low = df["close"], df["high"], df["low"]
-    
     df["EMA20"] = close.ewm(span=20, adjust=False).mean()
     df["EMA50"] = close.ewm(span=50, adjust=False).mean()
 
@@ -452,11 +517,11 @@ def add_indicators(df):
 
     return df
 
-def analyze_market(symbol, proxy=None):
+def analyze_market(symbol, proxy=None, explicit_spot=None):
     res = {
         "symbol": symbol,
         "trend": "UNKNOWN",
-        "last": None,
+        "last": explicit_spot,
         "rsi": None,
         "adx": None,
         "ema20": None,
@@ -467,14 +532,15 @@ def analyze_market(symbol, proxy=None):
         "technical_score": 0,
         "institutional_score": 0,
         "score": 0,
-        "reasons": []
+        "reasons": [],
     }
-    df5 = add_indicators(fetch_ohlcv(symbol, "FIVE_MINUTE", 5))
+
+    df5 = add_indicators(fetch_ohlcv(symbol, "FIVE_MINUTE", 3), current_live_price=explicit_spot)
     if df5.empty:
         return res
 
     row = df5.iloc[-1]
-    last = num(row.get("close"))
+    last = explicit_spot or num(row.get("close"))
     res["last"] = last
     res["rsi"] = num(row.get("RSI"))
     res["adx"] = num(row.get("ADX"))
@@ -520,20 +586,24 @@ def analyze_market(symbol, proxy=None):
     return res
 
 # =========================================================
-# 🚦 TRAFFIC LIGHT CONFLUENCE ENGINES
+# TRAFFIC LIGHT CONFLUENCE ENGINES
 # =========================================================
-
 def analyze_candlesticks_and_volume(df):
     """LIGHT 1: Candlestick Pattern Recognition & Volume Spread Analysis"""
     if df is None or len(df) < 5:
-        return {"status": "YELLOW", "pattern": "AWAITING TICK DATA", "vol_ratio": 1.0, "reversal_risk": False, "reason": "Candle array load ho raha hai."}
+        return {
+            "status": "YELLOW",
+            "pattern": "AWAITING TICK DATA",
+            "vol_ratio": 1.0,
+            "reversal_risk": False,
+            "reason": "Candle array load ho raha hai.",
+        }
 
     c = df.iloc[-1]
     p = df.iloc[-2]
     open_p, close_p = float(c["open"]), float(c["close"])
     high_p, low_p = float(c["high"]), float(c["low"])
     vol = float(c["volume"]) if "volume" in c and pd.notna(c["volume"]) else 1.0
-
     avg_vol = float(df["volume"].tail(20).mean()) if "volume" in df.columns else 1.0
     vol_ratio = (vol / avg_vol) if avg_vol > 0 else 1.0
     vol_spike = vol_ratio >= 1.30
@@ -549,7 +619,7 @@ def analyze_candlesticks_and_volume(df):
             "pattern": "DOJI (PAUSE / INDECISION)",
             "vol_ratio": vol_ratio,
             "reversal_risk": False,
-            "reason": f"Doji candle bani hai ({body/rng:.2f} ratio). Market pause mode mein hai."
+            "reason": f"Doji candle bani hai ({body/rng:.2f} ratio). Market pause mode mein hai.",
         }
 
     if lower_w >= (2.0 * body) and upper_w <= (0.25 * body):
@@ -558,7 +628,7 @@ def analyze_candlesticks_and_volume(df):
             "pattern": "BULLISH HAMMER PIN",
             "vol_ratio": vol_ratio,
             "reversal_risk": False,
-            "reason": f"Bottom rejection hammer with {vol_ratio:.2f}x volume confirmation."
+            "reason": f"Bottom rejection hammer with {vol_ratio:.2f}x volume confirmation.",
         }
 
     if upper_w >= (2.0 * body) and lower_w <= (0.25 * body):
@@ -567,7 +637,7 @@ def analyze_candlesticks_and_volume(df):
             "pattern": "BEARISH SHOOTING STAR",
             "vol_ratio": vol_ratio,
             "reversal_risk": True,
-            "reason": f"Top rejection shooting star with {vol_ratio:.2f}x volume surge."
+            "reason": f"Top rejection shooting star with {vol_ratio:.2f}x volume surge.",
         }
 
     if (close_p > open_p) and (float(p["close"]) < float(p["open"])) and (close_p >= float(p["open"])):
@@ -576,7 +646,7 @@ def analyze_candlesticks_and_volume(df):
             "pattern": "BULLISH ENGULFING",
             "vol_ratio": vol_ratio,
             "reversal_risk": False,
-            "reason": f"Bullish engulfing overriding prior red candle with {vol_ratio:.2f}x volume."
+            "reason": f"Bullish engulfing overriding prior red candle with {vol_ratio:.2f}x volume.",
         }
 
     if (close_p < open_p) and (float(p["close"]) > float(p["open"])) and (close_p <= float(p["open"])):
@@ -585,7 +655,7 @@ def analyze_candlesticks_and_volume(df):
             "pattern": "BEARISH ENGULFING",
             "vol_ratio": vol_ratio,
             "reversal_risk": True,
-            "reason": f"Bearish engulfing breakdown with {vol_ratio:.2f}x volume breakdown."
+            "reason": f"Bearish engulfing breakdown with {vol_ratio:.2f}x volume breakdown.",
         }
 
     if body >= (0.65 * rng):
@@ -596,35 +666,40 @@ def analyze_candlesticks_and_volume(df):
             "pattern": name,
             "vol_ratio": vol_ratio,
             "reversal_risk": (status == "RED"),
-            "reason": f"Solid directional expansion candle with {vol_ratio:.2f}x volume."
+            "reason": f"Solid directional expansion candle with {vol_ratio:.2f}x volume.",
         }
 
-    return {"status": "YELLOW", "pattern": "RANGE CONSOLIDATION", "vol_ratio": vol_ratio, "reversal_risk": False, "reason": "Normal candle range without breakout confirmation."}
+    return {
+        "status": "YELLOW",
+        "pattern": "RANGE CONSOLIDATION",
+        "vol_ratio": vol_ratio,
+        "reversal_risk": False,
+        "reason": "Normal candle range without breakout confirmation.",
+    }
 
-def analyze_smart_money(fii_dii, pcr):
+def analyze_smart_money(fii_dii_data, pcr_val):
     """LIGHT 2: Institutional FII/DII Cash Flow & Options Put-Call Ratio"""
     score = 0
     notes = []
-
-    if pcr is not None:
-        if pcr >= 1.25:
+    if pcr_val is not None:
+        if pcr_val >= 1.25:
             score += 2
-            notes.append(f"PCR {pcr:.2f} solid put writing floor indicate karta hai.")
-        elif pcr >= 1.00:
+            notes.append(f"PCR {pcr_val:.2f} solid put writing floor indicate karta hai.")
+        elif pcr_val >= 1.00:
             score += 1
-            notes.append(f"PCR {pcr:.2f} mildly supportive hai.")
-        elif 0.70 < pcr < 1.00:
+            notes.append(f"PCR {pcr_val:.2f} mildly supportive hai.")
+        elif 0.70 < pcr_val < 1.00:
             score -= 1
-            notes.append(f"PCR {pcr:.2f} cautious resistance indicate karta hai.")
+            notes.append(f"PCR {pcr_val:.2f} cautious resistance indicate karta hai.")
         else:
             score -= 2
-            notes.append(f"PCR {pcr:.2f} heavy call writing pressure create kar raha hai.")
+            notes.append(f"PCR {pcr_val:.2f} heavy call writing pressure create kar raha hai.")
     else:
         notes.append("PCR unavailable.")
 
-    if fii_dii.get("available"):
-        score += fii_dii.get("score", 0)
-        notes.append(f"FII/DII Bias: {fii_dii.get('bias')}.")
+    if fii_dii_data.get("available"):
+        score += fii_dii_data.get("score", 0)
+        notes.append(f"FII/DII Bias: {fii_dii_data.get('bias')}.")
     else:
         notes.append("Cash flow neutral/pending.")
 
@@ -676,7 +751,7 @@ def evaluate_all_permutations(l1, l2, l3):
             "confidence": 95,
             "badge": "success",
             "allocation": "100% Capital Size",
-            "rationale": "High-volume bullish candle + Institutional FII/PCR support + Positive macro news flow aligned."
+            "rationale": "High-volume bullish candle + Institutional FII/PCR support + Positive macro news flow aligned.",
         }
     if reds == 3:
         return {
@@ -685,7 +760,7 @@ def evaluate_all_permutations(l1, l2, l3):
             "confidence": 95,
             "badge": "error",
             "allocation": "100% Capital Size",
-            "rationale": "High-volume breakdown candle + Heavy call writing + Negative macro headwinds aligned."
+            "rationale": "High-volume breakdown candle + Heavy call writing + Negative macro headwinds aligned.",
         }
     if s1 == "GREEN" and s2 == "GREEN":
         return {
@@ -694,7 +769,7 @@ def evaluate_all_permutations(l1, l2, l3):
             "confidence": 80,
             "badge": "success",
             "allocation": "60% Position Size",
-            "rationale": "Price action aur institutional flow bullish hain; macro catalyst quiet hai."
+            "rationale": "Price action aur institutional flow bullish hain; macro catalyst quiet hai.",
         }
     if s1 == "RED" and s2 == "RED":
         return {
@@ -703,7 +778,7 @@ def evaluate_all_permutations(l1, l2, l3):
             "confidence": 80,
             "badge": "error",
             "allocation": "60% Position Size",
-            "rationale": "Price action aur institutional flow bearish breakdown par hain."
+            "rationale": "Price action aur institutional flow bearish breakdown par hain.",
         }
     if (s1 == "GREEN" and s2 == "RED") or (s1 == "RED" and s2 == "GREEN"):
         return {
@@ -712,26 +787,23 @@ def evaluate_all_permutations(l1, l2, l3):
             "confidence": 15,
             "badge": "info",
             "allocation": "0% Capital Size",
-            "rationale": "Dangerous divergence: Candlestick pattern smart money positioning ke directly opposite hai."
+            "rationale": "Dangerous divergence: Candlestick pattern smart money positioning ke directly opposite hai.",
         }
-
     return {
         "signal": "⏸️ NO TRADE / WAIT FOR CLARITY",
         "action": "STAND ASIDE",
         "confidence": 20,
         "badge": "info",
         "allocation": "0% Capital Size",
-        "rationale": "Market consolidation ya Doji candle phase mein hai. Directional edge absent hai."
+        "rationale": "Market consolidation ya Doji candle phase mein hai. Directional edge absent hai.",
     }
 
 # =========================================================
 # DETAILED MULTI-TRADE IDEA GENERATOR ENGINE
 # =========================================================
-
 def get_optimal_option_strike(symbol, spot, side, chain=None):
     step = 50 if symbol in ["NIFTY", "FINNIFTY"] else 100
     base_strike = int(round(spot / step) * step)
-
     ltp = round(spot * 0.0075, 1)
     oi = 4500000
     chg_oi = 850000
@@ -774,7 +846,7 @@ def get_optimal_option_strike(symbol, spot, side, chain=None):
         "gamma": gamma,
         "theta": theta,
         "vega": vega,
-        "iv": iv
+        "iv": iv,
     }
 
 def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry=None, chain=None, confluence=None, vix_info=None):
@@ -807,11 +879,9 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
     confidence = confluence.get("confidence", 75) if confluence else 75
     sl_mult = vix_info.get("sl_multiplier", 0.85) if vix_info else 0.85
 
-    # Detailed trade rationale synthesis (Aadhar)
     reasons_list = market.get("reasons", [])
     vsa_text = "Volume expansion confirmed" if any("volume" in r.lower() for r in reasons_list) else "Technical levels aligned"
     trend_state = "Bullish Uptrend" if bullish else "Bearish Breakdown"
-    
     why_explanation = (
         f"Ye trade {trend_state} ke aadhar par formulate kiya gaya hai. "
         f"{' '.join(reasons_list[:4])} "
@@ -845,7 +915,7 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         "institutional_score": market.get("institutional_score", 0),
         "why": why_explanation,
         "invalidation": f"Agar spot price {sl:,.2f} SL level ke {'neeche' if bullish else 'upar'} candle close karta hai toh trade cancel ho jayega.",
-        "trailing": "Target 1 hit hote hi 50% position book karein aur Stop Loss ko Cost (Entry price) par trail karein."
+        "trailing": "Target 1 hit hote hi 50% position book karein aur Stop Loss ko Cost (Entry price) par trail karein.",
     }
 
     if instrument == "INDEX OPTION":
@@ -885,22 +955,21 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
 # =========================================================
 # AI GEMINI SYNTHESIS ENGINE
 # =========================================================
-
 def ask_gemini(ideas, market_data):
     if not GEMINI_API_KEY:
         return None
+
     payload = {"market": market_data, "ideas": ideas, "fii_dii": fii_dii}
     prompt = f"""
-You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY).
-Explain the generated trade setups in detail.
-Focus on:
-1. Kis technical aur institutional aadhar par trade banaya gaya hai.
-2. Greeks profile (Delta responsiveness, Theta risk).
-3. Risk management aur trailing stop-loss execution.
+    You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY).
+    Explain the generated trade setups in detail. Focus on:
+    1. Kis technical aur institutional aadhar par trade banaya gaya hai.
+    2. Greeks profile (Delta responsiveness, Theta risk).
+    3. Risk management aur trailing stop-loss execution.
 
-DATA PAYLOAD:
-{json.dumps(payload, default=str)}
-"""
+    DATA PAYLOAD:
+    {json.dumps(payload, default=str)}
+    """
     try:
         from google import genai
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -908,6 +977,7 @@ DATA PAYLOAD:
         return getattr(resp, "text", None)
     except Exception:
         pass
+
     try:
         import google.generativeai as legacy_genai
         legacy_genai.configure(api_key=GEMINI_API_KEY)
@@ -920,15 +990,18 @@ DATA PAYLOAD:
 # =========================================================
 # APPLICATION DASHBOARD RENDERING
 # =========================================================
-
 st.title("⚡ AI Institutional Live Trading Advisor")
 st.caption("Triple Traffic Light Confluence • Live Delta Greeks • 4-5 High Conviction Trade Ideas • Paper Trading Only")
 
 col_t1, col_t2, col_t3, col_t4 = st.columns(4)
-with col_t1: st.metric("Mode", "PAPER SIMULATION")
-with col_t2: st.metric("Market Status", "OPEN" if market_open() else "AFTER MARKET")
-with col_t3: st.metric("Broker API", "CONNECTED" if telemetry is not None else "STANDALONE")
-with col_t4: st.metric("AI Core", "ACTIVATED" if GEMINI_API_KEY else "RULES MODE")
+with col_t1:
+    st.metric("Mode", "PAPER SIMULATION")
+with col_t2:
+    st.metric("Market Status", "OPEN" if market_open() else "AFTER MARKET")
+with col_t3:
+    st.metric("Broker API", "CONNECTED" if telemetry is not None else "STANDALONE")
+with col_t4:
+    st.metric("AI Core", "ACTIVATED" if GEMINI_API_KEY else "RULES MODE")
 
 # Sidebar
 st.sidebar.header("⚙️ Trading Environment")
@@ -937,33 +1010,45 @@ expiries = load_expiries(underlying)
 selected_expiry = st.sidebar.selectbox("Target Expiry", expiries, format_func=expiry_label) if expiries else None
 option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-if st.sidebar.button("🔄 Refresh Market Data", use_container_width=True):
+# Live Auto-Refresh Stream Settings
+st.sidebar.markdown("---")
+st.sidebar.subheader("📡 Live Market Stream")
+auto_stream = st.sidebar.checkbox("Continuous Live Stream", value=True)
+refresh_rate = st.sidebar.slider("Refresh Interval (Seconds)", min_value=2, max_value=15, value=3)
+
+if st.sidebar.button("🔄 Force Refresh Now", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
-spot = get_spot(underlying) or 24500.0
+# SPOT PRICE CALCULATION (Live with zero Monday stale fallback)
+spot = get_spot(underlying)
 chain, _ = get_chain(underlying, selected_expiry, spot)
 pcr = calculate_pcr(chain)
 proxy = calculate_live_derivatives_proxy(chain, pcr)
-df5 = fetch_ohlcv(underlying, "FIVE_MINUTE", 5)
 vix_info = get_india_vix()
-market = analyze_market(underlying, proxy)
+market = analyze_market(underlying, proxy, explicit_spot=spot)
 
-# Header Row
+# Header Metric Row
 s1, s2, s3, s4 = st.columns(4)
-with s1: st.metric("Underlying Spot", fmt(spot))
-with s2: st.metric("India VIX", f"{vix_info['vix']:.2f} ({vix_info['regime']})")
-with s3: st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "1.12")
-with s4: st.metric("FII/DII Net Bias", fii_dii.get("bias", "NEUTRAL"))
+with s1:
+    if spot is not None:
+        st.metric(f"{underlying} Spot (Live)", fmt(spot))
+    else:
+        st.metric(f"{underlying} Spot", "Awaiting Tick...", delta="Connecting Angel")
+with s2:
+    st.metric("India VIX", f"{vix_info['vix']:.2f} ({vix_info['regime']})")
+with s3:
+    st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "1.12")
+with s4:
+    st.metric("FII/DII Net Bias", fii_dii.get("bias", "NEUTRAL"))
 
 st.divider()
 
 # =========================================================
-# 🚦 TRAFFIC LIGHTS & DYNAMIC EXIT MONITOR
+# TRAFFIC LIGHTS & DYNAMIC EXIT MONITOR
 # =========================================================
-
 st.markdown("## 🚦 Triple Traffic Light Confluence System")
-
+df5 = add_indicators(fetch_ohlcv(underlying, "FIVE_MINUTE", 3), current_live_price=spot)
 light1 = analyze_candlesticks_and_volume(df5)
 light2 = analyze_smart_money(fii_dii, pcr)
 light3 = fetch_news_sentiment()
@@ -972,7 +1057,6 @@ confluence = evaluate_all_permutations(light1, light2, light3)
 icon_map = {"GREEN": "🟢 GREEN", "RED": "🔴 RED", "YELLOW": "🟡 YELLOW"}
 
 tl1, tl2, tl3 = st.columns(3)
-
 with tl1:
     st.markdown(f'<div class="light-box"><h3>{icon_map[light1["status"]]}</h3><b>Light 1: Price Action</b><br><span style="font-size:12px;">Candlestick Patterns & Volume</span></div>', unsafe_allow_html=True)
     st.write(f"**Pattern:** {light1['pattern']}")
@@ -1030,9 +1114,8 @@ with st.expander("📌 Active Position Exit Rules Check (Live)", expanded=True):
 st.divider()
 
 # =========================================================
-# 🎯 4-5 DETAILED TRADE IDEAS WITH FULL EXPLANATIONS
+# DETAILED MULTI-TRADE IDEA GENERATOR ENGINE
 # =========================================================
-
 st.markdown("## 🎯 Detailed High-Conviction Trade Setups")
 st.caption("Technical Structure • Delta Greeks • Exact Strike • Setup Aadhar Explanation • Trailing SL Rules")
 
@@ -1043,26 +1126,29 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
 
         # Setup 1: Selected Underlying Cash/Spot
         setup1 = make_trade_idea(market, underlying, instrument="INDEX", expiry=selected_expiry, chain=chain, confluence=confluence, vix_info=vix_info)
-        if setup1: ideas.append(setup1)
+        if setup1:
+            ideas.append(setup1)
 
-        # Setup 2: Selected Underlying Option Contract (Exact Strike with Greeks)
+        # Setup 2: Selected Underlying Option Contract
         setup2 = make_trade_idea(market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=chain, confluence=confluence, vix_info=vix_info)
-        if setup2: ideas.append(setup2)
+        if setup2:
+            ideas.append(setup2)
 
-        # Setup 3, 4, 5: Alternate Indices (BANKNIFTY, FINNIFTY, SENSEX)
+        # Setup 3, 4, 5: Alternate Indices
         for alt_sym in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"]:
             if alt_sym != underlying:
-                alt_market = analyze_market(alt_sym, proxy)
-                
-                # Spot idea
-                alt_spot_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX", confluence=confluence, vix_info=vix_info)
-                if alt_spot_idea: ideas.append(alt_spot_idea)
-                
-                # Option contract idea
-                alt_opt_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX OPTION", confluence=confluence, vix_info=vix_info)
-                if alt_opt_idea: ideas.append(alt_opt_idea)
+                alt_spot = get_spot(alt_sym)
+                alt_market = analyze_market(alt_sym, proxy, explicit_spot=alt_spot)
 
-        # Filter unique and cap at 5 high conviction setups
+                alt_spot_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX", confluence=confluence, vix_info=vix_info)
+                if alt_spot_idea:
+                    ideas.append(alt_spot_idea)
+
+                alt_opt_idea = make_trade_idea(alt_market, alt_sym, instrument="INDEX OPTION", confluence=confluence, vix_info=vix_info)
+                if alt_opt_idea:
+                    ideas.append(alt_opt_idea)
+
+        # Filter unique and cap at 5
         unique_ideas = []
         seen = set()
         for item in ideas:
@@ -1070,59 +1156,69 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
             if key not in seen:
                 seen.add(key)
                 unique_ideas.append(item)
+
         ideas = unique_ideas[:5]
 
-    if not ideas:
-        st.warning("Market conditions indicate neutral consolidation or conflict across indices. No safe trade setup found.")
-    else:
-        st.success(f"{len(ideas)} high-conviction trade setup(s) identified with complete execution parameters.")
+        if not ideas:
+            st.warning("Market conditions indicate neutral consolidation or conflict across indices. No safe trade setup found.")
+        else:
+            st.success(f"{len(ideas)} high-conviction trade setup(s) identified with complete execution parameters.")
+            for i, idea in enumerate(ideas, start=1):
+                st.markdown(
+                    f"""
+                    <div class="trade-card">
+                        <h3>Trade Setup {i} — {idea['symbol']} ({idea['segment']})</h3>
+                        <b>Holding Period:</b> {idea['holding']} | <b>Conviction Score:</b> {idea['confidence']}% | <b>Instrument:</b> {idea['option'] + ' ' + str(idea['strike']) if idea.get('option') else 'CASH SPOT'}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-        for i, idea in enumerate(ideas, start=1):
-            st.markdown(
-                f"""
-                <div class="trade-card">
-                <h3>Trade Setup {i} — {idea['symbol']} ({idea['segment']})</h3>
-                <b>Holding Period:</b> {idea['holding']} | <b>Conviction Score:</b> {idea['confidence']}% | <b>Instrument:</b> {idea['option'] + ' ' + str(idea['strike']) if idea.get('option') else 'CASH SPOT'}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric("Action", f"{idea['action']} {'(' + idea['option'] + ')' if idea.get('option') else ''}")
+                with c2:
+                    st.metric("Target Entry", f"₹{fmt(idea['entry'])}")
+                with c3:
+                    st.metric("Stop Loss (SL)", f"₹{fmt(idea['sl'])}")
+                with c4:
+                    st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}")
 
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: st.metric("Action", f"{idea['action']} {'(' + idea['option'] + ')' if idea.get('option') else ''}")
-            with c2: st.metric("Target Entry", f"₹{fmt(idea['entry'])}")
-            with c3: st.metric("Stop Loss (SL)", f"₹{fmt(idea['sl'])}")
-            with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}")
+                c5, c6, c7, c8 = st.columns(4)
+                with c5:
+                    st.metric("Target 1 (+20%)", f"₹{fmt(idea['target1'])}")
+                with c6:
+                    st.metric("Target 2 (+35%)", f"₹{fmt(idea['target2'])}")
+                with c7:
+                    st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
+                with c8:
+                    st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
 
-            c5, c6, c7, c8 = st.columns(4)
-            with c5: st.metric("Target 1 (+20%)", f"₹{fmt(idea['target1'])}")
-            with c6: st.metric("Target 2 (+35%)", f"₹{fmt(idea['target2'])}")
-            with c7: st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
-            with c8: st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
+                if idea.get("option"):
+                    g1, g2, g3, g4, g5 = st.columns(5)
+                    with g1:
+                        st.metric("Delta (Δ)", f"{idea.get('delta', 0.54):.2f}")
+                    with g2:
+                        st.metric("Theta (Θ)", f"{idea.get('theta', -12.5):.1f}")
+                    with g3:
+                        st.metric("Vega", f"{idea.get('vega', 14.2):.1f}")
+                    with g4:
+                        st.metric("IV (%)", f"{idea.get('iv', 14.8):.1f}%")
+                    with g5:
+                        st.metric("Open Interest", f"{idea.get('oi', 0):,}")
 
-            # Option Greeks & Derivatives Data if Option
-            if idea.get("option"):
-                g1, g2, g3, g4, g5 = st.columns(5)
-                with g1: st.metric("Delta (Δ)", f"{idea.get('delta', 0.54):.2f}")
-                with g2: st.metric("Theta (Θ)", f"{idea.get('theta', -12.5):.1f}")
-                with g3: st.metric("Vega", f"{idea.get('vega', 14.2):.1f}")
-                with g4: st.metric("IV (%)", f"{idea.get('iv', 14.8):.1f}%")
-                with g5: st.metric("Open Interest", f"{idea.get('oi', 0):,}")
-
-            # Trade Explanation Box (Aadhar)
-            st.markdown(
-                f"""
-                <div class="reason-box">
-                <b>📌 Trade Lene Ka Aadhar (Setup Logic):</b><br>
-                {idea['why']}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-            st.write(f"🛑 **Structural Invalidation Level:** {idea['invalidation']}")
-            st.write(f"📈 **Position Trailing Guidance:** {idea['trailing']}")
-            st.divider()
+                st.markdown(
+                    f"""
+                    <div class="reason-box">
+                        <b>📌 Trade Lene Ka Aadhar (Setup Logic):</b><br>
+                        {idea['why']}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.write(f"🛑 **Structural Invalidation Level:** {idea['invalidation']}")
+                st.write(f"📈 **Position Trailing Guidance:** {idea['trailing']}")
+                st.divider()
 
         # AI Gemini Analyst Synthesis
         if GEMINI_API_KEY:
@@ -1134,12 +1230,19 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
                         "spot": spot,
                         "vix": vix_info["vix"],
                         "pcr": pcr,
-                        "fii_dii": fii_dii
-                    }
+                        "fii_dii": fii_dii,
+                    },
                 )
                 if ai_text:
                     st.markdown("### 🤖 Institutional AI Analyst Report")
                     st.write(ai_text)
+                    st.divider()
 
-st.divider()
 st.caption("Paper Trading Engine Active • Real Broker Order Routing Disabled • Strictly Educational Quantitative Research.")
+
+# =========================================================
+# LIVE STREAM AUTO-RERUN LOOP
+# =========================================================
+if auto_stream and market_open():
+    time.sleep(refresh_rate)
+    st.rerun()
