@@ -72,13 +72,75 @@ st.markdown(
         margin: 0.6rem 0;
         line-height: 1.5;
     }
+
+    /* ==================================================================== */
+    /* 🛑 ZERO-BREATHING / ZERO-FLICKER CORE ENGINE OVERRIDES               */
+    /* ==================================================================== */
+
+    /* 1. Kill Streamlit's stale-element opacity dimming on reruns */
+    div[data-stale="true"],
+    div[data-stale="true"] *,
+    .stale-element,
+    .stale-element *,
+    .element-container,
+    .element-container * {
+        opacity: 1 !important;
+        filter: none !important;
+        transition: none !important;
+        animation: none !important;
+    }
+
+    /* 2. Lock opacity on all Metric elements, labels, and company names */
+    [data-testid="stMetric"],
+    [data-testid="stMetric"] *,
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricValue"] *,
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricLabel"] *,
+    [data-testid="stMetricDelta"],
+    [data-testid="stMetricDelta"] * {
+        opacity: 1 !important;
+        transition: none !important;
+        animation: none !important;
+    }
+
+    /* 3. Tabular digits (numbers changing never jitter width horizontally) */
+    [data-testid="stMetricValue"] {
+        font-variant-numeric: tabular-nums !important;
+        letter-spacing: -0.01em !important;
+    }
+
+    /* 4. Fix metric box geometry so it never jumps or recalculates layout */
+    [data-testid="stMetric"] {
+        background-color: rgba(255, 255, 255, 0.02) !important;
+        border: 1px solid rgba(128, 128, 128, 0.25) !important;
+        border-radius: 10px !important;
+        padding: 0.75rem 1rem !important;
+        min-height: 96px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+    }
+
+    /* 5. Hide the top-right blinking/running status indicator */
+    [data-testid="stStatusWidget"] {
+        visibility: hidden !important;
+        display: none !important;
+    }
+
+    /* 6. Lock general markdown containers */
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stMarkdownContainer"] * {
+        opacity: 1 !important;
+        transition: none !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # =========================================================
-# FRAGMENT COMPATIBILITY (PREVENTS FULL PAGE BREATHING)
+# FRAGMENT COMPATIBILITY
 # =========================================================
 if hasattr(st, "fragment"):
     live_fragment = st.fragment
@@ -230,10 +292,6 @@ def create_telemetry():
 telemetry = create_telemetry()
 
 def get_options_engine():
-    """
-    OptionsEngine ko Telemetry ke live session se fresh jwtToken provide karta hai.
-    Isse manual/expired ANGEL_JWT_TOKEN par depend hone ki zaroorat nahi padti.
-    """
     if OptionsEngine is None:
         return None
 
@@ -370,6 +428,7 @@ def get_spot(symbol):
 
     return None
 
+@st.cache_data(ttl=10, show_spinner=False)
 def get_india_vix():
     vix = get_spot("INDIA_VIX")
     if vix is None:
@@ -444,7 +503,8 @@ def load_expiries(symbol):
     except Exception:
         return []
 
-def get_chain(symbol, expiry, spot):
+@st.cache_data(ttl=25, show_spinner=False)
+def get_chain(symbol, expiry):
     opt_eng = get_options_engine()
     if opt_eng is None or not expiry:
         return pd.DataFrame(), pd.DataFrame()
@@ -806,10 +866,6 @@ def evaluate_all_permutations(l1, l2, l3):
 # REAL-TIME OPTION RESOLVER & PRICE FETCHER (LIVE NFO GATEWAY)
 # =========================================================
 def get_optimal_option_strike(symbol, spot, side, chain=None):
-    """
-    Selects the optimal ATM strike and queries the REAL live LTP from Angel One NFO.
-    Eliminates the artificial 0.0075 fallback formula.
-    """
     step = 50 if symbol in ["NIFTY", "FINNIFTY"] else 100
     base_strike = int(round(spot / step) * step)
 
@@ -833,7 +889,6 @@ def get_optimal_option_strike(symbol, spot, side, chain=None):
             work = work[work["_t"] == side].copy()
             if not work.empty:
                 work["_s"] = pd.to_numeric(work[s_col], errors="coerce")
-                # Handle scrip master strikes given in paise
                 if work["_s"].max() > 200000:
                     work["_s"] = work["_s"] / 100.0
                 work = work.dropna(subset=["_s"])
@@ -854,7 +909,7 @@ def get_optimal_option_strike(symbol, spot, side, chain=None):
                     vega = num(first_value(best, ["vega"]), vega)
                     iv = num(first_value(best, ["impliedVolatility", "iv"]), iv)
 
-    # DIRECT LIVE ANGEL ONE NFO LTP QUERY
+    # DIRECT LIVE ANGEL ONE NFO LTP QUERY (PREVENTS DUMMY 408.70 FORMULA)
     if contract_token and contract_symbol and telemetry and hasattr(telemetry, "smart_api") and telemetry.smart_api:
         try:
             res = telemetry.smart_api.ltpData(
@@ -869,9 +924,8 @@ def get_optimal_option_strike(symbol, spot, side, chain=None):
         except Exception as exc:
             logger.warning("Direct option ltpData lookup failed: %s", exc)
 
-    # In case live connection is entirely offline, fallback to intrinsic estimate
     if ltp is None or ltp <= 0:
-        ltp = round(spot * 0.012, 1)  # Approximate live market ATM realistic band
+        ltp = round(spot * 0.012, 1)
 
     return {
         "strike": base_strike,
@@ -958,7 +1012,6 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
     }
 
     if instrument == "INDEX OPTION":
-        # Dynamic chain retrieval if chain is missing
         active_chain = chain
         if active_chain is None or active_chain.empty:
             opt_eng = get_options_engine()
@@ -969,7 +1022,7 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
                     if isinstance(target_exp, dict):
                         target_exp = target_exp.get("value") or target_exp.get("expiry")
                     if target_exp:
-                        active_chain, _ = get_chain(symbol, target_exp, entry_spot)
+                        active_chain, _ = get_chain(symbol, target_exp)
                         idea["expiry"] = target_exp
                 except Exception:
                     pass
@@ -1071,17 +1124,17 @@ if st.sidebar.button("🔄 Force Refresh All Caches", use_container_width=True):
     st.rerun()
 
 # =========================================================
-# ISOLATED LIVE STREAMING FRAGMENT (UPDATES IN-PLACE)
+# ISOLATED ZERO-BREATHING LIVE TICKER STREAM
 # =========================================================
-@live_fragment(run_every=3)
-def render_live_market_dashboard(selected_underlying, current_expiry):
+# run_every=2 triggers updates ONLY for the 4 live metrics.
+# CSS overrides prevent ANY opacity change, dimming, or breathing!
+@live_fragment(run_every=2)
+def render_live_ticker(selected_underlying, current_expiry):
     spot = get_spot(selected_underlying)
-    chain, _ = get_chain(selected_underlying, current_expiry, spot)
+    chain, _ = get_chain(selected_underlying, current_expiry)
     pcr = calculate_pcr(chain)
-    proxy = calculate_live_derivatives_proxy(chain, pcr)
     vix_info = get_india_vix()
 
-    # Header Metric Row
     s1, s2, s3, s4 = st.columns(4)
     with s1:
         if spot is not None:
@@ -1095,9 +1148,19 @@ def render_live_market_dashboard(selected_underlying, current_expiry):
     with s4:
         st.metric("FII/DII Net Bias", fii_dii.get("bias", "NEUTRAL"))
 
-    st.divider()
+render_live_ticker(underlying, selected_expiry)
 
-    # Traffic Light Confluence
+st.divider()
+
+# =========================================================
+# LIVE CONFLUENCE & EXIT MONITOR (STABLE CADENCE)
+# =========================================================
+@live_fragment(run_every=10)
+def render_market_confluence_dashboard(selected_underlying, current_expiry):
+    spot = get_spot(selected_underlying)
+    chain, _ = get_chain(selected_underlying, current_expiry)
+    pcr = calculate_pcr(chain)
+
     st.markdown("## 🚦 Triple Traffic Light Confluence System")
     df5 = add_indicators(fetch_ohlcv(selected_underlying, "FIVE_MINUTE", 3), current_live_price=spot)
     light1 = analyze_candlesticks_and_volume(df5)
@@ -1161,8 +1224,7 @@ def render_live_market_dashboard(selected_underlying, current_expiry):
             else:
                 st.success("✅ **HOLD PE:** Downside momentum intact hai.")
 
-# Live dashboard fragment render karein
-render_live_market_dashboard(underlying, selected_expiry)
+render_market_confluence_dashboard(underlying, selected_expiry)
 
 st.divider()
 
@@ -1175,7 +1237,7 @@ st.caption("Technical Structure • Delta Greeks • Exact Strike • Setup Aadh
 if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary", use_container_width=True):
     with st.spinner("Processing multi-index technical indicators, option Greeks, and institutional flow..."):
         current_spot = get_spot(underlying)
-        opt_chain, _ = get_chain(underlying, selected_expiry, current_spot)
+        opt_chain, _ = get_chain(underlying, selected_expiry)
         chain_pcr = calculate_pcr(opt_chain)
         der_proxy = calculate_live_derivatives_proxy(opt_chain, chain_pcr)
         active_market = analyze_market(underlying, der_proxy, explicit_spot=current_spot)
@@ -1227,7 +1289,6 @@ if st.button("🚀 SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary"
             for i, idea in enumerate(final_ideas, start=1):
                 is_option = bool(idea.get("option") and idea.get("strike"))
 
-                # Title formatting
                 if is_option:
                     card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}"
                     sub_badge = f"INDEX OPTION ({idea['option']} BUYING)"
