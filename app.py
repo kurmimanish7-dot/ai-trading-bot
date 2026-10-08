@@ -528,77 +528,187 @@ options_engine = get_options_engine()
 UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"]
 
 INDEX_METADATA = {
-    "NIFTY": {"exchange": "NSE", "symbol": "Nifty 50", "live_tokens": ["26000", "99926000"], "candle_token": "99926000"},
-    "BANKNIFTY": {"exchange": "NSE", "symbol": "Nifty Bank", "live_tokens": ["26009", "99926009"], "candle_token": "99926009"},
-    "FINNIFTY": {"exchange": "NSE", "symbol": "FINNIFTY", "live_tokens": ["99926037"], "candle_token": "99926037"},
-    "MIDCPNIFTY": {"exchange": "NSE", "symbol": "MIDCPNIFTY", "live_tokens": ["99926074"], "candle_token": "99926074"},
-    "SENSEX": {"exchange": "BSE", "symbol": "SENSEX", "live_tokens": ["99919000"], "candle_token": "99919000"},
-    "INDIA_VIX": {"exchange": "NSE", "symbol": "India VIX", "live_tokens": ["99926017"], "candle_token": "99926017"},
+    "NIFTY": {
+        "exchange": "NSE",
+        "symbol": "Nifty 50",
+        "alt_symbols": ["NIFTY 50", "NIFTY", "Nifty 50"],
+        "live_tokens": ["26000", "99926000"],
+        "candle_token": "99926000",
+        "yfinance": "^NSEI",
+    },
+    "BANKNIFTY": {
+        "exchange": "NSE",
+        "symbol": "Nifty Bank",
+        "alt_symbols": ["NIFTY BANK", "BANKNIFTY", "Nifty Bank"],
+        "live_tokens": ["26009", "99926009"],
+        "candle_token": "99926009",
+        "yfinance": "^NSEBANK",
+    },
+    "FINNIFTY": {
+        "exchange": "NSE",
+        "symbol": "FINNIFTY",
+        "alt_symbols": ["FINNIFTY", "NIFTY FIN SERVICE"],
+        "live_tokens": ["99926037", "26037"],
+        "candle_token": "99926037",
+        "yfinance": "NIFTY_FIN_SERVICE.NS",
+    },
+    "MIDCPNIFTY": {
+        "exchange": "NSE",
+        "symbol": "MIDCPNIFTY",
+        "alt_symbols": ["MIDCPNIFTY", "NIFTY MID SELECT"],
+        "live_tokens": ["99926074", "26074"],
+        "candle_token": "99926074",
+        "yfinance": "NIFTY_MIDCAP_100.NS",
+    },
+    "SENSEX": {
+        "exchange": "BSE",
+        "symbol": "SENSEX",
+        "alt_symbols": ["SENSEX", "BSESN"],
+        "live_tokens": ["99919000", "1"],
+        "candle_token": "99919000",
+        "yfinance": "^BSESN",
+    },
+    "INDIA_VIX": {
+        "exchange": "NSE",
+        "symbol": "India VIX",
+        "alt_symbols": ["INDIA VIX", "INDIAVIX"],
+        "live_tokens": ["99926017", "26017"],
+        "candle_token": "99926017",
+        "yfinance": "^INDIAVIX",
+    },
 }
 
 # =========================================================
-# ESSENTIAL DATA FETCHERS & INSTITUTIONAL INDICATORS
+# BULLETPROOF HYBRID DATA FETCHERS (BROKER + LIVE FALLBACK)
 # =========================================================
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=5):
-    if telemetry is None or symbol not in INDEX_METADATA:
+    if symbol not in INDEX_METADATA:
         return pd.DataFrame()
 
     meta = INDEX_METADATA[symbol]
     exchange = meta["exchange"]
     token = meta["candle_token"]
 
-    try:
-        df = clean_df(telemetry.fetch_ohlcv(exchange=exchange, token=token, interval=interval, days=days))
-        if df.empty:
-            return df
+    # 1. Try Angel One SmartAPI
+    if telemetry and hasattr(telemetry, "fetch_ohlcv"):
+        try:
+            df = clean_df(telemetry.fetch_ohlcv(exchange=exchange, token=str(token), interval=interval, days=days))
+            if not df.empty:
+                rename = {}
+                for c in df.columns:
+                    lc = str(c).lower()
+                    if lc in ["open", "o"]: rename[c] = "open"
+                    elif lc in ["high", "h"]: rename[c] = "high"
+                    elif lc in ["low", "l"]: rename[c] = "low"
+                    elif lc in ["close", "c", "ltp"]: rename[c] = "close"
+                    elif lc in ["volume", "vol"]: rename[c] = "volume"
+                df = df.rename(columns=rename)
 
-        rename = {}
-        for c in df.columns:
-            lc = str(c).lower()
-            if lc in ["open", "o"]: rename[c] = "open"
-            elif lc in ["high", "h"]: rename[c] = "high"
-            elif lc in ["low", "l"]: rename[c] = "low"
-            elif lc in ["close", "c", "ltp"]: rename[c] = "close"
-            elif lc in ["volume", "vol"]: rename[c] = "volume"
-        df = df.rename(columns=rename)
+                needed = ["open", "high", "low", "close"]
+                for c in needed + (["volume"] if "volume" in df.columns else []):
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        needed = ["open", "high", "low", "close"]
-        for c in needed + (["volume"] if "volume" in df.columns else []):
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+                df = df.dropna(subset=needed).reset_index(drop=True)
+                if len(df) >= 5:
+                    return df
+        except Exception:
+            pass
 
-        return df.dropna(subset=needed).reset_index(drop=True)
-    except Exception:
-        return pd.DataFrame()
+    # 2. Resilient Live Fallback for Indices
+    yf_symbol = meta.get("yfinance")
+    if yf_symbol:
+        interval_map = {
+            "ONE_MINUTE": ("1m", "2d"),
+            "FIVE_MINUTE": ("5m", "5d"),
+            "TEN_MINUTE": ("5m", "5d"),
+            "FIFTEEN_MINUTE": ("15m", "5d"),
+            "THIRTY_MINUTE": ("30m", "1mo"),
+            "ONE_HOUR": ("60m", "1mo"),
+        }
+        yf_int, yf_range = interval_map.get(interval, ("5m", "5d"))
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval={yf_int}&range={yf_range}"
+            resp = requests.get(url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.ok:
+                data = resp.json()["chart"]["result"][0]
+                quotes = data["indicators"]["quote"][0]
+                df = pd.DataFrame({
+                    "open": quotes.get("open", []),
+                    "high": quotes.get("high", []),
+                    "low": quotes.get("low", []),
+                    "close": quotes.get("close", []),
+                    "volume": quotes.get("volume", []),
+                })
+                df = df.dropna(subset=["close"]).reset_index(drop=True)
+                if interval == "TEN_MINUTE":
+                    df = resample_5m_to_10m(df)
+                if not df.empty and len(df) >= 5:
+                    return df
+        except Exception:
+            pass
 
+    return pd.DataFrame()
+
+@st.cache_data(ttl=10, show_spinner=False)
 def get_spot(symbol):
-    if telemetry is None or symbol not in INDEX_METADATA:
+    if symbol not in INDEX_METADATA:
         return None
 
     meta = INDEX_METADATA[symbol]
     exchange = meta["exchange"]
-    tradingsymbol = meta["symbol"]
 
-    for token in meta["live_tokens"]:
+    # 1. Try Angel One SmartAPI live lookup
+    if telemetry and hasattr(telemetry, "smart_api") and telemetry.smart_api:
+        symbols_to_try = [meta["symbol"]] + meta.get("alt_symbols", [])
+        for sym_name in symbols_to_try:
+            for token in meta["live_tokens"]:
+                try:
+                    res = telemetry.smart_api.ltpData(
+                        exchange=exchange,
+                        tradingsymbol=sym_name,
+                        symboltoken=str(token),
+                    )
+                    if res and res.get("status") and "data" in res:
+                        val = float(res["data"].get("ltp", 0.0))
+                        if val > 0:
+                            return val
+                except Exception:
+                    pass
+
         try:
-            if hasattr(telemetry, "smart_api") and telemetry.smart_api:
-                res = telemetry.smart_api.ltpData(
-                    exchange=exchange,
-                    tradingsymbol=tradingsymbol,
-                    symboltoken=token,
-                )
-                if res and res.get("status") and "data" in res:
-                    val = float(res["data"].get("ltp", 0.0))
-                    if val > 0:
-                        return val
+            res = telemetry.get_ltp(meta["symbol"])
+            val = num(res.get("ltp") if isinstance(res, dict) else res)
+            if val and val > 0:
+                return val
         except Exception:
             pass
 
+    # 2. Resilient Real-Time Fallback via Yahoo Finance
+    yf_symbol = meta.get("yfinance")
+    if yf_symbol:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval=1d&range=2d"
+            resp = requests.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.ok:
+                data = resp.json()
+                meta_data = data["chart"]["result"][0]["meta"]
+                price = float(meta_data.get("regularMarketPrice", 0.0))
+                if price > 0:
+                    return price
+                prev_close = float(meta_data.get("chartPreviousClose", 0.0))
+                if prev_close > 0:
+                    return prev_close
+        except Exception:
+            pass
+
+    # 3. Fallback to latest historical candle close
     try:
-        res = telemetry.get_ltp(tradingsymbol)
-        val = num(res.get("ltp") if isinstance(res, dict) else res)
-        if val and val > 0:
-            return val
+        df = fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=2)
+        if not df.empty and "close" in df.columns:
+            last_c = float(df["close"].dropna().iloc[-1])
+            if last_c > 0:
+                return last_c
     except Exception:
         pass
 
@@ -607,8 +717,8 @@ def get_spot(symbol):
 @st.cache_data(ttl=10, show_spinner=False)
 def get_india_vix():
     vix = get_spot("INDIA_VIX")
-    if vix is None:
-        vix = 14.5
+    if vix is None or vix <= 0:
+        vix = 14.50
 
     if vix < 12.0:
         regime = "LOW VOLATILITY"
@@ -755,13 +865,13 @@ def add_indicators(df, current_live_price=None):
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
     df["ADX"] = dx.rolling(14).mean()
 
-    if "volume" in df.columns:
+    if "volume" in df.columns and df["volume"].sum() > 0:
         typical = (high + low + close) / 3
         df["VWAP"] = (typical * df["volume"]).cumsum() / df["volume"].cumsum().replace(0, np.nan)
         df["VOL_AVG20"] = df["volume"].rolling(20).mean()
     else:
-        df["VWAP"] = np.nan
-        df["VOL_AVG20"] = np.nan
+        df["VWAP"] = (high + low + close) / 3
+        df["VOL_AVG20"] = 1.0
 
     return df
 
@@ -853,8 +963,8 @@ def analyze_candlesticks_and_volume(df):
     p = df.iloc[-2]
     open_p, close_p = float(c["open"]), float(c["close"])
     high_p, low_p = float(c["high"]), float(c["low"])
-    vol = float(c["volume"]) if "volume" in c and pd.notna(c["volume"]) else 1.0
-    avg_vol = float(df["volume"].tail(20).mean()) if "volume" in df.columns else 1.0
+    vol = float(c["volume"]) if "volume" in c and pd.notna(c["volume"]) and c["volume"] > 0 else 1.0
+    avg_vol = float(df["volume"].tail(20).mean()) if "volume" in df.columns and df["volume"].sum() > 0 else 1.0
     vol_ratio = (vol / avg_vol) if avg_vol > 0 else 1.0
 
     rng = max(high_p - low_p, 0.001)
@@ -1573,7 +1683,6 @@ def fetch_equity_candles(symbol, token=None, exchange="NSE", yf_sym=None, tf_cfg
     if tf_cfg is None:
         tf_cfg = TIMEFRAME_CONFIG["5m"]
 
-    # 1. Try Angel One SmartAPI
     if token and telemetry and hasattr(telemetry, "fetch_ohlcv"):
         try:
             df = clean_df(telemetry.fetch_ohlcv(
@@ -1587,7 +1696,6 @@ def fetch_equity_candles(symbol, token=None, exchange="NSE", yf_sym=None, tf_cfg
         except Exception:
             pass
 
-    # 2. Yahoo Finance Fallback
     target_yf = yf_sym or f"{symbol.replace('-EQ','')}.{'NS' if exchange=='NSE' else 'BO'}"
     yf_interval = "5m" if tf_cfg["yfinance"] == "10m" else tf_cfg["yfinance"]
     yf_range = tf_cfg["yf_range"]
@@ -1797,7 +1905,7 @@ selected_tf_key = st.sidebar.selectbox(
 active_tf = TIMEFRAME_CONFIG[selected_tf_key]
 
 st.sidebar.header("⚙️ Trading Environment")
-segment_mode = st.sidebar.radio("Active Market Segment", ["📈 Equity / Share Research (NSE & BSE)", "📊 Index & Options Advisor"])
+segment_mode = st.sidebar.radio("Active Market Segment", ["📊 Index & Options Advisor", "📈 Equity / Share Research (NSE & BSE)"])
 
 if st.sidebar.button("🔄 Force Refresh All Caches", use_container_width=True):
     st.cache_data.clear()
@@ -1822,14 +1930,12 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
 
     exchange_select = st.selectbox("Preferred Exchange", ["NSE", "BSE"], index=0)
 
-    # Search Query Box
     query_text = st.text_input(
         "🔍 Type any Stock Name or Symbol (e.g. Tata, Mazagon, Kalyan, Suzlon, Reliance, Zomato, SBI, 500325):",
         value="",
         placeholder="Type to filter stocks...",
     ).strip().upper()
 
-    # Filter Database in Real-Time
     filtered_stocks = []
     if query_text:
         for sym, d in POPULAR_EQUITIES.items():
@@ -1987,7 +2093,6 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
 
         analysis_result = render_live_equity_view(selected_stock, active_tf)
 
-        # AI Analyst Report with Fallback Engine
         if GEMINI_API_KEY and analysis_result:
             if st.button("🤖 GENERATE INSTITUTIONAL AI ANALYST REPORT FOR THIS SHARE", type="primary", use_container_width=True):
                 with st.spinner("Gemini Institutional AI Analyzing stock balance sheet, volume spikes, and technical setups..."):
@@ -2012,7 +2117,7 @@ if segment_mode == "📈 Equity / Share Research (NSE & BSE)":
                     st.write(ai_response)
 
 # ==============================================================================
-# SEGMENT 2: INDEX & OPTIONS ADVISOR (MULTI-TIMEFRAME ADAPTIVE)
+# SEGMENT 2: INDEX & OPTIONS ADVISOR (MULTI-TIMEFRAME ADAPTIVE & HYBRID STREAM)
 # ==============================================================================
 else:
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
@@ -2030,10 +2135,15 @@ else:
 
         s1, s2, s3, s4 = st.columns(4)
         with s1:
-            if spot is not None:
-                st.metric(f"{selected_underlying} Spot (Live)", fmt(spot), delta=f"TF: {tf['smartapi']}", delta_color="off")
+            if spot is not None and spot > 0:
+                st.metric(
+                    f"{selected_underlying} Spot (Live)",
+                    fmt(spot),
+                    delta="Live Real-time Quote" if market_open() else "Official Session Close",
+                    delta_color="normal"
+                )
             else:
-                st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Angel")
+                st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Broker")
         with s2:
             st.metric("India VIX", f"{vix_info['vix']:.2f}", delta=vix_info['regime'], delta_color="off")
         with s3:
