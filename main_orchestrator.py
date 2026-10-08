@@ -1,6 +1,7 @@
 import time
 import json
 import datetime
+import pandas as pd
 
 from google import genai
 
@@ -8,6 +9,7 @@ from telemetry_engine import TelemetryEngine
 from State_manager import StateManager
 from risk_manager import RiskManager
 from broker_interface import BrokerInterface
+from btst_engine import BTSTMultiTimeframeEngine
 
 from config import (
     SMARTAPI_API_KEY,
@@ -57,6 +59,7 @@ risk_manager = RiskManager(
 )
 
 broker = BrokerInterface()
+btst_engine = BTSTMultiTimeframeEngine()
 
 telemetry = None
 ai_client = None
@@ -70,7 +73,8 @@ SYSTEM_PROMPT = """
 You are an AI-assisted market analysis engine
 for an Indian market PAPER-TRADING system.
 
-Analyse ONLY the market telemetry supplied to you.
+Analyse ONLY the market telemetry supplied to you,
+including the Multi-Timeframe (MTF) & BTST confluence data.
 
 Rules:
 
@@ -130,10 +134,7 @@ def validate_credentials():
     """
     Validate external API credentials only when the
     actual trading application is started.
-
-    Unit tests can import this module without credentials.
     """
-
     required_keys = {
         "SMARTAPI_API_KEY": SMARTAPI_API_KEY,
         "SMARTAPI_CLIENT_CODE": SMARTAPI_CLIENT_CODE,
@@ -149,16 +150,9 @@ def validate_credentials():
     ]
 
     if missing_keys:
-
-        print(
-            "Missing environment variables:"
-        )
-
+        print("Missing environment variables:")
         for key in missing_keys:
-            print(
-                f"- {key}"
-            )
-
+            print(f"- {key}")
         raise RuntimeError(
             "Required API credentials are not configured."
         )
@@ -169,7 +163,6 @@ def validate_credentials():
 # ============================================================
 
 def initialize_runtime():
-
     global telemetry
     global ai_client
 
@@ -191,6 +184,7 @@ def initialize_runtime():
     print(" Runtime components initialized")
     print(" Angel One telemetry : READY")
     print(" Gemini AI           : READY")
+    print(" BTST MTF Engine     : READY (8 Timeframes)")
     print(" Paper trading       : ENABLED")
     print(" Real orders         : DISABLED")
     print("========================================")
@@ -201,15 +195,9 @@ def initialize_runtime():
 # AI DECISION
 # ============================================================
 
-def call_ai_decision(
-    payload: str
-) -> dict:
-
+def call_ai_decision(payload: str) -> dict:
     if ai_client is None:
-
-        raise RuntimeError(
-            "AI client is not initialized."
-        )
+        raise RuntimeError("AI client is not initialized.")
 
     response = ai_client.models.generate_content(
         model=AI_MODEL,
@@ -220,26 +208,13 @@ def call_ai_decision(
         },
     )
 
-    if (
-        not response
-        or not response.text
-    ):
-
-        raise RuntimeError(
-            "AI returned an empty response."
-        )
+    if not response or not response.text:
+        raise RuntimeError("AI returned an empty response.")
 
     try:
-
-        decision = json.loads(
-            response.text
-        )
-
+        decision = json.loads(response.text)
     except json.JSONDecodeError as error:
-
-        raise RuntimeError(
-            f"Invalid AI JSON response: {error}"
-        )
+        raise RuntimeError(f"Invalid AI JSON response: {error}")
 
     return decision
 
@@ -249,7 +224,6 @@ def call_ai_decision(
 # ============================================================
 
 def is_market_open():
-
     now = datetime.datetime.now().time()
 
     market_open = datetime.datetime.strptime(
@@ -262,83 +236,75 @@ def is_market_open():
         "%H:%M"
     ).time()
 
-    return (
-        market_open
-        <= now
-        <= market_close
-    )
+    return market_open <= now <= market_close
 
 
 # ============================================================
 # AI DECISION VALIDATION
 # ============================================================
 
-def validate_ai_decision(
-    decision: dict
-) -> dict:
-
-    if not isinstance(
-        decision,
-        dict
-    ):
-
+def validate_ai_decision(decision: dict) -> dict:
+    if not isinstance(decision, dict):
         return {
             "action": "NO_TRADE",
             "execution_details": {},
-            "algorithmic_confidence": {
-                "overall_score": 0
-            },
-            "rationale": (
-                "Invalid AI response."
-            ),
+            "algorithmic_confidence": {"overall_score": 0},
+            "rationale": "Invalid AI response.",
         }
 
-    action = decision.get(
-        "action",
-        "NO_TRADE"
-    )
+    action = decision.get("action", "NO_TRADE")
 
     confidence = float(
-        decision
-        .get(
-            "algorithmic_confidence",
-            {}
-        )
-        .get(
-            "overall_score",
-            0
-        )
+        decision.get("algorithmic_confidence", {}).get("overall_score", 0)
     )
 
-    execution = decision.get(
-        "execution_details",
-        {}
-    )
-
-    if not isinstance(
-        execution,
-        dict
-    ):
-
+    execution = decision.get("execution_details", {})
+    if not isinstance(execution, dict):
         execution = {}
 
-    confidence = max(
-        0.0,
-        min(
-            100.0,
-            confidence
-        )
-    )
+    confidence = max(0.0, min(100.0, confidence))
 
     decision["action"] = action
-
     decision["execution_details"] = execution
-
-    decision["algorithmic_confidence"] = {
-        "overall_score": confidence
-    }
+    decision["algorithmic_confidence"] = {"overall_score": confidence}
 
     return decision
+
+
+# ============================================================
+# CANDLE DATA EXTRACTION FOR MTF / BTST
+# ============================================================
+
+def extract_candle_dataframe(telemetry_obj, payload_data) -> pd.DataFrame:
+    """Telemetry ya payload se 1-minute OHLCV candles DataFrame extract karta hai."""
+    try:
+        # Check 1: Direct Telemetry Engine attributes
+        if hasattr(telemetry_obj, "candles_df") and isinstance(telemetry_obj.candles_df, pd.DataFrame):
+            return telemetry_obj.candles_df
+
+        if hasattr(telemetry_obj, "candles") and isinstance(telemetry_obj.candles, list):
+            df = pd.DataFrame(telemetry_obj.candles)
+            if "timestamp" in df.columns:
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                df.set_index("timestamp", inplace=True)
+                df.sort_index(inplace=True)
+                return df
+
+        # Check 2: Parse raw payload agar JSON dictionary format me ho
+        data = json.loads(payload_data) if isinstance(payload_data, str) else payload_data
+        if isinstance(data, dict):
+            raw_candles = data.get("candles") or data.get("historical_candles") or data.get("ohlcv")
+            if raw_candles and isinstance(raw_candles, list):
+                df = pd.DataFrame(raw_candles)
+                if "timestamp" in df.columns:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                    df.set_index("timestamp", inplace=True)
+                    df.sort_index(inplace=True)
+                    return df
+    except Exception:
+        pass
+
+    return None
 
 
 # ============================================================
@@ -351,12 +317,8 @@ def execute_paper_order(
     price: float,
     order_type: str = "MARKET",
 ):
-
     if not PAPER_TRADING:
-
-        raise RuntimeError(
-            "Safety lock: live trading is disabled."
-        )
+        raise RuntimeError("Safety lock: live trading is disabled.")
 
     result = broker.place_order(
         symbol=SYMBOL,
@@ -371,26 +333,11 @@ def execute_paper_order(
     print("")
     print("========== PAPER ORDER ==========")
     print(f"Symbol      : {SYMBOL}")
-    print(
-        f"Transaction : "
-        f"{transaction_type}"
-    )
-    print(
-        f"Quantity    : "
-        f"{quantity}"
-    )
-    print(
-        f"Order Type  : "
-        f"{order_type}"
-    )
-    print(
-        f"Price       : "
-        f"₹{price}"
-    )
-    print(
-        f"Order ID    : "
-        f"{result.get('order_id')}"
-    )
+    print(f"Transaction : {transaction_type}")
+    print(f"Quantity    : {quantity}")
+    print(f"Order Type  : {order_type}")
+    print(f"Price       : ₹{price}")
+    print(f"Order ID    : {result.get('order_id')}")
     print("Mode        : PAPER TRADING")
     print("NO REAL ORDER SENT")
     print("=================================")
@@ -403,72 +350,25 @@ def execute_paper_order(
 # ENTRY VALIDATION
 # ============================================================
 
-def validate_entry(
-    action: str,
-    execution: dict
-) -> bool:
+def validate_entry(action: str, execution: dict) -> bool:
+    suggested_price = float(execution.get("suggested_price", 0))
+    stop_loss = float(execution.get("revised_stop_loss", 0))
+    target_1 = float(execution.get("target_1", 0))
+    quantity_fraction = float(execution.get("quantity_fraction", 1.0))
 
-    suggested_price = float(
-        execution.get(
-            "suggested_price",
-            0
-        )
-    )
-
-    stop_loss = float(
-        execution.get(
-            "revised_stop_loss",
-            0
-        )
-    )
-
-    target_1 = float(
-        execution.get(
-            "target_1",
-            0
-        )
-    )
-
-    quantity_fraction = float(
-        execution.get(
-            "quantity_fraction",
-            1.0
-        )
-    )
-
-    if suggested_price <= 0:
+    if suggested_price <= 0 or stop_loss <= 0 or target_1 <= 0:
         return False
 
-    if stop_loss <= 0:
-        return False
-
-    if target_1 <= 0:
-        return False
-
-    if (
-        quantity_fraction <= 0
-        or quantity_fraction > 1
-    ):
+    if quantity_fraction <= 0 or quantity_fraction > 1:
         return False
 
     if action == "ENTER_LONG":
-
-        if stop_loss >= suggested_price:
+        if stop_loss >= suggested_price or target_1 <= suggested_price:
             return False
-
-        if target_1 <= suggested_price:
-            return False
-
     elif action == "ENTER_SHORT":
-
-        if stop_loss <= suggested_price:
+        if stop_loss <= suggested_price or target_1 >= suggested_price:
             return False
-
-        if target_1 >= suggested_price:
-            return False
-
     else:
-
         return False
 
     return True
@@ -479,76 +379,37 @@ def validate_entry(
 # ============================================================
 
 def run_trading_cycle():
-
     if telemetry is None:
-        raise RuntimeError(
-            "Telemetry is not initialized."
-        )
+        raise RuntimeError("Telemetry is not initialized.")
 
     now = datetime.datetime.now()
 
     # --------------------------------------------------------
     # MARKET HOURS
     # --------------------------------------------------------
-
     if not is_market_open():
-
-        print(
-            f"[{now.strftime('%H:%M:%S')}] "
-            "Outside market hours."
-        )
-
+        print(f"[{now.strftime('%H:%M:%S')}] Outside market hours.")
         return
 
     # --------------------------------------------------------
-    # CURRENT POSITION
+    # CURRENT POSITION & STATS
     # --------------------------------------------------------
-
-    position = state.get_position(
-        SYMBOL
-    )
-
-    # --------------------------------------------------------
-    # DAILY STATISTICS
-    # --------------------------------------------------------
-
+    position = state.get_position(SYMBOL)
     daily_stats = state.get_daily_stats()
-
-    daily_pnl = float(
-        daily_stats.get(
-            "daily_pnl",
-            0.0
-        )
-    )
-
-    trades_today = int(
-        daily_stats.get(
-            "trades_today",
-            0
-        )
-    )
+    daily_pnl = float(daily_stats.get("daily_pnl", 0.0))
+    trades_today = int(daily_stats.get("trades_today", 0))
 
     print("")
     print("========== DAILY STATUS ==========")
-    print(
-        f"Daily P&L    : "
-        f"₹{daily_pnl:.2f}"
-    )
-    print(
-        f"Trades Today : "
-        f"{trades_today}"
-    )
-    print(
-        f"Position     : "
-        f"{position.get('has_position', False)}"
-    )
+    print(f"Daily P&L    : ₹{daily_pnl:.2f}")
+    print(f"Trades Today : {trades_today}")
+    print(f"Position     : {position.get('has_position', False)}")
     print("==================================")
     print("")
 
     # --------------------------------------------------------
-    # MARKET TELEMETRY
+    # MARKET TELEMETRY & 8-TIMEFRAME BTST SCAN
     # --------------------------------------------------------
-
     payload = telemetry.build_payload(
         SYMBOL,
         TOKEN,
@@ -558,74 +419,56 @@ def run_trading_cycle():
         days=HISTORICAL_DAYS,
     )
 
+    df_1m = extract_candle_dataframe(telemetry, payload)
+    btst_result = None
+
+    if df_1m is not None and not df_1m.empty and len(df_1m) >= 60:
+        try:
+            btst_result = btst_engine.evaluate_btst_confluence(df_1m)
+            print("========== MULTI-TIMEFRAME BTST SCAN ==========")
+            print(f"MTF Confluence Score : {btst_result['total_score']} / 100")
+            print(f"Decision Status      : {btst_result['trade_decision']}")
+            if btst_result['total_score'] >= 80:
+                print(f"Target Open (Next)   : ₹{btst_result['target']}")
+                print(f"Strict Stop-Loss     : ₹{btst_result['stop_loss']}")
+            print("================================================")
+            print("")
+
+            # Telemetry payload me BTST analysis attach karein taaki AI read kar sake
+            if isinstance(payload, str):
+                try:
+                    p_dict = json.loads(payload)
+                    p_dict["mtf_btst_confirmation"] = btst_result
+                    payload = json.dumps(p_dict)
+                except Exception:
+                    payload += f"\n\n[MTF_BTST_CONFIRMATION]\n{json.dumps(btst_result)}"
+        except Exception as scan_err:
+            print(f"BTST Engine Scan Warning: {scan_err}")
+
     # --------------------------------------------------------
     # AI ANALYSIS
     # --------------------------------------------------------
+    decision = call_ai_decision(payload)
+    decision = validate_ai_decision(decision)
 
-    decision = call_ai_decision(
-        payload
-    )
-
-    decision = validate_ai_decision(
-        decision
-    )
-
-    action = decision.get(
-        "action",
-        "NO_TRADE"
-    )
-
-    confidence = decision.get(
-        "algorithmic_confidence",
-        {}
-    ).get(
-        "overall_score",
-        0
-    )
-
-    execution = decision.get(
-        "execution_details",
-        {}
-    )
-
-    rationale = decision.get(
-        "rationale",
-        ""
-    )
-
-    # --------------------------------------------------------
-    # DISPLAY AI DECISION
-    # --------------------------------------------------------
+    action = decision.get("action", "NO_TRADE")
+    confidence = decision.get("algorithmic_confidence", {}).get("overall_score", 0)
+    execution = decision.get("execution_details", {})
+    rationale = decision.get("rationale", "")
 
     print("")
     print("========================================")
-    print(
-        f"Time       : "
-        f"{now.strftime('%H:%M:%S')}"
-    )
-    print(
-        f"Symbol     : "
-        f"{SYMBOL}"
-    )
-    print(
-        f"AI Action  : "
-        f"{action}"
-    )
-    print(
-        f"Confidence : "
-        f"{confidence}%"
-    )
-    print(
-        f"Rationale  : "
-        f"{rationale}"
-    )
+    print(f"Time       : {now.strftime('%H:%M:%S')}")
+    print(f"Symbol     : {SYMBOL}")
+    print(f"AI Action  : {action}")
+    print(f"Confidence : {confidence}%")
+    print(f"Rationale  : {rationale}")
     print("========================================")
     print("")
 
     # --------------------------------------------------------
     # RISK VALIDATION
     # --------------------------------------------------------
-
     risk_result = risk_manager.validate_decision(
         decision=decision,
         position=position,
@@ -633,123 +476,37 @@ def run_trading_cycle():
         trades_today=trades_today,
     )
 
-    if not risk_result.get(
-        "allowed",
-        False
-    ):
-
-        print(
-            "RISK BLOCKED:",
-            risk_result.get(
-                "reason",
-                "Unknown risk reason."
-            )
-        )
-
+    if not risk_result.get("allowed", False):
+        print("RISK BLOCKED:", risk_result.get("reason", "Unknown risk reason."))
         return
 
     # --------------------------------------------------------
     # ENTRY
     # --------------------------------------------------------
-
-    if action in {
-        "ENTER_LONG",
-        "ENTER_SHORT"
-    }:
-
-        if not validate_entry(
-            action,
-            execution
-        ):
-
-            print(
-                "ENTRY BLOCKED: "
-                "Invalid entry/SL/target structure."
-            )
-
+    if action in {"ENTER_LONG", "ENTER_SHORT"}:
+        if not validate_entry(action, execution):
+            print("ENTRY BLOCKED: Invalid entry/SL/target structure.")
             return
 
-        suggested_price = float(
-            execution.get(
-                "suggested_price",
-                0
-            )
-        )
+        suggested_price = float(execution.get("suggested_price", 0))
+        stop_loss = float(execution.get("revised_stop_loss", 0))
+        target_1 = float(execution.get("target_1", 0))
+        target_2 = float(execution.get("target_2", 0))
+        quantity_fraction = float(execution.get("quantity_fraction", 1.0))
 
-        stop_loss = float(
-            execution.get(
-                "revised_stop_loss",
-                0
-            )
-        )
-
-        target_1 = float(
-            execution.get(
-                "target_1",
-                0
-            )
-        )
-
-        target_2 = float(
-            execution.get(
-                "target_2",
-                0
-            )
-        )
-
-        quantity_fraction = float(
-            execution.get(
-                "quantity_fraction",
-                1.0
-            )
-        )
-
-        quantity = int(
-            QUANTITY
-            * quantity_fraction
-        )
-
-        quantity = min(
-            quantity,
-            MAX_POSITION_QUANTITY
-        )
+        quantity = int(QUANTITY * quantity_fraction)
+        quantity = min(quantity, MAX_POSITION_QUANTITY)
 
         if quantity <= 0:
-
-            print(
-                "ENTRY BLOCKED: "
-                "Invalid quantity."
-            )
-
+            print("ENTRY BLOCKED: Invalid quantity.")
             return
 
-        transaction_type = (
-            "BUY"
-            if action == "ENTER_LONG"
-            else "SELL"
-        )
+        transaction_type = "BUY" if action == "ENTER_LONG" else "SELL"
+        direction = "LONG" if action == "ENTER_LONG" else "SHORT"
+        order_type = execution.get("order_type", "MARKET")
 
-        direction = (
-            "LONG"
-            if action == "ENTER_LONG"
-            else "SHORT"
-        )
-
-        order_type = execution.get(
-            "order_type",
-            "MARKET"
-        )
-
-        if order_type not in {
-            "MARKET",
-            "LIMIT"
-        }:
-
-            print(
-                "ENTRY BLOCKED: "
-                "Invalid order type."
-            )
-
+        if order_type not in {"MARKET", "LIMIT"}:
+            print("ENTRY BLOCKED: Invalid order type.")
             return
 
         order_result = execute_paper_order(
@@ -767,155 +524,55 @@ def run_trading_cycle():
             stop_loss=stop_loss,
             t1=target_1,
             t2=target_2,
-            sl_order_id=order_result.get(
-                "order_id",
-                "PAPER_SL"
-            ),
+            sl_order_id=order_result.get("order_id", "PAPER_SL"),
         )
 
-        print(
-            f"Paper {direction} "
-            f"position created."
-        )
-
+        print(f"Paper {direction} position created.")
         return
 
     # --------------------------------------------------------
     # TRAILING STOP LOSS
     # --------------------------------------------------------
-
-    if (
-        action == "TRAIL_SL"
-        and position.get(
-            "has_position",
-            False
-        )
-    ):
-
-        new_sl = float(
-            execution.get(
-                "revised_stop_loss",
-                0
-            )
-        )
-
+    if action == "TRAIL_SL" and position.get("has_position", False):
+        new_sl = float(execution.get("revised_stop_loss", 0))
         if new_sl <= 0:
-
-            print(
-                "Trailing SL rejected: "
-                "Invalid stop-loss."
-            )
-
+            print("Trailing SL rejected: Invalid stop-loss.")
             return
 
-        state.update_stop_loss(
-            SYMBOL,
-            new_sl
-        )
-
-        print(
-            f"Paper SL updated "
-            f"to ₹{new_sl}"
-        )
-
+        state.update_stop_loss(SYMBOL, new_sl)
+        print(f"Paper SL updated to ₹{new_sl}")
         return
 
     # --------------------------------------------------------
     # PARTIAL EXIT
     # --------------------------------------------------------
+    if action == "TAKE_PARTIAL" and position.get("has_position", False):
+        fraction = float(execution.get("quantity_fraction", 0.5))
+        fraction = max(0.1, min(1.0, fraction))
 
-    if (
-        action == "TAKE_PARTIAL"
-        and position.get(
-            "has_position",
-            False
-        )
-    ):
+        current_quantity = int(position.get("quantity", 0))
+        partial_quantity = int(current_quantity * fraction)
+        exit_price = float(execution.get("suggested_price", 0))
 
-        fraction = float(
-            execution.get(
-                "quantity_fraction",
-                0.5
-            )
-        )
-
-        fraction = max(
-            0.1,
-            min(
-                1.0,
-                fraction
-            )
-        )
-
-        current_quantity = int(
-            position.get(
-                "quantity",
-                0
-            )
-        )
-
-        partial_quantity = int(
-            current_quantity
-            * fraction
-        )
-
-        exit_price = float(
-            execution.get(
-                "suggested_price",
-                0
-            )
-        )
-
-        if (
-            partial_quantity <= 0
-            or exit_price <= 0
-        ):
-
-            print(
-                "Partial exit rejected: "
-                "Invalid quantity or price."
-            )
-
+        if partial_quantity <= 0 or exit_price <= 0:
+            print("Partial exit rejected: Invalid quantity or price.")
             return
 
-        exit_transaction = (
-            "SELL"
-            if position.get(
-                "direction"
-            ) == "LONG"
-            else "BUY"
-        )
-
+        exit_transaction = "SELL" if position.get("direction") == "LONG" else "BUY"
         execute_paper_order(
             transaction_type=exit_transaction,
             quantity=partial_quantity,
             price=exit_price,
         )
 
-        entry_price = float(
-            position.get(
-                "entry_price",
-                0
-            )
+        entry_price = float(position.get("entry_price", 0))
+        direction = position.get("direction")
+
+        pnl = (
+            (exit_price - entry_price) * partial_quantity
+            if direction == "LONG"
+            else (entry_price - exit_price) * partial_quantity
         )
-
-        direction = position.get(
-            "direction"
-        )
-
-        if direction == "LONG":
-
-            pnl = (
-                exit_price
-                - entry_price
-            ) * partial_quantity
-
-        else:
-
-            pnl = (
-                entry_price
-                - exit_price
-            ) * partial_quantity
 
         state.record_trade(
             symbol=SYMBOL,
@@ -928,168 +585,79 @@ def run_trading_cycle():
             reason="AI TAKE_PARTIAL",
         )
 
-        remaining_quantity = (
-            current_quantity
-            - partial_quantity
-        )
-
+        remaining_quantity = current_quantity - partial_quantity
         if remaining_quantity <= 0:
-
-            state.close_position(
-                SYMBOL
-            )
-
+            state.close_position(SYMBOL)
         else:
-
             state.open_position(
                 symbol=SYMBOL,
                 direction=direction,
                 entry_price=entry_price,
                 qty=remaining_quantity,
-                stop_loss=float(
-                    position.get(
-                        "stop_loss",
-                        0
-                    )
-                ),
-                t1=float(
-                    position.get(
-                        "target_1",
-                        0
-                    )
-                ),
-                t2=float(
-                    position.get(
-                        "target_2",
-                        0
-                    )
-                ),
-                sl_order_id=position.get(
-                    "sl_order_id",
-                    "PAPER_SL"
-                ),
+                stop_loss=float(position.get("stop_loss", 0)),
+                t1=float(position.get("target_1", 0)),
+                t2=float(position.get("target_2", 0)),
             )
 
-        print(
-            "Partial exit executed."
-        )
-
+        print(f"Partial exit executed. Remaining qty: {remaining_quantity}")
         return
 
     # --------------------------------------------------------
-    # FULL EXIT
+    # FULL EXIT / EXIT NOW
     # --------------------------------------------------------
-
-    if (
-        action == "EXIT_NOW"
-        and position.get(
-            "has_position",
-            False
-        )
-    ):
-
-        exit_price = float(
-            execution.get(
-                "suggested_price",
-                0
-            )
-        )
+    if action == "EXIT_NOW" and position.get("has_position", False):
+        current_quantity = int(position.get("quantity", 0))
+        exit_price = float(execution.get("suggested_price", 0))
+        direction = position.get("direction")
+        entry_price = float(position.get("entry_price", 0))
 
         if exit_price <= 0:
-
-            print(
-                "Exit rejected: "
-                "Invalid exit price."
-            )
-
+            print("Exit rejected: Invalid exit price.")
             return
 
-        exit_transaction = (
-            "SELL"
-            if position.get(
-                "direction"
-            ) == "LONG"
-            else "BUY"
-        )
-
+        exit_transaction = "SELL" if direction == "LONG" else "BUY"
         execute_paper_order(
             transaction_type=exit_transaction,
-            quantity=int(
-                position.get(
-                    "quantity",
-                    0
-                )
-            ),
+            quantity=current_quantity,
             price=exit_price,
         )
 
-        state.close_position(
+        pnl = (
+            (exit_price - entry_price) * current_quantity
+            if direction == "LONG"
+            else (entry_price - exit_price) * current_quantity
+        )
+
+        state.record_trade(
             symbol=SYMBOL,
+            direction=direction,
+            transaction_type="FULL_EXIT",
+            entry_price=entry_price,
             exit_price=exit_price,
-            reason=decision.get(
-                "exit_trigger_condition",
-                "AI EXIT_NOW"
-            ),
+            quantity=current_quantity,
+            pnl=pnl,
+            reason=rationale or "AI EXIT_NOW",
         )
 
-        print(
-            "Paper position closed."
-        )
-
+        state.close_position(SYMBOL)
+        print(f"Paper {direction} position fully closed at ₹{exit_price}. PnL: ₹{pnl:.2f}")
         return
 
-    # --------------------------------------------------------
-    # HOLD / NO TRADE
-    # --------------------------------------------------------
-
-    if position.get(
-        "has_position",
-        False
-    ):
-
-        state.increment_bars(
-            SYMBOL
-        )
-
-        print(
-            "Existing paper position maintained."
-        )
-
-    else:
-
-        print(
-            "No trade taken."
-        )
-
 
 # ============================================================
-# PROGRAM START
+# BOT MAIN LOOP
 # ============================================================
+
+def main():
+    initialize_runtime()
+    print(f"Bot cycle initialized. Polling interval: {CYCLE_INTERVAL_SECONDS}s")
+    try:
+        while True:
+            run_trading_cycle()
+            time.sleep(CYCLE_INTERVAL_SECONDS)
+    except KeyboardInterrupt:
+        print("\nTrading bot manually stopped.")
+
 
 if __name__ == "__main__":
-
-    print("")
-    print("========================================")
-    print(" AI TRADING BOT")
-    print(" PAPER TRADING MODE")
-    print(" REAL ORDERS DISABLED")
-    print("========================================")
-    print("")
-
-    initialize_runtime()
-
-    while True:
-
-        try:
-
-            run_trading_cycle()
-
-        except Exception as error:
-
-            print(
-                f"Trading cycle error: {error}"
-            )
-
-        time.sleep(
-            CYCLE_INTERVAL_SECONDS
-        )
+    main()
