@@ -28,6 +28,7 @@ jobs:
 
       - name: Compile Python files
         run: |
+          python -m py_compile btst_engine.py
           python -m py_compile telemetry_engine.py
           python -m py_compile State_manager.py
           python -m py_compile main_orchestrator.py
@@ -72,3 +73,4 @@ jobs:
           echo "PAPER TRADING ONLY"
           echo "NO REAL ORDERS SENT"
           echo "======================================"
+          
