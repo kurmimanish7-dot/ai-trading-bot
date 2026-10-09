@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-AI Institutional Live Trading Advisor (Production UTF-8 Sanitized Release)
-Multi-Asset Terminal: Equity Cash (NSE/BSE) & Index Options (NFO)
-Integrated with Real-Time Option Strike Streaming, SmartAPI, and Google GenAI.
-"""
 import datetime
 from datetime import datetime, date, time as dtime
 import json
