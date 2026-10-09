@@ -12,11 +12,21 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 import pandas as pd
 import requests
-from scipy.stats import norm
 import streamlit as st
 
 IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger(__name__)
+
+# =========================================================
+# BUILT-IN PURE MATH NORMAL DISTRIBUTION (ZERO SCIPY DEPENDENCY)
+# =========================================================
+def norm_cdf(x: float) -> float:
+    """Standard Normal Cumulative Distribution Function using built-in math.erf."""
+    return 0.5 * (1.0 + math.erf(x / 1.4142135623730951))
+
+def norm_pdf(x: float) -> float:
+    """Standard Normal Probability Density Function using built-in math."""
+    return 0.3989422804014327 * math.exp(-0.5 * x * x)
 
 # =========================================================
 # SAFE UNICODE ESCAPE CONSTANTS (PREVENTS MOJIBAKE ENCODING BUGS)
@@ -1437,12 +1447,12 @@ def calculate_indian_market_prediction(macro_data, domestic_pcr=1.0, fii_dii_inf
     }
 
 # =========================================================
-# ACCURATE OPTION PRICING & GREEKS (BUG RESOLVED)
+# ACCURATE OPTION PRICING & GREEKS (SCIPY-FREE ENGINE)
 # =========================================================
 def calculate_black_scholes(spot: float, strike: float, dte_days: float, rate: float = 0.07, sigma: float = 0.148, option_type: str = "CE"):
     """
     Computes exact Black-Scholes theoretical price and analytical Greeks.
-    Prevents unrealistic placeholder valuations.
+    Prevents unrealistic placeholder valuations without requiring scipy.
     """
     t = max(dte_days / 365.0, 1e-5)
     v = max(sigma, 1e-4)
@@ -1450,17 +1460,17 @@ def calculate_black_scholes(spot: float, strike: float, dte_days: float, rate: f
     d1 = (math.log(spot / strike) + (rate + 0.5 * v**2) * t) / (v * math.sqrt(t))
     d2 = d1 - v * math.sqrt(t)
 
-    pdf_d1 = norm.pdf(d1)
+    pdf_d1 = norm_pdf(d1)
     vega = (spot * pdf_d1 * math.sqrt(t)) / 100.0
 
     if option_type == "CE":
-        price = spot * norm.cdf(d1) - strike * math.exp(-rate * t) * norm.cdf(d2)
-        delta = norm.cdf(d1)
-        theta = (-(spot * pdf_d1 * v) / (2.0 * math.sqrt(t)) - rate * strike * math.exp(-rate * t) * norm.cdf(d2)) / 365.0
+        price = spot * norm_cdf(d1) - strike * math.exp(-rate * t) * norm_cdf(d2)
+        delta = norm_cdf(d1)
+        theta = (-(spot * pdf_d1 * v) / (2.0 * math.sqrt(t)) - rate * strike * math.exp(-rate * t) * norm_cdf(d2)) / 365.0
     else:
-        price = strike * math.exp(-rate * t) * norm.cdf(-d2) - spot * norm.cdf(-d1)
-        delta = norm.cdf(d1) - 1.0
-        theta = (-(spot * pdf_d1 * v) / (2.0 * math.sqrt(t)) + rate * strike * math.exp(-rate * t) * norm.cdf(-d2)) / 365.0
+        price = strike * math.exp(-rate * t) * norm_cdf(-d2) - spot * norm_cdf(-d1)
+        delta = norm_cdf(d1) - 1.0
+        theta = (-(spot * pdf_d1 * v) / (2.0 * math.sqrt(t)) + rate * strike * math.exp(-rate * t) * norm_cdf(-d2)) / 365.0
 
     return price, delta, theta, vega
 
@@ -2333,9 +2343,9 @@ if "Equity / Share Research" in segment_mode:
                     st.markdown(f"### {ROBOT} Institutional AI Equity Research Note")
                     st.write(ai_response)
 
-# ==============================================================================
+# =========================================================
 # SEGMENT 2: INDEX & OPTIONS ADVISOR (MULTI-EXPIRY DYNAMIC SELECTION)
-# ==============================================================================
+# =========================================================
 else:
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
     
