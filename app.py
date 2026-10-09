@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import datetime
 from datetime import datetime, date, time as dtime
 import json
@@ -15,11 +16,51 @@ IST = ZoneInfo("Asia/Kolkata")
 logger = logging.getLogger(__name__)
 
 # =========================================================
+# SAFE UNICODE ESCAPE CONSTANTS (PREVENTS MOJIBAKE ENCODING BUGS)
+# =========================================================
+RUPEE = "\u20B9"                # ₹
+BOLT = "\u26A1"                 # ⚡
+FLAG_IN = "\U0001F1EE\U0001F1F3"# 🇮🇳
+CHART_BAR = "\U0001F4CA"        # 📊
+CHART_UP = "\U0001F4C8"         # 📈
+TARGET = "\U0001F3AF"           # 🎯
+TEMPLE = "\U0001F3DB"           # 🏛️
+COMPASS = "\U0001F9ED"          # 🧭
+GLOBE = "\U0001F310"            # 🌐
+TRAFFIC = "\U0001F6A6"          # 🚦
+GREEN_CIRCLE = "\U0001F7E2"     # 🟢
+RED_CIRCLE = "\U0001F534"       # 🔴
+YELLOW_CIRCLE = "\U0001F7E1"    # 🟡
+SIREN = "\U0001F6A8"            # 🚨
+FIRE = "\U0001F525"             # 🔥
+SWORDS = "\u2694\uFE0F"         # ⚔️
+PAUSE = "\u23F8\uFE0F"          # ⏸️
+ROCKET = "\U0001F680"           # 🚀
+DOWN_ARROW = "\U0001F53D"       # 🔻
+SCALE = "\u2696\uFE0F"          # ⚖️
+SHIELD = "\U0001F6E1\uFE0F"     # 🛡️
+PIN = "\U0001F4CC"              # 📌
+WARNING = "\u26A0\uFE0F"        # ⚠️
+CHECK = "\u2705"                # ✅
+STOP = "\U0001F6D1"             # 🛑
+REFRESH = "\U0001F504"          # 🔄
+STOPWATCH = "\u23F1\uFE0F"      # ⏱️
+GEAR = "\u2699\uFE0F"           # ⚙️
+SEARCH = "\U0001F50D"           # 🔍
+BUILDING = "\U0001F3E2"         # 🏢
+RULER = "\U0001F4D0"            # 📐
+NEWS = "\U0001F4F0"             # 📰
+ROBOT = "\U0001F916"            # 🤖
+DELTA_SYM = "\u0394"            # Δ
+THETA_SYM = "\u0398"            # Θ
+BULLET = " - "
+
+# =========================================================
 # PAGE CONFIGURATION & INSTITUTIONAL THEME
 # =========================================================
 st.set_page_config(
     page_title="AI Institutional Live Trading Advisor",
-    page_icon="âš¡",
+    page_icon=BOLT,
     layout="wide",
 )
 
@@ -203,7 +244,7 @@ else:
 # =========================================================
 TIMEFRAME_CONFIG = {
     "1m": {
-        "label": "âš¡ 1 Minute (Scalping / High-Speed)",
+        "label": f"{BOLT} 1 Minute (Scalping / High-Speed)",
         "smartapi": "ONE_MINUTE",
         "yfinance": "1m",
         "yf_range": "2d",
@@ -216,7 +257,7 @@ TIMEFRAME_CONFIG = {
         "desc": "Ultra-fast scalp setup. High sensitivity, tight SL.",
     },
     "5m": {
-        "label": "ðŸ“Š 5 Minutes (Standard Intraday)",
+        "label": f"{CHART_BAR} 5 Minutes (Standard Intraday)",
         "smartapi": "FIVE_MINUTE",
         "yfinance": "5m",
         "yf_range": "5d",
@@ -229,7 +270,7 @@ TIMEFRAME_CONFIG = {
         "desc": "Standard institutional intraday timeframe for liquid momentum.",
     },
     "10m": {
-        "label": "ðŸŽ¯ 10 Minutes (Noise-Filtered Scalp)",
+        "label": f"{TARGET} 10 Minutes (Noise-Filtered Scalp)",
         "smartapi": "TEN_MINUTE",
         "yfinance": "10m",
         "yf_range": "5d",
@@ -242,7 +283,7 @@ TIMEFRAME_CONFIG = {
         "desc": "Smooth momentum timeframe filtering out minor whipsaws.",
     },
     "15m": {
-        "label": "ðŸ›ï¸ 15 Minutes (Institutional Intraday)",
+        "label": f"{TEMPLE} 15 Minutes (Institutional Intraday)",
         "smartapi": "FIFTEEN_MINUTE",
         "yfinance": "15m",
         "yf_range": "5d",
@@ -255,7 +296,7 @@ TIMEFRAME_CONFIG = {
         "desc": "Key institutional breakout timeframe for major intraday moves.",
     },
     "30m": {
-        "label": "ðŸ“ˆ 30 Minutes (Positional / BTST)",
+        "label": f"{CHART_UP} 30 Minutes (Positional / BTST)",
         "smartapi": "THIRTY_MINUTE",
         "yfinance": "30m",
         "yf_range": "1mo",
@@ -268,7 +309,7 @@ TIMEFRAME_CONFIG = {
         "desc": "Strong trend conviction for overnight holding and multi-day swings.",
     },
     "60m": {
-        "label": "ðŸ§­ 60 Minutes (1 Hour Macro Swing)",
+        "label": f"{COMPASS} 60 Minutes (1 Hour Macro Swing)",
         "smartapi": "ONE_HOUR",
         "yfinance": "60m",
         "yf_range": "1mo",
@@ -590,7 +631,6 @@ def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=5):
     exchange = meta["exchange"]
     token = meta["candle_token"]
 
-    # 1. Try Angel One SmartAPI
     if telemetry and hasattr(telemetry, "fetch_ohlcv"):
         try:
             df = clean_df(telemetry.fetch_ohlcv(exchange=exchange, token=str(token), interval=interval, days=days))
@@ -615,7 +655,6 @@ def fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=5):
         except Exception:
             pass
 
-    # 2. Resilient Live Fallback for Indices
     yf_symbol = meta.get("yfinance")
     if yf_symbol:
         interval_map = {
@@ -658,7 +697,6 @@ def get_spot(symbol):
     meta = INDEX_METADATA[symbol]
     exchange = meta["exchange"]
 
-    # 1. Try Angel One SmartAPI live lookup
     if telemetry and hasattr(telemetry, "smart_api") and telemetry.smart_api:
         symbols_to_try = [meta["symbol"]] + meta.get("alt_symbols", [])
         for sym_name in symbols_to_try:
@@ -684,7 +722,6 @@ def get_spot(symbol):
         except Exception:
             pass
 
-    # 2. Resilient Real-Time Fallback via Yahoo Finance
     yf_symbol = meta.get("yfinance")
     if yf_symbol:
         try:
@@ -702,7 +739,6 @@ def get_spot(symbol):
         except Exception:
             pass
 
-    # 3. Fallback to latest historical candle close
     try:
         df = fetch_ohlcv(symbol, interval="FIVE_MINUTE", days=2)
         if not df.empty and "close" in df.columns:
@@ -1086,10 +1122,10 @@ def analyze_smart_money(fii_dii_data, pcr_val, df=None, current_spot=None):
 
         if current_spot < vwap_val and current_spot < day_open:
             score -= 2
-            notes.append(f"Institutional VWAP Breakdown (Spot â‚¹{current_spot:,.0f} < VWAP â‚¹{vwap_val:,.0f})")
+            notes.append(f"Institutional VWAP Breakdown (Spot {RUPEE}{current_spot:,.0f} < VWAP {RUPEE}{vwap_val:,.0f})")
         elif current_spot > vwap_val and current_spot > day_open:
             score += 2
-            notes.append(f"Institutional VWAP Support (Spot â‚¹{current_spot:,.0f} > VWAP â‚¹{vwap_val:,.0f})")
+            notes.append(f"Institutional VWAP Support (Spot {RUPEE}{current_spot:,.0f} > VWAP {RUPEE}{vwap_val:,.0f})")
         else:
             notes.append("Hovering near Institutional VWAP")
 
@@ -1158,7 +1194,7 @@ def evaluate_all_permutations(l1, l2, l3):
 
     if reds == 3:
         return {
-            "signal": "ðŸš¨ ULTRA STRONG SHORT (BUY PE)",
+            "signal": f"{SIREN} ULTRA STRONG SHORT (BUY PE)",
             "action": "BUY PUT (PE)",
             "confidence": 95,
             "badge": "error",
@@ -1167,7 +1203,7 @@ def evaluate_all_permutations(l1, l2, l3):
         }
     if greens == 3:
         return {
-            "signal": "ðŸ”¥ ULTRA STRONG BUY (BUY CE)",
+            "signal": f"{FIRE} ULTRA STRONG BUY (BUY CE)",
             "action": "BUY CALL (CE)",
             "confidence": 95,
             "badge": "success",
@@ -1177,7 +1213,7 @@ def evaluate_all_permutations(l1, l2, l3):
 
     if reds >= 2 and greens == 0:
         return {
-            "signal": "ðŸš¨ STRONG SHORT (BUY PE)",
+            "signal": f"{SIREN} STRONG SHORT (BUY PE)",
             "action": "BUY PUT (PE)",
             "confidence": 85,
             "badge": "error",
@@ -1187,7 +1223,7 @@ def evaluate_all_permutations(l1, l2, l3):
 
     if greens >= 2 and reds == 0:
         return {
-            "signal": "âš¡ STRONG BUY (BUY CE)",
+            "signal": f"{BOLT} STRONG BUY (BUY CE)",
             "action": "BUY CALL (CE)",
             "confidence": 85,
             "badge": "success",
@@ -1197,7 +1233,7 @@ def evaluate_all_permutations(l1, l2, l3):
 
     if s1 == "RED" and greens == 0:
         return {
-            "signal": "âš¡ MODERATE SHORT (BUY PE)",
+            "signal": f"{BOLT} MODERATE SHORT (BUY PE)",
             "action": "BUY PUT (PE)",
             "confidence": 70,
             "badge": "error",
@@ -1207,7 +1243,7 @@ def evaluate_all_permutations(l1, l2, l3):
 
     if s1 == "GREEN" and reds == 0:
         return {
-            "signal": "âš¡ MODERATE BUY (BUY CE)",
+            "signal": f"{BOLT} MODERATE BUY (BUY CE)",
             "action": "BUY CALL (CE)",
             "confidence": 70,
             "badge": "success",
@@ -1217,7 +1253,7 @@ def evaluate_all_permutations(l1, l2, l3):
 
     if greens >= 1 and reds >= 1:
         return {
-            "signal": "âš”ï¸ CONFLICT / STRICT NO TRADE",
+            "signal": f"{SWORDS} CONFLICT / STRICT NO TRADE",
             "action": "STRICT AVOID / CASH PRESERVATION",
             "confidence": 15,
             "badge": "info",
@@ -1226,7 +1262,7 @@ def evaluate_all_permutations(l1, l2, l3):
         }
 
     return {
-        "signal": "â¸ï¸ NO TRADE / WAIT FOR CLARITY",
+        "signal": f"{PAUSE} NO TRADE / WAIT FOR CLARITY",
         "action": "STAND ASIDE",
         "confidence": 20,
         "badge": "info",
@@ -1424,7 +1460,7 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         "technical_score": market.get("technical_score", 0),
         "institutional_score": market.get("institutional_score", 0),
         "why": why_explanation,
-        "invalidation": f"Agar spot price {sl:,.2f} SL level ke {'neeche' if bullish else 'upar'} candle close karta hai toh trade cancel ho jayega.",
+        "invalidation": f"Agar spot price {RUPEE}{sl:,.2f} SL level ke {'neeche' if bullish else 'upar'} candle close karta hai toh trade cancel ho jayega.",
         "trailing": f"Target 1 hit hote hi 50% position book karein aur Stop Loss ko Cost (Entry price) par trail karein. [{tf_cfg['desc']}]",
     }
 
@@ -1664,7 +1700,7 @@ def fetch_equity_live_quote(symbol, token=None, exchange="NSE", yf_sym=None):
             pass
 
     if price is None:
-        target_yf = yf_sym or f"{symbol.replace('-EQ','')}.{'NS' if exchange=='NSE' else 'BO'}"
+        target_yf = yf_sym or f"{symbol.replace('-EQ','')}.{'NSE' if exchange=='NSE' else 'BO'}"
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{target_yf}?interval=1d&range=2d"
             resp = requests.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
@@ -1807,10 +1843,10 @@ def analyze_equity_setup(stock_info, quote, df, tf_cfg=None):
 
     if vwap and last > vwap:
         tech_score += 1
-        reasons.append(f"Holding above Institutional Benchmark VWAP (â‚¹{vwap:,.2f}).")
+        reasons.append(f"Holding above Institutional Benchmark VWAP ({RUPEE}{vwap:,.2f}).")
     elif vwap:
         tech_score -= 1
-        reasons.append(f"Trading below VWAP (â‚¹{vwap:,.2f}) indicating intraday supply pressure.")
+        reasons.append(f"Trading below VWAP ({RUPEE}{vwap:,.2f}) indicating intraday supply pressure.")
 
     if rsi >= 60:
         tech_score += 1
@@ -1825,7 +1861,7 @@ def analyze_equity_setup(stock_info, quote, df, tf_cfg=None):
     sideways_notes = ""
     if adx < 20:
         is_sideways = True
-        sideways_notes = f"ADX {adx:.1f} (< 20) hai. Stock [{tf_cfg['label']}] range consolidation mein hai. Fresh directional move â‚¹{resistance:,.2f} breakout par aayega."
+        sideways_notes = f"ADX {adx:.1f} (< 20) hai. Stock [{tf_cfg['label']}] range consolidation mein hai. Fresh directional move {RUPEE}{resistance:,.2f} breakout par aayega."
     else:
         sideways_notes = f"ADX {adx:.1f} (> 20) hai. Active directional trend chal raha hai. Momentum intact hai."
 
@@ -1890,11 +1926,11 @@ def analyze_equity_setup(stock_info, quote, df, tf_cfg=None):
 # =========================================================
 # APPLICATION STATIC DASHBOARD HEADER
 # =========================================================
-st.title("âš¡ AI Institutional Live Trading Advisor")
-st.caption("Multi-Asset Intelligence: Index Derivatives â€¢ Equity / Cash Shares (NSE & BSE) â€¢ Multi-Timeframe Signals")
+st.title(f"{BOLT} AI Institutional Live Trading Advisor")
+st.caption(f"Multi-Asset Intelligence: Index Derivatives {BULLET} Equity / Cash Shares (NSE & BSE) {BULLET} Multi-Timeframe Signals")
 
 # SIDEBAR CONFIGURATION
-st.sidebar.header("â±ï¸ Strategy Timeframe")
+st.sidebar.header(f"{STOPWATCH} Strategy Timeframe")
 selected_tf_key = st.sidebar.selectbox(
     "Candle Resolution / Timeframe",
     options=["1m", "5m", "10m", "15m", "30m", "60m"],
@@ -1904,10 +1940,10 @@ selected_tf_key = st.sidebar.selectbox(
 )
 active_tf = TIMEFRAME_CONFIG[selected_tf_key]
 
-st.sidebar.header("âš™ï¸ Trading Environment")
-segment_mode = st.sidebar.radio("Active Market Segment", ["ðŸ“Š Index & Options Advisor", "ðŸ“ˆ Equity / Share Research (NSE & BSE)"])
+st.sidebar.header(f"{GEAR} Trading Environment")
+segment_mode = st.sidebar.radio("Active Market Segment", [f"{CHART_BAR} Index & Options Advisor", f"{CHART_UP} Equity / Share Research (NSE & BSE)"])
 
-if st.sidebar.button("ðŸ”„ Force Refresh All Caches", use_container_width=True):
+if st.sidebar.button(f"{REFRESH} Force Refresh All Caches", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
@@ -1924,14 +1960,14 @@ with col_t4:
 # ==============================================================================
 # SEGMENT 1: EQUITY / SHARE SCANNER (WITH DYNAMIC AUTO-POPUP PREDICTIVE SEARCH)
 # ==============================================================================
-if segment_mode == "ðŸ“ˆ Equity / Share Research (NSE & BSE)":
-    st.markdown(f"## ðŸ“ˆ Universal Equity Stock Intelligence â€” [{active_tf['label']}]")
-    st.caption("Search Any Share â€¢ Instant Predictive Popup â€¢ Target & Risk Levels â€¢ Multi-Timeframe Confluence")
+if "Equity / Share Research" in segment_mode:
+    st.markdown(f"## {CHART_UP} Universal Equity Stock Intelligence - [{active_tf['label']}]")
+    st.caption(f"Search Any Share {BULLET} Instant Predictive Popup {BULLET} Target & Risk Levels {BULLET} Multi-Timeframe Confluence")
 
     exchange_select = st.selectbox("Preferred Exchange", ["NSE", "BSE"], index=0)
 
     query_text = st.text_input(
-        "ðŸ” Type any Stock Name or Symbol (e.g. Tata, Mazagon, Kalyan, Suzlon, Reliance, Zomato, SBI, 500325):",
+        f"{SEARCH} Type any Stock Name or Symbol (e.g. Tata, Mazagon, Kalyan, Suzlon, Reliance, Zomato, SBI, 500325):",
         value="",
         placeholder="Type to filter stocks...",
     ).strip().upper()
@@ -1940,24 +1976,24 @@ if segment_mode == "ðŸ“ˆ Equity / Share Research (NSE & BSE)":
     if query_text:
         for sym, d in POPULAR_EQUITIES.items():
             if query_text in sym or query_text in d["name"].upper():
-                filtered_stocks.append(f"{sym} â€” {d['name']}")
+                filtered_stocks.append(f"{sym} - {d['name']}")
 
         clean_code = query_text.split()[0].replace("-EQ", "")
-        dynamic_custom = f"{clean_code} â€” {clean_code} (Custom Listed Scrip)"
+        dynamic_custom = f"{clean_code} - {clean_code} (Custom Listed Scrip)"
         if not any(f"{clean_code} " in item for item in filtered_stocks):
             filtered_stocks.append(dynamic_custom)
     else:
-        filtered_stocks = [f"{sym} â€” {details['name']}" for sym, details in list(POPULAR_EQUITIES.items())[:35]]
+        filtered_stocks = [f"{sym} - {details['name']}" for sym, details in list(POPULAR_EQUITIES.items())[:35]]
 
     chosen_str = st.selectbox(
-        "ðŸŽ¯ Select Matched Stock (Auto-popups update as you type above):",
+        f"{TARGET} Select Matched Stock (Auto-popups update as you type above):",
         options=filtered_stocks,
         index=0,
     )
 
     selected_stock = None
     if chosen_str:
-        sym_key = chosen_str.split(" â€” ")[0]
+        sym_key = chosen_str.split(" - ")[0].split(" — ")[0].strip()
         if sym_key in POPULAR_EQUITIES:
             d = POPULAR_EQUITIES[sym_key]
             selected_stock = {
@@ -2000,25 +2036,25 @@ if segment_mode == "ðŸ“ˆ Equity / Share Research (NSE & BSE)":
             analysis = analyze_equity_setup(stock, quote, df, tf_cfg=tf)
             news = fetch_stock_news_sentiment(stock["name"])
 
-            st.markdown(f"### ðŸ¢ {stock['name']} (`{stock['symbol']}` â€¢ {stock['exchange']}) â€” [{tf['label']}]")
+            st.markdown(f"### {BUILDING} {stock['name']} (`{stock['symbol']}` {BULLET} {stock['exchange']}) - [{tf['label']}]")
             
             p1, p2, p3, p4 = st.columns(4)
             with p1:
                 st.metric(
                     "Running Price (LTP)",
-                    f"â‚¹{fmt(quote.get('price'))}",
+                    f"{RUPEE}{fmt(quote.get('price'))}",
                     delta=f"{quote.get('change_pct', 0.0):+.2f}%",
                 )
             with p2:
                 st.metric(
                     "Upside Potential",
-                    f"+â‚¹{fmt(analysis['upside_pts'])}" if analysis else "Calculating",
+                    f"+{RUPEE}{fmt(analysis['upside_pts'])}" if analysis else "Calculating",
                     delta=f"+{analysis['upside_pct']:.1f}% Target" if analysis else None,
                 )
             with p3:
                 st.metric(
                     "Downside Risk Floor",
-                    f"-â‚¹{fmt(analysis['downside_pts'])}" if analysis else "Calculating",
+                    f"-{RUPEE}{fmt(analysis['downside_pts'])}" if analysis else "Calculating",
                     delta=f"-{analysis['downside_pct']:.1f}% SL Floor" if analysis else None,
                     delta_color="inverse",
                 )
@@ -2031,16 +2067,16 @@ if segment_mode == "ðŸ“ˆ Equity / Share Research (NSE & BSE)":
                 )
 
             if analysis:
-                icon = "ðŸš€" if "BUY" in analysis["stance"] else ("ðŸ”»" if "SELL" in analysis["stance"] else "âš–ï¸")
+                icon = ROCKET if "BUY" in analysis["stance"] else (DOWN_ARROW if "SELL" in analysis["stance"] else SCALE)
                 st.markdown(
                     f"""
                     <div class="{analysis['badge']}">
                         <h3 style="margin: 0; padding: 0;">{icon} Algorithmic Stance: <b>{analysis['stance']}</b> ({tf['label']})</h3>
                         <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;">
-                            <b>Recommended Entry Range:</b> â‚¹{fmt(analysis['price'])} | 
-                            <b>Target 1:</b> â‚¹{fmt(analysis['t1'])} | 
-                            <b>Target 2 (Max Upside):</b> â‚¹{fmt(analysis['t2'])} | 
-                            <b>Strict Stop Loss:</b> â‚¹{fmt(analysis['sl'])}
+                            <b>Recommended Entry Range:</b> {RUPEE}{fmt(analysis['price'])} | 
+                            <b>Target 1:</b> {RUPEE}{fmt(analysis['t1'])} | 
+                            <b>Target 2 (Max Upside):</b> {RUPEE}{fmt(analysis['t2'])} | 
+                            <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])}
                         </p>
                         <span style="font-size: 13.5px;"><b>Sideways Status:</b> {analysis['sideways_notes']}</span>
                     </div>
@@ -2048,61 +2084,61 @@ if segment_mode == "ðŸ“ˆ Equity / Share Research (NSE & BSE)":
                     unsafe_allow_html=True,
                 )
 
-                st.markdown(f"#### ðŸ“ Exact Target & Downside Levels ({tf['smartapi']})")
+                st.markdown(f"#### {RULER} Exact Target & Downside Levels ({tf['smartapi']})")
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
                 with t_col1:
-                    st.metric("Primary Target (T1)", f"â‚¹{fmt(analysis['t1'])}", delta="+1.6 Risk Multiple")
+                    st.metric("Primary Target (T1)", f"{RUPEE}{fmt(analysis['t1'])}", delta="+1.6 Risk Multiple")
                 with t_col2:
-                    st.metric("Secondary Target (T2)", f"â‚¹{fmt(analysis['t2'])}", delta="+2.8 Risk Multiple")
+                    st.metric("Secondary Target (T2)", f"{RUPEE}{fmt(analysis['t2'])}", delta="+2.8 Risk Multiple")
                 with t_col3:
-                    st.metric("Stop Loss Level (SL)", f"â‚¹{fmt(analysis['sl'])}", delta="Strict Exit", delta_color="inverse")
+                    st.metric("Stop Loss Level (SL)", f"{RUPEE}{fmt(analysis['sl'])}", delta="Strict Exit", delta_color="inverse")
                 with t_col4:
                     st.metric("Risk-Reward Ratio", "1:2.4", delta="Institutional Favorable")
 
-                st.markdown(f"#### ðŸš¦ Indicator Confluence Matrix ({tf['label']})")
+                st.markdown(f"#### {TRAFFIC} Indicator Confluence Matrix ({tf['label']})")
                 i1, i2, i3, i4 = st.columns(4)
                 with i1:
                     st.metric("RSI (14-Candle)", f"{analysis['rsi']:.1f}", delta="Bullish (>60)" if analysis['rsi']>=60 else ("Bearish (<40)" if analysis['rsi']<=40 else "Neutral Range"), delta_color="off")
                 with i2:
                     st.metric("ADX Trend Strength", f"{analysis['adx']:.1f}", delta="Trending (>20)" if analysis['adx']>=20 else "Sideways (<20)", delta_color="off")
                 with i3:
-                    st.metric("Support Floor", f"â‚¹{fmt(analysis['support'])}", delta="Major Demand Zone", delta_color="off")
+                    st.metric("Support Floor", f"{RUPEE}{fmt(analysis['support'])}", delta="Major Demand Zone", delta_color="off")
                 with i4:
-                    st.metric("Resistance Ceiling", f"â‚¹{fmt(analysis['resistance'])}", delta="Major Supply Zone", delta_color="off")
+                    st.metric("Resistance Ceiling", f"{RUPEE}{fmt(analysis['resistance'])}", delta="Major Supply Zone", delta_color="off")
 
-                st.markdown("#### ðŸ“° Stock Specific News Sentiment")
+                st.markdown(f"#### {NEWS} Stock Specific News Sentiment")
                 st.info(f"**News Sentiment Score ({news['score']:+d}):** {news['sentiment']}")
                 if news["headlines"]:
                     for h in news["headlines"]:
-                        st.caption(f"â€¢ {h}")
+                        st.caption(f"- {h}")
 
                 st.markdown(
                     f"""
                     <div class="reason-box">
-                        <b>ðŸ“Œ Trade Lene Ka Institutional Aadhar ({tf['label']}):</b><br>
+                        <b>{PIN} Trade Lene Ka Institutional Aadhar ({tf['label']}):</b><br>
                         {' '.join(analysis['reasons'])}
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-                st.write(f"ðŸ›‘ **Position Invalidation:** Agar share â‚¹{fmt(analysis['sl'])} ke paar {tf['smartapi']} candle close karta hai, to trade se turant exit karein.")
-                st.write(f"ðŸ“ˆ **Trailing Stop Loss Rule:** Target 1 (â‚¹{fmt(analysis['t1'])}) aate hi 50% profit book karein aur Stop Loss ko Cost (â‚¹{fmt(analysis['price'])}) par trail karein. [{tf['desc']}]")
+                st.write(f"{STOP} **Position Invalidation:** Agar share {RUPEE}{fmt(analysis['sl'])} ke paar {tf['smartapi']} candle close karta hai, to trade se turant exit karein.")
+                st.write(f"{CHART_UP} **Trailing Stop Loss Rule:** Target 1 ({RUPEE}{fmt(analysis['t1'])}) aate hi 50% profit book karein aur Stop Loss ko Cost ({RUPEE}{fmt(analysis['price'])}) par trail karein. [{tf['desc']}]")
 
             return analysis
 
         analysis_result = render_live_equity_view(selected_stock, active_tf)
 
         if GEMINI_API_KEY and analysis_result:
-            if st.button("ðŸ¤– GENERATE INSTITUTIONAL AI ANALYST REPORT FOR THIS SHARE", type="primary", use_container_width=True):
+            if st.button(f"{ROBOT} GENERATE INSTITUTIONAL AI ANALYST REPORT FOR THIS SHARE", type="primary", use_container_width=True):
                 with st.spinner("Gemini Institutional AI Analyzing stock balance sheet, volume spikes, and technical setups..."):
                     prompt = f"""
                     You are a senior institutional equity research analyst covering Indian stock markets (NSE & BSE).
                     Analyze this stock setup in depth on timeframe [{active_tf['label']}]:
                     Stock: {analysis_result['name']} ({analysis_result['symbol']})
-                    Current Price: â‚¹{analysis_result['price']}
+                    Current Price: ₹{analysis_result['price']}
                     Stance: {analysis_result['stance']}
-                    Target 1: â‚¹{analysis_result['t1']}, Target 2: â‚¹{analysis_result['t2']}, Stop Loss: â‚¹{analysis_result['sl']}
+                    Target 1: ₹{analysis_result['t1']}, Target 2: ₹{analysis_result['t2']}, Stop Loss: ₹{analysis_result['sl']}
                     ADX: {analysis_result['adx']}, RSI: {analysis_result['rsi']}
                     Sideways Status: {analysis_result['sideways_notes']}
                     Technical Factors: {analysis_result['reasons']}
@@ -2113,7 +2149,7 @@ if segment_mode == "ðŸ“ˆ Equity / Share Research (NSE & BSE)":
                     3. Trailing stop-loss execution strategy.
                     """
                     ai_response = call_gemini_cascade(prompt)
-                    st.markdown("### ðŸ¤– Institutional AI Equity Research Note")
+                    st.markdown(f"### {ROBOT} Institutional AI Equity Research Note")
                     st.write(ai_response)
 
 # ==============================================================================
@@ -2156,8 +2192,8 @@ else:
 
     @live_fragment(run_every=30)
     def render_index_research_and_prediction(selected_underlying, current_expiry):
-        st.markdown("## ðŸ‡®ðŸ‡³ Indian Market Research & Tomorrow Opening Prediction")
-        st.caption("Cross-Asset Synthesis: Nifty 50 Gap Model â€¢ FII/DII Institutional Flow â€¢ Global Radar")
+        st.markdown(f"## {FLAG_IN} Indian Market Research & Tomorrow Opening Prediction")
+        st.caption(f"Cross-Asset Synthesis: Nifty 50 Gap Model {BULLET} FII/DII Institutional Flow {BULLET} Global Radar")
 
         macro_data = global_macro_inst.fetch_macro_quotes() if global_macro_inst else {}
         chain, _ = get_chain(selected_underlying, current_expiry)
@@ -2165,7 +2201,7 @@ else:
         fii_dii_info = fetch_fii_dii()
 
         pred = calculate_indian_market_prediction(macro_data, domestic_pcr=pcr_val, fii_dii_info=fii_dii_info)
-        icon = "ðŸš€" if "GAP-UP" in pred["verdict"] else ("ðŸ”»" if "GAP-DOWN" in pred["verdict"] else "âš–ï¸")
+        icon = ROCKET if "GAP-UP" in pred["verdict"] else (DOWN_ARROW if "GAP-DOWN" in pred["verdict"] else SCALE)
 
         st.markdown(
             f"""
@@ -2182,7 +2218,7 @@ else:
             unsafe_allow_html=True,
         )
 
-        st.markdown("### ðŸ›ï¸ Institutional Cash Market Research (FII vs DII)")
+        st.markdown(f"### {TEMPLE} Institutional Cash Market Research (FII vs DII)")
         f1, f2, f3, f4 = st.columns(4)
         fii_val = fii_dii_info.get("fii_net")
         dii_val = fii_dii_info.get("dii_net")
@@ -2191,25 +2227,25 @@ else:
         with f1:
             st.metric(
                 "FII Net Cash (NSE/BSE)",
-                f"â‚¹{fii_val:,.2f} Cr" if fii_val is not None else "â‚¹ -480.50 Cr",
+                f"{RUPEE}{fii_val:,.2f} Cr" if fii_val is not None else f"{RUPEE} -480.50 Cr",
                 delta="Institutional Inflow" if (fii_val and fii_val > 0) else "Institutional Outflow",
             )
         with f2:
             st.metric(
                 "DII Net Cash Flow",
-                f"â‚¹{dii_val:,.2f} Cr" if dii_val is not None else "â‚¹ +1,240.30 Cr",
+                f"{RUPEE}{dii_val:,.2f} Cr" if dii_val is not None else f"{RUPEE} +1,240.30 Cr",
                 delta="Domestic Support" if (dii_val and dii_val > 0) else "Domestic Outflow",
             )
         with f3:
             st.metric(
                 "Combined Net Liquidity",
-                f"â‚¹{comb_val:,.2f} Cr" if comb_val is not None else "â‚¹ +759.80 Cr",
+                f"{RUPEE}{comb_val:,.2f} Cr" if comb_val is not None else f"{RUPEE} +759.80 Cr",
                 delta="Net Inflow (+)" if (comb_val and comb_val > 0) else "Net Outflow (-)",
             )
         with f4:
             st.metric("Smart Money Verdict", fii_dii_info.get("bias", "MODERATE BULLISH"), delta="Consensus Bias", delta_color="off")
 
-        st.markdown("### ðŸŒ Global Macro Cues & Commodity Radar")
+        st.markdown(f"### {GLOBE} Global Macro Cues & Commodity Radar")
         m1, m2, m3, m4 = st.columns(4)
         with m1:
             nq = macro_data.get("NASDAQ", {})
@@ -2251,13 +2287,17 @@ else:
         )
         macro_quotes = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
 
-        st.markdown(f"## ðŸš¦ Triple Traffic Light Confluence System â€” [{tf['label']}]")
+        st.markdown(f"## {TRAFFIC} Triple Traffic Light Confluence System - [{tf['label']}]")
         light1 = analyze_candlesticks_and_volume(df_candles)
         light2 = analyze_smart_money(fii_dii, pcr, df=df_candles, current_spot=spot)
         light3 = fetch_composite_macro_news(macro_quotes)
         confluence = evaluate_all_permutations(light1, light2, light3)
 
-        icon_map = {"GREEN": "ðŸŸ¢ GREEN", "RED": "ðŸ”´ RED", "YELLOW": "ðŸŸ¡ YELLOW"}
+        icon_map = {
+            "GREEN": f"{GREEN_CIRCLE} GREEN",
+            "RED": f"{RED_CIRCLE} RED",
+            "YELLOW": f"{YELLOW_CIRCLE} YELLOW"
+        }
 
         tl1, tl2, tl3 = st.columns(3)
         with tl1:
@@ -2287,38 +2327,38 @@ else:
         else:
             st.info(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
 
-        st.markdown(f"### ðŸ›¡ï¸ Live Position Exit Monitor ({tf['smartapi']})")
-        with st.expander("ðŸ“Œ Active Position Exit Rules Check (Live)", expanded=True):
+        st.markdown(f"### {SHIELD} Live Position Exit Monitor ({tf['smartapi']})")
+        with st.expander(f"{PIN} Active Position Exit Rules Check (Live)", expanded=True):
             ex1, ex2 = st.columns(2)
             with ex1:
-                st.markdown("#### ðŸŸ¢ Active Call (CE) Exit Rules")
+                st.markdown(f"#### {GREEN_CIRCLE} Active Call (CE) Exit Rules")
                 if light1["status"] == "RED" or light2["status"] == "RED":
-                    st.error("ðŸš¨ **EMERGENCY EXIT CE:** Downward breakdown trigger ho chuki hai. Call positions turant exit karein.")
+                    st.error(f"{SIREN} **EMERGENCY EXIT CE:** Downward breakdown trigger ho chuki hai. Call positions turant exit karein.")
                 elif "DOJI" in light1["pattern"]:
-                    st.warning("âš ï¸ **TRAIL SL TO COST:** Doji indecision candle form hui hai. Risk zero karein.")
+                    st.warning(f"{WARNING} **TRAIL SL TO COST:** Doji indecision candle form hui hai. Risk zero karein.")
                 elif light1["reversal_risk"]:
-                    st.error(f"âš ï¸ **REVERSAL EXIT CE:** High volume {light1['pattern']} detected.")
+                    st.error(f"{WARNING} **REVERSAL EXIT CE:** High volume {light1['pattern']} detected.")
                 else:
-                    st.success("âœ… **HOLD CE:** Bullish momentum intact hai.")
+                    st.success(f"{CHECK} **HOLD CE:** Bullish momentum intact hai.")
 
             with ex2:
-                st.markdown("#### ðŸ”´ Active Put (PE) Exit Rules")
+                st.markdown(f"#### {RED_CIRCLE} Active Put (PE) Exit Rules")
                 if light1["status"] == "GREEN" or light2["status"] == "GREEN":
-                    st.error("ðŸš¨ **EMERGENCY EXIT PE:** Opposite Green Light trigger ho chuki hai. Put positions turant exit karein.")
+                    st.error(f"{SIREN} **EMERGENCY EXIT PE:** Opposite Green Light trigger ho chuki hai. Put positions turant exit karein.")
                 elif "DOJI" in light1["pattern"]:
-                    st.warning("âš ï¸ **TRAIL SL TO COST:** Support par Doji form hui hai. Stop loss cost par trail karein.")
+                    st.warning(f"{WARNING} **TRAIL SL TO COST:** Support par Doji form hui hai. Stop loss cost par trail karein.")
                 elif light1["pattern"] in ["BULLISH HAMMER PIN", "BULLISH ENGULFING"]:
-                    st.error(f"âš ï¸ **REVERSAL EXIT PE:** Support bounce pattern detect hua hai.")
+                    st.error(f"{WARNING} **REVERSAL EXIT PE:** Support bounce pattern detect hua hai.")
                 else:
-                    st.success("âœ… **HOLD PE:** Downside momentum intact hai.")
+                    st.success(f"{CHECK} **HOLD PE:** Downside momentum intact hai.")
 
     render_market_confluence_dashboard(underlying, selected_expiry, active_tf)
     st.divider()
 
-    st.markdown(f"## ðŸŽ¯ Detailed High-Conviction Trade Setups â€” [{active_tf['label']}]")
-    st.caption("Technical Structure â€¢ Delta Greeks â€¢ Exact Strike â€¢ Timeframe Sizing â€¢ Trailing SL Rules")
+    st.markdown(f"## {TARGET} Detailed High-Conviction Trade Setups - [{active_tf['label']}]")
+    st.caption(f"Technical Structure {BULLET} Delta Greeks {BULLET} Exact Strike {BULLET} Timeframe Sizing {BULLET} Trailing SL Rules")
 
-    if st.button("ðŸš€ SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary", use_container_width=True):
+    if st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary", use_container_width=True):
         with st.spinner(f"Processing multi-index indicators on [{active_tf['label']}], option Greeks, and institutional flow..."):
             current_spot = get_spot(underlying)
             opt_chain, _ = get_chain(underlying, selected_expiry)
@@ -2382,7 +2422,7 @@ else:
                     st.markdown(
                         f"""
                         <div class="trade-card">
-                            <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} â€” <span style="color: #4CAF50;">{card_title}</span></h3>
+                            <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
                             <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
                         </div>
                         """,
@@ -2398,25 +2438,25 @@ else:
                                 delta=f"{idea['action']} CALL" if idea['option'] == 'CE' else f"{idea['action']} PUT",
                             )
                         with c2:
-                            st.metric("Premium Entry", f"â‚¹{fmt(idea['entry'])}")
+                            st.metric("Premium Entry", f"{RUPEE}{fmt(idea['entry'])}")
                         with c3:
-                            st.metric("Stop Loss (SL)", f"â‚¹{fmt(idea['sl'])}")
+                            st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(idea['sl'])}")
                         with c4:
                             st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}")
 
                         c5, c6, c7, c8 = st.columns(4)
                         with c5:
-                            st.metric("Target 1", f"â‚¹{fmt(idea['target1'])}")
+                            st.metric("Target 1", f"{RUPEE}{fmt(idea['target1'])}")
                         with c6:
-                            st.metric("Target 2", f"â‚¹{fmt(idea['target2'])}")
+                            st.metric("Target 2", f"{RUPEE}{fmt(idea['target2'])}")
                         with c7:
                             st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
                         with c8:
                             st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
 
                         g1, g2, g3, g4, g5 = st.columns(5)
-                        with g1: st.metric("Delta (Î”)", f"{idea.get('delta', 0.52):.2f}")
-                        with g2: st.metric("Theta (Î˜)", f"{idea.get('theta', -12.5):.1f}")
+                        with g1: st.metric(f"Delta ({DELTA_SYM})", f"{idea.get('delta', 0.52):.2f}")
+                        with g2: st.metric(f"Theta ({THETA_SYM})", f"{idea.get('theta', -12.5):.1f}")
                         with g3: st.metric("Vega", f"{idea.get('vega', 14.2):.1f}")
                         with g4: st.metric("IV (%)", f"{idea.get('iv', 14.8):.1f}%")
                         with g5: st.metric("Open Interest", f"{idea.get('oi', 0):,}" if idea.get('oi') else "Active")
@@ -2424,27 +2464,27 @@ else:
                     else:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Action", f"{idea['action']} SPOT")
-                        with c2: st.metric("Spot Entry", f"â‚¹{fmt(idea['entry'])}")
-                        with c3: st.metric("Stop Loss (SL)", f"â‚¹{fmt(idea['sl'])}")
+                        with c2: st.metric("Spot Entry", f"{RUPEE}{fmt(idea['entry'])}")
+                        with c3: st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(idea['sl'])}")
                         with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}")
 
                         c5, c6, c7, c8 = st.columns(4)
-                        with c5: st.metric("Target 1", f"â‚¹{fmt(idea['target1'])}")
-                        with c6: st.metric("Target 2", f"â‚¹{fmt(idea['target2'])}")
+                        with c5: st.metric("Target 1", f"{RUPEE}{fmt(idea['target1'])}")
+                        with c6: st.metric("Target 2", f"{RUPEE}{fmt(idea['target2'])}")
                         with c7: st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
                         with c8: st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
 
                     st.markdown(
                         f"""
                         <div class="reason-box">
-                            <b>ðŸ“Œ Trade Lene Ka Aadhar (Setup Logic):</b><br>
+                            <b>{PIN} Trade Lene Ka Aadhar (Setup Logic):</b><br>
                             {idea['why']}
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
-                    st.write(f"ðŸ›‘ **Structural Invalidation Level:** {idea['invalidation']}")
-                    st.write(f"ðŸ“ˆ **Position Trailing Guidance:** {idea['trailing']}")
+                    st.write(f"{STOP} **Structural Invalidation Level:** {idea['invalidation']}")
+                    st.write(f"{CHART_UP} **Position Trailing Guidance:** {idea['trailing']}")
                     st.divider()
 
             if GEMINI_API_KEY and final_ideas:
@@ -2461,8 +2501,8 @@ else:
                         },
                     )
                     if ai_text:
-                        st.markdown("### ðŸ¤– Institutional AI Analyst Report")
+                        st.markdown(f"### {ROBOT} Institutional AI Analyst Report")
                         st.write(ai_text)
                         st.divider()
 
-st.caption("Paper Trading Engine Active â€¢ Real Broker Order Routing Disabled â€¢ Strictly Educational Quantitative Research.")
+st.caption(f"Paper Trading Engine Active {BULLET} Real Broker Order Routing Disabled {BULLET} Strictly Educational Quantitative Research.")
