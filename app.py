@@ -784,55 +784,171 @@ def get_india_vix():
 
     return {"vix": vix, "regime": regime, "sl_multiplier": sl_multiplier}
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_fii_dii():
-    fii_net, dii_net = None, None
+# =========================================================
+# RESILIENT INSTITUTIONAL INGESTION ENGINE (FII / DII)
+# =========================================================
+def get_browser_headers() -> Dict[str, str]:
+    """Provides standard browser headers to prevent WAF connection drops."""
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/reports/fii-dii",
+        "DNT": "1",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+
+def fetch_direct_nse_fiidii() -> Optional[Dict[str, float]]:
+    """
+    Scrapes official provisional FII/DII cash figures directly from NSE India.
+    Initializes a session to obtain exchange tracking cookies.
+    """
+    session = requests.Session()
+    headers = get_browser_headers()
     try:
-        resp = requests.get(
-            "https://fii-diidata.mrchartist.com/api/data",
-            timeout=4,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        if resp.ok:
+        session.get("https://www.nseindia.com", headers=headers, timeout=5)
+        url = "https://www.nseindia.com/api/fiidiiTradeReact"
+        resp = session.get(url, headers=headers, timeout=6)
+        if resp.status_code == 200:
+            payload = resp.json()
+            fii_net, dii_net = None, None
+            for row in payload:
+                cat = str(row.get("category", "")).upper()
+                raw_val = str(row.get("netValue", "0")).replace(",", "").strip()
+                net_val = float(raw_val)
+                if "FII" in cat or "FPI" in cat:
+                    fii_net = net_val
+                elif "DII" in cat:
+                    dii_net = net_val
+
+            if fii_net is not None and dii_net is not None:
+                return {
+                    "fii_net": fii_net,
+                    "dii_net": dii_net,
+                    "source": "NSE_OFFICIAL_PRIMARY",
+                }
+    except Exception as exc:
+        logger.warning("Primary NSE India direct ingestion failed: %s", exc)
+    return None
+
+def fetch_secondary_proxy_fiidii() -> Optional[Dict[str, float]]:
+    """
+    Queries fallback aggregator with expanded schema normalization
+    supporting both standard and compact keys.
+    """
+    headers = get_browser_headers()
+    url = "https://fii-diidata.mrchartist.com/api/data"
+    try:
+        resp = requests.get(url, headers=headers, timeout=8)
+        if resp.status_code == 200:
             data = resp.json()
             if isinstance(data, list) and data:
                 data = data[0]
-            fii_net = num(data.get("fii_net") or data.get("fiiNet"))
-            dii_net = num(data.get("dii_net") or data.get("diiNet"))
-    except Exception:
-        pass
 
-    score = 0
-    if fii_net is not None:
+            fii_raw = (
+                data.get("fii_net")
+                or data.get("fiiNet")
+                or data.get("fn")
+                or data.get("fii_buy_sell_net")
+            )
+            dii_raw = (
+                data.get("dii_net")
+                or data.get("diiNet")
+                or data.get("dn")
+                or data.get("dii_buy_sell_net")
+            )
+
+            if fii_raw is not None and dii_raw is not None:
+                return {
+                    "fii_net": float(str(fii_raw).replace(",", "").strip()),
+                    "dii_net": float(str(dii_raw).replace(",", "").strip()),
+                    "source": "MRCHARTIST_SECONDARY_PROXY",
+                }
+    except Exception as exc:
+        logger.warning("Secondary aggregator ingestion failed: %s", exc)
+    return None
+
+def determine_settlement_phase() -> str:
+    """Calculates whether current market figures reflect intraday or settled sessions."""
+    now = datetime.now(IST)
+    if now.weekday() >= 5:
+        return "WEEKEND (SETTLED FRIDAY CLOSE)"
+    
+    current_time = now.time()
+    if current_time < dtime(17, 30):
+        return "LIVE SESSION (PREVIOUS CLOSE)"
+    elif dtime(17, 30) <= current_time <= dtime(19, 0):
+        return "RECONCILIATION IN PROGRESS"
+    else:
+        return "TODAY'S PROVISIONAL FIGURES"
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_fii_dii() -> Dict[str, Any]:
+    """
+    Multi-tier institutional flow pipeline with explicit operational status tracking.
+    """
+    result = fetch_direct_nse_fiidii()
+    if not result:
+        result = fetch_secondary_proxy_fiidii()
+
+    settlement_status = determine_settlement_phase()
+
+    if result:
+        fii_net = result["fii_net"]
+        dii_net = result["dii_net"]
+        combined = round(fii_net + dii_net, 2)
+
+        score = 0
         score += 2 if fii_net > 1000 else (1 if fii_net > 300 else (-2 if fii_net < -1000 else (-1 if fii_net < -300 else 0)))
-    if dii_net is not None:
         score += 1 if dii_net > 500 else (-1 if dii_net < -500 else 0)
 
-    bias = "STRONG BULLISH" if score >= 2 else ("MODERATE BULLISH" if score == 1 else ("STRONG BEARISH" if score <= -2 else ("MODERATE BEARISH" if score == -1 else "NEUTRAL")))
+        bias = (
+            "STRONG BULLISH" if score >= 2
+            else ("MODERATE BULLISH" if score == 1
+            else ("STRONG BEARISH" if score <= -2
+            else ("MODERATE BEARISH" if score == -1 else "NEUTRAL")))
+        )
+
+        return {
+            "available": True,
+            "fii_net": fii_net,
+            "dii_net": dii_net,
+            "combined": combined,
+            "score": score,
+            "bias": bias,
+            "source": result["source"],
+            "phase": settlement_status,
+            "sync_time": datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST"),
+        }
 
     return {
-        "available": (fii_net is not None or dii_net is not None),
-        "fii_net": fii_net,
-        "dii_net": dii_net,
-        "combined": (fii_net + dii_net) if (fii_net is not None and dii_net is not None) else None,
-        "score": score,
-        "bias": bias,
+        "available": False,
+        "fii_net": None,
+        "dii_net": None,
+        "combined": None,
+        "score": 0,
+        "bias": "NEUTRAL",
+        "source": "OFFLINE",
+        "phase": f"SYNC PENDING: {settlement_status}",
+        "sync_time": datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST"),
     }
 
 fii_dii = fetch_fii_dii()
 
 # =========================================================
-# DYNAMIC MULTI-INDEX EXPIRIES & OPTIONS ENGINE (BUG FIX)
+# DYNAMIC MULTI-INDEX EXPIRIES & OPTIONS ENGINE
 # =========================================================
 def generate_calendar_expiries(symbol: str) -> List[str]:
     """
     Dynamically generates active weekly and monthly F&O expiry dates
     for Indian indices based on active market settlement rules.
-    Guarantees user always has selectable expiries.
     """
     now = datetime.now(IST)
-    # Target expiry weekdays: Monday=0, Tuesday=1, Wednesday=2, Thursday=3, Friday=4
-    # NIFTY/FINNIFTY: Tuesday (1) e.g., 13-Oct-2026, BANKNIFTY: Wednesday (2), MIDCPNIFTY: Monday (0), SENSEX: Friday (4)
     day_map = {
         "NIFTY": 1,
         "BANKNIFTY": 2,
@@ -858,7 +974,6 @@ def generate_calendar_expiries(symbol: str) -> List[str]:
             expiries.append(exp_str)
         cur = next_exp + timedelta(days=1)
 
-    # Monthly Expiry (Last Thursday of current & subsequent month)
     for m_offset in [0, 1]:
         year = now.year + ((now.month + m_offset - 1) // 12)
         month = ((now.month + m_offset - 1) % 12) + 1
@@ -877,13 +992,6 @@ def generate_calendar_expiries(symbol: str) -> List[str]:
 
 @st.cache_data(ttl=120, show_spinner=False)
 def load_expiries(symbol: str) -> List[str]:
-    """
-    Multi-tier expiry loader:
-    1. Broker OptionsEngine (Angel One)
-    2. Live NSE Option Chain Gateway
-    3. Mathematical Calendar Fallback
-    Ensures Target Expiry dropdown is NEVER empty.
-    """
     opt_eng = get_options_engine()
     if opt_eng is not None:
         try:
@@ -898,7 +1006,6 @@ def load_expiries(symbol: str) -> List[str]:
         except Exception:
             pass
 
-    # Fallback to direct NSE Option Chain API
     try:
         url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
         headers = {
@@ -916,7 +1023,6 @@ def load_expiries(symbol: str) -> List[str]:
     except Exception:
         pass
 
-    # Deterministic calendar generation
     return generate_calendar_expiries(symbol)
 
 @st.cache_data(ttl=25, show_spinner=False)
@@ -1475,14 +1581,9 @@ def calculate_black_scholes(spot: float, strike: float, dte_days: float, rate: f
     return price, delta, theta, vega
 
 def get_optimal_option_strike(symbol, spot, side, chain=None, expiry=None):
-    """
-    Accurately selects strike and binds entry strictly to live market quote or
-    exact fractional DTE theoretical valuation. Completely removes the 270.20 placeholder bug.
-    """
     step = 50 if symbol in ["NIFTY", "FINNIFTY"] else 100
     base_strike = int(round(spot / step) * step)
 
-    # Compute exact fractional calendar days to settlement
     dte_days = 3.75
     if expiry:
         try:
@@ -1545,7 +1646,6 @@ def get_optimal_option_strike(symbol, spot, side, chain=None, expiry=None):
         except Exception as exc:
             logger.warning("Direct option ltpData lookup failed: %s", exc)
 
-    # Compute authentic Greeks and theoretical baseline
     theo_price, delta, theta, vega = calculate_black_scholes(
         spot=spot,
         strike=base_strike,
@@ -1555,7 +1655,6 @@ def get_optimal_option_strike(symbol, spot, side, chain=None, expiry=None):
         option_type=side
     )
 
-    # BUG RESOLUTION: If market is offline or quote missing, bind to verified weekly LTP (137.05) or theoretical BS
     if ltp is None or ltp <= 0:
         if symbol == "NIFTY" and abs(base_strike - 22500) < 5 and abs(dte_days - 3.75) < 1.0:
             ltp = 137.05
@@ -2349,7 +2448,6 @@ if "Equity / Share Research" in segment_mode:
 else:
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
     
-    # DYNAMIC EXPIRIES: Load real expiries or computed cycle calendar
     expiries = load_expiries(underlying)
     selected_expiry = st.sidebar.selectbox(
         f"{STOPWATCH} Target Expiry",
@@ -2425,25 +2523,54 @@ else:
         comb_val = fii_dii_info.get("combined")
 
         with f1:
-            st.metric(
-                "FII Net Cash (NSE/BSE)",
-                f"{RUPEE}{fii_val:,.2f} Cr" if fii_val is not None else f"{RUPEE} -480.50 Cr",
-                delta="Institutional Inflow" if (fii_val and fii_val > 0) else "Institutional Outflow",
-            )
+            if fii_dii_info.get("available") and fii_val is not None:
+                st.metric(
+                    "FII Net Cash (NSE/BSE)",
+                    f"{RUPEE}{fii_val:,.2f} Cr",
+                    delta="Institutional Inflow" if fii_val > 0 else "Institutional Outflow",
+                )
+            else:
+                st.metric(
+                    "FII Net Cash (NSE/BSE)",
+                    "Syncing...",
+                    delta="Exchange Reconciliation",
+                    delta_color="off",
+                )
         with f2:
-            st.metric(
-                "DII Net Cash Flow",
-                f"{RUPEE}{dii_val:,.2f} Cr" if dii_val is not None else f"{RUPEE} +1,240.30 Cr",
-                delta="Domestic Support" if (dii_val and dii_val > 0) else "Domestic Outflow",
-            )
+            if fii_dii_info.get("available") and dii_val is not None:
+                st.metric(
+                    "DII Net Cash Flow",
+                    f"{RUPEE}{dii_val:,.2f} Cr",
+                    delta="Domestic Support" if dii_val > 0 else "Domestic Outflow",
+                )
+            else:
+                st.metric(
+                    "DII Net Cash Flow",
+                    "Syncing...",
+                    delta="Awaiting Clearing",
+                    delta_color="off",
+                )
         with f3:
-            st.metric(
-                "Combined Net Liquidity",
-                f"{RUPEE}{comb_val:,.2f} Cr" if comb_val is not None else f"{RUPEE} +759.80 Cr",
-                delta="Net Inflow (+)" if (comb_val and comb_val > 0) else "Net Outflow (-)",
-            )
+            if fii_dii_info.get("available") and comb_val is not None:
+                st.metric(
+                    "Combined Net Liquidity",
+                    f"{RUPEE}{comb_val:,.2f} Cr",
+                    delta="Net Inflow (+)" if comb_val > 0 else "Net Outflow (-)",
+                )
+            else:
+                st.metric(
+                    "Combined Net Liquidity",
+                    "Syncing...",
+                    delta="Feeds Offline",
+                    delta_color="off",
+                )
         with f4:
-            st.metric("Smart Money Verdict", fii_dii_info.get("bias", "MODERATE BULLISH"), delta="Consensus Bias", delta_color="off")
+            st.metric(
+                "Smart Money Verdict",
+                fii_dii_info.get("bias", "NEUTRAL"),
+                delta=fii_dii_info.get("phase", "Consensus Bias"),
+                delta_color="off"
+            )
 
         st.markdown(f"### {GLOBE} Global Macro Cues & Commodity Radar")
         m1, m2, m3, m4 = st.columns(4)
@@ -2593,7 +2720,7 @@ else:
             )
             if setup1: ideas.append(setup1)
 
-            # 2. Underlying Option Buying Setup (Bug-Free LTP & Expiry Sync)
+            # 2. Underlying Option Buying Setup
             setup2 = make_trade_idea(
                 active_market,
                 underlying,
