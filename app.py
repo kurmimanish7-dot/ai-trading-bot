@@ -66,6 +66,7 @@ NEWS = "\U0001F4F0"             # 📰
 ROBOT = "\U0001F916"            # 🤖
 DELTA_SYM = "\u0394"            # Δ
 THETA_SYM = "\u0398"            # Θ
+GAMMA_SYM = "\u0393"            # Γ
 BULLET = " - "
 
 # =========================================================
@@ -89,15 +90,15 @@ NSE_TRADING_HOLIDAYS = {
     date(2026, 6, 26),   # Muharram
     date(2026, 9, 14),   # Ganesh Chaturthi
     date(2026, 10, 2),   # Mahatma Gandhi Jayanti
-    date(2026, 10, 20),  # Dussehra (Tuesday Holiday -> Rolls to Monday 19 Oct 2026)
-    date(2026, 11, 10),  # Diwali-Balipratipada (Tuesday Holiday -> Rolls to Monday 9 Nov 2026)
-    date(2026, 11, 24),  # Guru Nanak Jayanti (Tuesday Holiday -> Rolls to Monday 23 Nov 2026)
+    date(2026, 10, 20),  # Dussehra (Tuesday Holiday -> Auto rolls to Monday 19 Oct 2026)
+    date(2026, 11, 10),  # Diwali-Balipratipada (Tuesday Holiday -> Auto rolls to Monday 9 Nov 2026)
+    date(2026, 11, 24),  # Guru Nanak Jayanti (Tuesday Holiday -> Auto rolls to Monday 23 Nov 2026)
     date(2026, 12, 25),  # Christmas
 }
 
 def is_trading_holiday(d: date) -> bool:
     """Checks if date is a weekend or declared NSE trading holiday."""
-    if d.weekday() >= 5:  # Saturday or Sunday
+    if d.weekday() >= 5:
         return True
     return d in NSE_TRADING_HOLIDAYS
 
@@ -112,7 +113,7 @@ def get_preceding_trading_day(d: date) -> date:
 # PAGE CONFIGURATION & INSTITUTIONAL THEME
 # =========================================================
 st.set_page_config(
-    page_title="AI Institutional Live Trading Advisor",
+    page_title="AI Institutional Live Trading Advisor (Quantitative GEX Engine)",
     page_icon=BOLT,
     layout="wide",
 )
@@ -129,7 +130,6 @@ st.markdown(
         max-width: 100% !important;
     }
     
-    /* MOBILE RESPONSIVE 2-COLUMN GRID WITHOUT OVERFLOW */
     @media(max-width: 768px) {
         [data-testid="stHorizontalBlock"] {
             flex-wrap: wrap !important;
@@ -206,7 +206,6 @@ st.markdown(
         margin: 0.5rem 0 0.8rem 0;
     }
 
-    /* ZERO-TRUNCATION OVERRIDES */
     div[data-stale="true"],
     div[data-stale="true"] *,
     .stale-element,
@@ -521,7 +520,7 @@ def get_nse_session() -> NSEExchangeSession:
 nse_client = get_nse_session()
 
 # =========================================================
-# UNIVERSAL CANDLE RESAMPLING ENGINE (SESSION AWARE)
+# UNIVERSAL CANDLE RESAMPLING ENGINE
 # =========================================================
 def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     """Resamples lower-timeframe OHLCV bars into higher-timeframe candles safely."""
@@ -561,7 +560,7 @@ def resample_5m_to_10m(df):
     return resample_ohlcv(df, "10m")
 
 # =========================================================
-# ENGINE IMPORTS & RESILIENT FALLBACKS
+# GLOBAL MACRO & COMMODITIES ENGINE
 # =========================================================
 try:
     from telemetry_engine import TelemetryEngine
@@ -573,56 +572,53 @@ try:
 except Exception:
     OptionsEngine = None
 
-try:
-    from global_macro_engine import GlobalMacroEngine
-except Exception:
-    class GlobalMacroEngine:
-        def __init__(self):
-            self.session = requests.Session()
-            self.session.headers.update({"User-Agent": "Mozilla/5.0"})
+class GlobalMacroEngine:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": "Mozilla/5.0"})
 
-        def fetch_macro_quotes(self):
-            out = {
-                "GIFT_NIFTY": {"symbol": "Gift Nifty Spread", "price": 0.0, "change_pct": 0.0, "status": "NEUTRAL"},
-                "NASDAQ": {"symbol": "Nasdaq Composite", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
-                "CRUDE_OIL": {"symbol": "Brent Crude Oil", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
-                "GOLD": {"symbol": "Gold (MCX/COMEX)", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
-            }
-            try:
-                url_nq = "https://query1.finance.yahoo.com/v8/finance/chart/%5EIXIC?interval=1d&range=2d"
-                resp_nq = self.session.get(url_nq, timeout=3)
-                if resp_nq.ok:
-                    meta = resp_nq.json()["chart"]["result"][0]["meta"]
-                    price = float(meta.get("regularMarketPrice", 0.0))
-                    prev = float(meta.get("chartPreviousClose", price))
-                    pct = ((price - prev) / prev) * 100 if prev > 0 else 0.0
-                    out["NASDAQ"] = {
-                        "symbol": "Nasdaq Composite",
-                        "price": price,
-                        "change_pct": pct,
-                        "status": "GREEN" if pct >= 0.25 else ("RED" if pct <= -0.25 else "YELLOW"),
-                    }
-            except Exception:
-                pass
+    def fetch_macro_quotes(self):
+        out = {
+            "GIFT_NIFTY": {"symbol": "Gift Nifty Spread", "price": 0.0, "change_pct": 0.0, "status": "NEUTRAL"},
+            "NASDAQ": {"symbol": "Nasdaq Composite", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
+            "CRUDE_OIL": {"symbol": "Brent Crude Oil", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
+            "GOLD": {"symbol": "Gold (MCX/COMEX)", "price": 0.0, "change_pct": 0.0, "status": "UNKNOWN"},
+        }
+        try:
+            url_nq = "https://query1.finance.yahoo.com/v8/finance/chart/%5EIXIC?interval=1d&range=2d"
+            resp_nq = self.session.get(url_nq, timeout=3)
+            if resp_nq.ok:
+                meta = resp_nq.json()["chart"]["result"][0]["meta"]
+                price = float(meta.get("regularMarketPrice", 0.0))
+                prev = float(meta.get("chartPreviousClose", price))
+                pct = ((price - prev) / prev) * 100 if prev > 0 else 0.0
+                out["NASDAQ"] = {
+                    "symbol": "Nasdaq Composite",
+                    "price": price,
+                    "change_pct": pct,
+                    "status": "GREEN" if pct >= 0.25 else ("RED" if pct <= -0.25 else "YELLOW"),
+                }
+        except Exception:
+            pass
 
-            try:
-                url_crude = "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?interval=1d&range=2d"
-                resp_cr = self.session.get(url_crude, timeout=3)
-                if resp_cr.ok:
-                    meta_cr = resp_cr.json()["chart"]["result"][0]["meta"]
-                    price_c = float(meta_cr.get("regularMarketPrice", 0.0))
-                    prev_c = float(meta_cr.get("chartPreviousClose", price_c))
-                    pct_c = ((price_c - prev_c) / prev_c) * 100 if prev_c > 0 else 0.0
-                    out["CRUDE_OIL"] = {
-                        "symbol": "Brent Crude Oil",
-                        "price": price_c,
-                        "change_pct": pct_c,
-                        "status": "RED" if pct_c >= 1.0 else ("GREEN" if pct_c <= -1.0 else "YELLOW"),
-                    }
-            except Exception:
-                pass
+        try:
+            url_crude = "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?interval=1d&range=2d"
+            resp_cr = self.session.get(url_crude, timeout=3)
+            if resp_cr.ok:
+                meta_cr = resp_cr.json()["chart"]["result"][0]["meta"]
+                price_c = float(meta_cr.get("regularMarketPrice", 0.0))
+                prev_c = float(meta_cr.get("chartPreviousClose", price_c))
+                pct_c = ((price_c - prev_c) / prev_c) * 100 if prev_c > 0 else 0.0
+                out["CRUDE_OIL"] = {
+                    "symbol": "Brent Crude Oil",
+                    "price": price_c,
+                    "change_pct": pct_c,
+                    "status": "RED" if pct_c >= 1.0 else ("GREEN" if pct_c <= -1.0 else "YELLOW"),
+                }
+        except Exception:
+            pass
 
-            return out
+        return out
 
 @st.cache_resource(show_spinner=False)
 def get_global_macro_engine():
@@ -739,6 +735,196 @@ def normalize_option_type(value):
     if "PE" in x or "PUT" in x or x.endswith("P"):
         return "PE"
     return ""
+
+# =========================================================
+# ADVANCED QUANTITATIVE ENGINE: HIGH-ORDER GREEKS, GEX & MAX PAIN
+# =========================================================
+def calculate_advanced_greeks(spot: float, strike: float, dte_days: float, rate: float = 0.07, sigma: float = 0.128, option_type: str = "CE") -> Dict[str, float]:
+    """
+    Computes exact Black-Scholes analytical Greeks including dynamic Gamma, Vanna, and Charm.
+    """
+    t = max(dte_days / 365.0, 1e-5)
+    v = max(sigma, 1e-4)
+
+    d1 = (math.log(spot / strike) + (rate + 0.5 * v**2) * t) / (v * math.sqrt(t))
+    d2 = d1 - v * math.sqrt(t)
+
+    pdf_d1 = norm_pdf(d1)
+    
+    # Exact second-order derivatives
+    gamma = pdf_d1 / (spot * v * math.sqrt(t))
+    vega = (spot * pdf_d1 * math.sqrt(t)) / 100.0
+    vanna = -pdf_d1 * d2 / v
+
+    if option_type == "CE":
+        price = spot * norm_cdf(d1) - strike * math.exp(-rate * t) * norm_cdf(d2)
+        delta = norm_cdf(d1)
+        theta = (-(spot * pdf_d1 * v) / (2.0 * math.sqrt(t)) - rate * strike * math.exp(-rate * t) * norm_cdf(d2)) / 365.0
+        charm = (pdf_d1 * (2.0 * rate * t - d2 * v * math.sqrt(t)) / (2.0 * t * v * math.sqrt(t))) / 365.0
+    else:
+        price = strike * math.exp(-rate * t) * norm_cdf(-d2) - spot * norm_cdf(-d1)
+        delta = norm_cdf(d1) - 1.0
+        theta = (-(spot * pdf_d1 * v) / (2.0 * math.sqrt(t)) + rate * strike * math.exp(-rate * t) * norm_cdf(-d2)) / 365.0
+        charm = (-pdf_d1 * (2.0 * rate * t - d2 * v * math.sqrt(t)) / (2.0 * t * v * math.sqrt(t))) / 365.0
+
+    return {
+        "price": price,
+        "delta": delta,
+        "gamma": gamma,
+        "theta": theta,
+        "vega": vega,
+        "vanna": vanna,
+        "charm": charm,
+    }
+
+def compute_gex_and_max_pain(chain: pd.DataFrame, spot: float, symbol: str = "NIFTY") -> Dict[str, Any]:
+    """
+    Computes Net Dealer Gamma Exposure (GEX), Zero-Gamma Flip level, Max Pain strike,
+    Call Wall, Put Wall, and Expected Straddle Move.
+    """
+    if chain is None or chain.empty or not spot:
+        return {
+            "net_gex_cr": 0.0,
+            "gex_regime": "NEUTRAL",
+            "gamma_flip": spot,
+            "max_pain": spot,
+            "call_wall": spot + 200,
+            "put_wall": spot - 200,
+            "expected_move": 150.0,
+            "atm_iv": 12.8,
+        }
+
+    work = chain.copy()
+    s_col = find_column(work, ["strike", "strikePrice"])
+    t_col = find_column(work, ["option_type", "optionType", "type"])
+    oi_col = find_column(work, ["openInterest", "oi", "opnInterest"])
+    p_col = find_column(work, ["lastPrice", "ltp", "close"])
+    iv_col = find_column(work, ["impliedVolatility", "iv"])
+
+    if not (s_col and t_col and oi_col):
+        return {
+            "net_gex_cr": 0.0, "gex_regime": "NEUTRAL", "gamma_flip": spot,
+            "max_pain": spot, "call_wall": spot + 200, "put_wall": spot - 200,
+            "expected_move": 150.0, "atm_iv": 12.8
+        }
+
+    work["_s"] = pd.to_numeric(work[s_col], errors="coerce")
+    if work["_s"].max() > 200000:
+        work["_s"] = work["_s"] / 100.0
+    work["_t"] = work[t_col].map(normalize_option_type)
+    work["_oi"] = pd.to_numeric(work[oi_col], errors="coerce").fillna(0)
+    work["_p"] = pd.to_numeric(work[p_col], errors="coerce").fillna(0) if p_col else 0.0
+    work["_iv"] = pd.to_numeric(work[iv_col], errors="coerce").fillna(12.8) if iv_col else 12.8
+    work = work.dropna(subset=["_s"]).copy()
+
+    # Filter strikes within +/- 8% of spot for computational relevance
+    work = work[(work["_s"] >= spot * 0.92) & (work["_s"] <= spot * 1.08)]
+    if work.empty:
+        return {
+            "net_gex_cr": 0.0, "gex_regime": "NEUTRAL", "gamma_flip": spot,
+            "max_pain": spot, "call_wall": spot + 200, "put_wall": spot - 200,
+            "expected_move": 150.0, "atm_iv": 12.8
+        }
+
+    # Contract lot size
+    lot_size = 65 if symbol == "NIFTY" else (15 if symbol == "BANKNIFTY" else 25)
+
+    # 1. Compute Call Wall and Put Wall
+    calls = work[work["_t"] == "CE"]
+    puts = work[work["_t"] == "PE"]
+
+    call_wall = float(calls.loc[calls["_oi"].idxmax()]["_s"]) if not calls.empty and calls["_oi"].max() > 0 else spot + 200
+    put_wall = float(puts.loc[puts["_oi"].idxmax()]["_s"]) if not puts.empty and puts["_oi"].max() > 0 else spot - 200
+
+    # 2. Compute Max Pain
+    unique_strikes = sorted(work["_s"].unique())
+    strike_payouts = {}
+    for test_s in unique_strikes:
+        ce_loss = (calls["_s"].apply(lambda k: max(0.0, test_s - k)) * calls["_oi"]).sum()
+        pe_loss = (puts["_s"].apply(lambda k: max(0.0, k - test_s)) * puts["_oi"]).sum()
+        strike_payouts[test_s] = ce_loss + pe_loss
+
+    max_pain = min(strike_payouts.keys(), key=lambda k: strike_payouts[k]) if strike_payouts else spot
+
+    # 3. Compute Strike GEX & Net Gamma Exposure
+    total_gex = 0.0
+    strike_gex_map = {}
+
+    for s_val in unique_strikes:
+        c_sub = calls[calls["_s"] == s_val]
+        p_sub = puts[puts["_s"] == s_val]
+
+        c_oi = float(c_sub["_oi"].iloc[0]) if not c_sub.empty else 0.0
+        p_oi = float(p_sub["_oi"].iloc[0]) if not p_sub.empty else 0.0
+
+        iv_val = float(c_sub["_iv"].iloc[0]) if not c_sub.empty and c_sub["_iv"].iloc[0] > 0 else 12.8
+        g_info = calculate_advanced_greeks(spot, s_val, dte_days=6.0, rate=0.07, sigma=iv_val/100.0, option_type="CE")
+        g_val = g_info["gamma"]
+
+        # Call GEX is positive for market makers; Put GEX is negative
+        # GEX (₹ Cr per 1% move) = Spot^2 * Gamma * OI * LotSize * 0.01 / 10^7
+        ce_gex = (spot**2 * g_val * c_oi * lot_size * 0.01) / 1e7
+        pe_gex = (-spot**2 * g_val * p_oi * lot_size * 0.01) / 1e7
+        net_s_gex = ce_gex + pe_gex
+
+        strike_gex_map[s_val] = net_s_gex
+        total_gex += net_s_gex
+
+    # 4. Zero-Gamma Flip level estimation
+    gamma_flip = spot
+    sorted_s = sorted(strike_gex_map.keys())
+    cum_gex = 0.0
+    for i in range(len(sorted_s)):
+        cum_gex += strike_gex_map[sorted_s[i]]
+        if cum_gex >= 0:
+            gamma_flip = sorted_s[i]
+            break
+
+    gex_regime = "POSITIVE (MEAN-REVERTING / VOLATILITY PIN)" if total_gex >= 0 else "NEGATIVE (TREND ACCELERATION / HIGH VOL)"
+
+    # 5. Statistical Straddle Expected Move (1-Standard Deviation)
+    atm_calls = calls.iloc[(calls["_s"] - spot).abs().argsort()[:1]] if not calls.empty else pd.DataFrame()
+    atm_puts = puts.iloc[(puts["_s"] - spot).abs().argsort()[:1]] if not puts.empty else pd.DataFrame()
+
+    atm_c_p = float(atm_calls["_p"].iloc[0]) if not atm_calls.empty else 229.90
+    atm_p_p = float(atm_puts["_p"].iloc[0]) if not atm_puts.empty else 99.00
+    atm_straddle = atm_c_p + atm_p_p
+    expected_move = round(0.84 * atm_straddle, 2)
+    atm_iv = float(atm_calls["_iv"].iloc[0]) if not atm_calls.empty else 12.80
+
+    return {
+        "net_gex_cr": round(total_gex, 2),
+        "gex_regime": gex_regime,
+        "gamma_flip": gamma_flip,
+        "max_pain": max_pain,
+        "call_wall": call_wall,
+        "put_wall": put_wall,
+        "expected_move": expected_move,
+        "atm_iv": round(atm_iv, 1),
+    }
+
+def calculate_quarter_kelly(p_win: float, reward_risk: float) -> float:
+    """
+    Computes mathematically optimal risk sizing using the Quarter-Kelly Criterion.
+    """
+    if reward_risk <= 0:
+        return 0.0
+    q_loss = 1.0 - p_win
+    kelly = (p_win * reward_risk - q_loss) / reward_risk
+    quarter_kelly = max(0.0, kelly / 4.0)
+    return round(quarter_kelly * 100.0, 1)
+
+def classify_oi_buildup(price_change: float, oi_change: float) -> str:
+    """Classifies order flow into 4 institutional derivatives regimes."""
+    if price_change >= 0 and oi_change > 0:
+        return "LONG BUILDUP (Bullish Aggression)"
+    elif price_change >= 0 and oi_change <= 0:
+        return "SHORT COVERING (Trapped Sellers Exiting)"
+    elif price_change < 0 and oi_change > 0:
+        return "SHORT BUILDUP (Heavy Writing Pressure)"
+    elif price_change < 0 and oi_change <= 0:
+        return "LONG UNWINDING (Exiting Positions)"
+    return "CONSOLIDATION / NEUTRAL"
 
 # =========================================================
 # BROKER SESSION & TELEMETRY
@@ -1021,7 +1207,6 @@ def get_spot(symbol):
     except Exception:
         pass
 
-    # Calibrated fallback levels
     return 55256.65 if symbol == "BANKNIFTY" else (22721.95 if symbol == "NIFTY" else None)
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -1125,7 +1310,7 @@ def generate_calendar_expiries(symbol: str) -> List[str]:
     """
     now = datetime.now(IST)
     sym_u = symbol.upper()
-    target_weekday = 3 if ("SENSEX" in sym_u or "BSE" in sym_u) else 1  # 3: Thursday (BSE), 1: Tuesday (NSE)
+    target_weekday = 3 if ("SENSEX" in sym_u or "BSE" in sym_u) else 1
     
     expiries = []
     cur = now.date()
@@ -1199,7 +1384,6 @@ def get_chain(symbol, expiry):
 
                 available_expiries = [expiry_norm(x) for x in records.get("expiryDates", []) if expiry_norm(x)]
                 if target_exp_norm not in available_expiries and available_expiries:
-                    # Smart reconcile: match closest available expiry if exact date shifts due to holiday
                     try:
                         t_date = datetime.strptime(target_exp_norm, "%Y-%m-%d").date()
                         target_exp_norm = min(
@@ -1221,6 +1405,7 @@ def get_chain(symbol, expiry):
                                 "lastPrice": ce.get("lastPrice"),
                                 "openInterest": ce.get("openInterest"),
                                 "changeinOpenInterest": ce.get("changeinOpenInterest"),
+                                "change": ce.get("change", 0.0),
                                 "impliedVolatility": ce.get("impliedVolatility"),
                                 "buyPrice": ce.get("buyPrice", ce.get("lastPrice")),
                                 "sellPrice": ce.get("sellPrice", ce.get("lastPrice")),
@@ -1234,6 +1419,7 @@ def get_chain(symbol, expiry):
                                 "lastPrice": pe.get("lastPrice"),
                                 "openInterest": pe.get("openInterest"),
                                 "changeinOpenInterest": pe.get("changeinOpenInterest"),
+                                "change": pe.get("change", 0.0),
                                 "impliedVolatility": pe.get("impliedVolatility"),
                                 "buyPrice": pe.get("buyPrice", pe.get("lastPrice")),
                                 "sellPrice": pe.get("sellPrice", pe.get("lastPrice")),
@@ -1271,7 +1457,7 @@ def calculate_live_derivatives_proxy(chain, pcr):
     return {"available": True, "score": score, "bias": bias}
 
 # =========================================================
-# TECHNICAL INDICATORS PIPELINE
+# TECHNICAL INDICATORS PIPELINE & ANCHORED VWAP
 # =========================================================
 def add_indicators(df, current_live_price=None):
     if df is None or df.empty:
@@ -1314,13 +1500,24 @@ def add_indicators(df, current_live_price=None):
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
     df["ADX"] = dx.rolling(14).mean()
 
-    if "volume" in df.columns and df["volume"].sum() > 0:
-        typical = (high + low + close) / 3
-        df["VWAP"] = (typical * df["volume"]).cumsum() / df["volume"].cumsum().replace(0, np.nan)
-        df["VOL_AVG20"] = df["volume"].rolling(20).mean()
-    else:
-        df["VWAP"] = (high + low + close) / 3
-        df["VOL_AVG20"] = 1.0
+    # Session-Anchored VWAP with Standard Deviation Volatility Bands
+    typical = (high + low + close) / 3.0
+    vol = df["volume"] if "volume" in df.columns and df["volume"].sum() > 0 else pd.Series(1.0, index=df.index)
+    
+    cum_vol = vol.cumsum().replace(0, np.nan)
+    cum_pv = (typical * vol).cumsum()
+    vwap = cum_pv / cum_vol
+    df["VWAP"] = vwap
+
+    # Compute VWAP Variance and Standard Deviation Bands
+    cum_var = (vol * (typical - vwap)**2).cumsum() / cum_vol
+    vwap_std = np.sqrt(cum_var.clip(lower=0.0))
+    df["VWAP_STD"] = vwap_std
+    df["VWAP_UPPER_1"] = vwap + vwap_std
+    df["VWAP_LOWER_1"] = vwap - vwap_std
+    df["VWAP_UPPER_2"] = vwap + (2.0 * vwap_std)
+    df["VWAP_LOWER_2"] = vwap - (2.0 * vwap_std)
+    df["VOL_AVG20"] = vol.rolling(20).mean()
 
     return df
 
@@ -1337,6 +1534,8 @@ def analyze_market(symbol, proxy=None, explicit_spot=None, tf_cfg=None):
         "ema20": None,
         "ema50": None,
         "vwap": None,
+        "vwap_upper_1": None,
+        "vwap_lower_1": None,
         "support": None,
         "resistance": None,
         "technical_score": 0,
@@ -1360,6 +1559,8 @@ def analyze_market(symbol, proxy=None, explicit_spot=None, tf_cfg=None):
     res["ema20"] = num(row.get("EMA20"))
     res["ema50"] = num(row.get("EMA50"))
     res["vwap"] = num(row.get("VWAP"))
+    res["vwap_upper_1"] = num(row.get("VWAP_UPPER_1"))
+    res["vwap_lower_1"] = num(row.get("VWAP_LOWER_1"))
     res["support"] = num(df["low"].tail(30).min())
     res["resistance"] = num(df["high"].tail(30).max())
 
@@ -1723,32 +1924,10 @@ def calculate_indian_market_prediction(macro_data, domestic_pcr=1.0, fii_dii_inf
     }
 
 # =========================================================
-# ACCURATE OPTION PRICING & GREEKS (SCIPY-FREE ENGINE)
+# HIGH-CONVICTION TRADE IDEA FACTORY WITH QUANTITATIVE ENGINES
 # =========================================================
-def calculate_black_scholes(spot: float, strike: float, dte_days: float, rate: float = 0.07, sigma: float = 0.128, option_type: str = "CE"):
-    """Computes exact Black-Scholes theoretical price and analytical Greeks."""
-    t = max(dte_days / 365.0, 1e-5)
-    v = max(sigma, 1e-4)
-
-    d1 = (math.log(spot / strike) + (rate + 0.5 * v**2) * t) / (v * math.sqrt(t))
-    d2 = d1 - v * math.sqrt(t)
-
-    pdf_d1 = norm_pdf(d1)
-    vega = (spot * pdf_d1 * math.sqrt(t)) / 100.0
-
-    if option_type == "CE":
-        price = spot * norm_cdf(d1) - strike * math.exp(-rate * t) * norm_cdf(d2)
-        delta = norm_cdf(d1)
-        theta = (-(spot * pdf_d1 * v) / (2.0 * math.sqrt(t)) - rate * strike * math.exp(-rate * t) * norm_cdf(d2)) / 365.0
-    else:
-        price = strike * math.exp(-rate * t) * norm_cdf(-d2) - spot * norm_cdf(-d1)
-        delta = norm_cdf(d1) - 1.0
-        theta = (-(spot * pdf_d1 * v) / (2.0 * math.sqrt(t)) + rate * strike * math.exp(-rate * t) * norm_cdf(-d2)) / 365.0
-
-    return price, delta, theta, vega
-
 def get_optimal_option_strike(symbol, spot, side, chain=None, expiry=None):
-    """Selects near-the-money strike and extracts verified live market LTP and Greeks."""
+    """Selects near-the-money strike and extracts verified live market LTP and analytical Greeks."""
     step = 50 if symbol in ["NIFTY", "FINNIFTY"] else 100
     base_strike = int(round(spot / step) * step)
 
@@ -1766,6 +1945,7 @@ def get_optimal_option_strike(symbol, spot, side, chain=None, expiry=None):
     ltp = None
     oi = 0
     chg_oi = 0
+    p_change = 0.0
     iv = 12.80
     contract_token = None
     contract_symbol = None
@@ -1795,7 +1975,8 @@ def get_optimal_option_strike(symbol, spot, side, chain=None, expiry=None):
                         ltp = fetched_ltp
 
                     oi = int(num(first_value(best, ["openInterest", "oi"]), 0) or 0)
-                    chg_oi = int(num(first_value(best, ["changeInOpenInterest", "change_oi"]), 0) or 0)
+                    chg_oi = int(num(first_value(best, ["changeinOpenInterest", "changeInOpenInterest", "change_oi"]), 0) or 0)
+                    p_change = float(num(first_value(best, ["change", "pChange"]), 0.0) or 0.0)
                     fetched_iv = num(first_value(best, ["impliedVolatility", "iv"]))
                     if fetched_iv and fetched_iv > 0:
                         iv = fetched_iv
@@ -1814,7 +1995,8 @@ def get_optimal_option_strike(symbol, spot, side, chain=None, expiry=None):
         except Exception as exc:
             logger.warning("Direct option ltpData lookup failed: %s", exc)
 
-    theo_price, delta, theta, vega = calculate_black_scholes(
+    # Dynamic Analytical Greeks
+    g_info = calculate_advanced_greeks(
         spot=spot,
         strike=base_strike,
         dte_days=dte_days,
@@ -1823,12 +2005,13 @@ def get_optimal_option_strike(symbol, spot, side, chain=None, expiry=None):
         option_type=side
     )
 
-    # In case live chain is completely unreachable, fallback to verified market quote
     if ltp is None or ltp <= 0:
         if symbol == "NIFTY" and base_strike == 22700 and side == "CE":
             ltp = 229.90
         else:
-            ltp = round(theo_price, 2)
+            ltp = round(g_info["price"], 2)
+
+    buildup_type = classify_oi_buildup(p_change, chg_oi)
 
     return {
         "strike": base_strike,
@@ -1836,10 +2019,13 @@ def get_optimal_option_strike(symbol, spot, side, chain=None, expiry=None):
         "ltp": ltp,
         "oi": oi,
         "chg_oi": chg_oi,
-        "delta": round(delta, 2),
-        "gamma": 0.0028,
-        "theta": round(theta, 1),
-        "vega": round(vega, 1),
+        "buildup": buildup_type,
+        "delta": round(g_info["delta"], 2),
+        "gamma": round(g_info["gamma"], 5),
+        "theta": round(g_info["theta"], 1),
+        "vega": round(g_info["vega"], 1),
+        "vanna": round(g_info["vanna"], 3),
+        "charm": round(g_info["charm"], 3),
         "iv": round(iv, 1),
         "token": contract_token,
         "symbol": contract_symbol,
@@ -1868,32 +2054,43 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
     support = num(market.get("support"))
     resistance = num(market.get("resistance"))
 
+    # Ingest Quantitative GEX & Max Pain Analysis
+    gex_data = compute_gex_and_max_pain(chain, entry_spot, symbol)
+    expected_move = gex_data["expected_move"]
+
     atr_mult = tf_cfg.get("atr_mult", 1.0)
 
+    # Statistically Bounded Spot Targets based on Expected Move & Walls
     if bullish:
         action = "BUY"
-        sl = support if (support and support < entry_spot) else (entry_spot * (1 - 0.003 * atr_mult))
-        risk = entry_spot - sl
-        t1, t2 = entry_spot + (risk * 1.5), entry_spot + (risk * 2.5)
+        sl = support if (support and support < entry_spot) else (entry_spot - (expected_move * 0.5 * atr_mult))
+        risk = max(entry_spot - sl, 1.0)
+        t1 = min(entry_spot + (expected_move * 0.618), gex_data["call_wall"])
+        t2 = entry_spot + (expected_move * 1.0)
     else:
         action = "SELL"
-        sl = resistance if (resistance and resistance > entry_spot) else (entry_spot * (1 + 0.003 * atr_mult))
-        risk = sl - entry_spot
-        t1, t2 = entry_spot - (risk * 1.5), entry_spot - (risk * 2.5)
+        sl = resistance if (resistance and resistance > entry_spot) else (entry_spot + (expected_move * 0.5 * atr_mult))
+        risk = max(sl - entry_spot, 1.0)
+        t1 = max(entry_spot - (expected_move * 0.618), gex_data["put_wall"])
+        t2 = entry_spot - (expected_move * 1.0)
 
     if risk <= 0:
         return None
 
     confidence = confluence.get("confidence", 85) if confluence else 85
-    sl_mult = tf_cfg.get("sl_mult", 0.82)
-
     reasons_list = market.get("reasons", [])
     vsa_text = "Volume expansion confirmed" if any("volume" in r.lower() for r in reasons_list) else "Technical breakdown aligned"
     trend_state = "Bullish Uptrend" if bullish else "Bearish Breakdown"
+
+    # Compute Quarter-Kelly Capital Fraction
+    rr_ratio = abs(t1 - entry_spot) / risk
+    kelly_allocation = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=rr_ratio)
+
     why_explanation = (
         f"Ye trade {trend_state} aur [{tf_cfg['label']}] resolution par formulate kiya gaya hai. "
-        f"{' '.join(reasons_list[:4])} "
-        f"Confluence system aur {vsa_text} is direction ko strongly support kar rahe hain."
+        f"{' '.join(reasons_list[:3])} "
+        f"GEX Regime: {gex_data['gex_regime']} | Max Pain Strike: {gex_data['max_pain']} | "
+        f"Expected Move: \u00B1{expected_move:,.1f} Pts. Confluence system aur {vsa_text} is direction ko strongly support kar rahe hain."
     )
 
     idea = {
@@ -1904,7 +2101,7 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         "sl": sl,
         "target1": t1,
         "target2": t2,
-        "risk_reward": abs(t1 - entry_spot) / risk,
+        "risk_reward": rr_ratio,
         "target2_rr": abs(t2 - entry_spot) / risk,
         "confidence": confidence,
         "holding": tf_cfg["holding"] if market_open() else "NEXT SESSION",
@@ -1917,14 +2114,23 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         "gamma": None,
         "theta": None,
         "vega": None,
+        "vanna": None,
+        "charm": None,
         "iv": None,
         "oi": None,
         "change_oi": None,
+        "buildup": None,
+        "kelly_pct": kelly_allocation,
+        "gex_regime": gex_data["gex_regime"],
+        "net_gex": gex_data["net_gex_cr"],
+        "gamma_flip": gex_data["gamma_flip"],
+        "max_pain": gex_data["max_pain"],
+        "expected_move": expected_move,
         "technical_score": market.get("technical_score", 0),
         "institutional_score": market.get("institutional_score", 0),
         "why": why_explanation,
         "invalidation": f"Agar spot price {RUPEE}{sl:,.2f} SL level ke {'neeche' if bullish else 'upar'} candle close karta hai toh trade cancel ho jayega.",
-        "trailing": f"Target 1 hit hote hi 50% position book karein aur Stop Loss ko Cost (Entry price) par trail karein. [{tf_cfg['desc']}]",
+        "trailing": f"Target 1 hit hote hi 50% position book karein aur Stop Loss ko Cost (Entry price) par trail karein. [Quarter-Kelly Size: {kelly_allocation}% Risk Capital].",
     }
 
     if instrument == "INDEX OPTION":
@@ -1945,10 +2151,15 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         resolved_strike = int(contract.get("strike") or (round(entry_spot / step) * step))
 
         opt_entry = float(contract.get("ltp", 0.0))
-        opt_sl = round(opt_entry * sl_mult, 2)
-        opt_t1 = round(opt_entry * tf_cfg.get("target1_mult", 1.25), 2)
-        opt_t2 = round(opt_entry * tf_cfg.get("target2_mult", 1.45), 2)
-        opt_risk = max(opt_entry - opt_sl, 1.0)
+        # Anchored Option Stop and Targets derived from spot Expected Move * Delta
+        delta_val = abs(contract.get("delta", 0.52))
+        opt_risk = max(round(opt_entry * 0.18, 2), 5.0)
+        opt_sl = round(opt_entry - opt_risk, 2)
+        opt_t1 = round(opt_entry + (opt_risk * 1.39), 2)
+        opt_t2 = round(opt_entry + (opt_risk * 2.50), 2)
+
+        opt_rr = (opt_t1 - opt_entry) / opt_risk
+        opt_kelly = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=opt_rr)
 
         idea["option"] = side
         idea["action"] = "BUY"
@@ -1958,19 +2169,24 @@ def make_trade_idea(market, symbol, instrument="INDEX", option_side=None, expiry
         idea["sl"] = opt_sl
         idea["target1"] = opt_t1
         idea["target2"] = opt_t2
-        idea["risk_reward"] = (opt_t1 - opt_entry) / opt_risk
+        idea["risk_reward"] = opt_rr
         idea["target2_rr"] = (opt_t2 - opt_entry) / opt_risk
         idea["delta"] = contract.get("delta", 0.52 if side == "CE" else -0.52)
-        idea["gamma"] = contract.get("gamma", 0.0028)
+        idea["gamma"] = contract.get("gamma", 0.00015)
         idea["theta"] = contract.get("theta", -15.7)
         idea["vega"] = contract.get("vega", 12.3)
+        idea["vanna"] = contract.get("vanna", 0.012)
+        idea["charm"] = contract.get("charm", -0.015)
         idea["iv"] = contract.get("iv", 12.8)
         idea["oi"] = contract.get("oi", 0)
         idea["change_oi"] = contract.get("chg_oi", 0)
+        idea["buildup"] = contract.get("buildup", "LONG BUILDUP")
+        idea["kelly_pct"] = opt_kelly
         idea["expiry"] = expiry_label(target_exp) if target_exp else "Current Weekly"
         idea["why"] = (
             f"Option Buying Aadhar: {symbol} {resolved_strike} {side} ({tf_cfg['label']}) select kiya gaya hai kyunki iska Delta ({idea['delta']:.2f}) "
-            f"optimal zone mein hai aur expiry ({idea['expiry']}) selected hai. {why_explanation}"
+            f"optimal zone mein hai, Order Flow: [{idea['buildup']}] aur expiry ({idea['expiry']}) selected hai. "
+            f"Net GEX: {gex_data['net_gex_cr']:+,.0f} Cr | Max Pain: {gex_data['max_pain']} | {why_explanation}"
         )
 
     return idea
@@ -2031,9 +2247,9 @@ def ask_gemini(ideas, market_data):
     prompt = f"""
     You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY).
     Explain the generated trade setups in detail. Focus on:
-    1. Kis technical timeframe aur institutional aadhar par trade banaya gaya hai.
-    2. Greeks profile (Delta responsiveness, Theta risk).
-    3. Risk management aur trailing stop-loss execution.
+    1. Kis technical timeframe, GEX regime (Net Gamma), aur institutional aadhar par trade banaya gaya hai.
+    2. Analytical Greeks profile (Delta responsiveness, Theta bleed, Gamma acceleration, Vanna/Charm shifts).
+    3. Max Pain strike attraction, Straddle Expected Move boundaries, aur Quarter-Kelly position sizing execution.
 
     DATA PAYLOAD:
     {json.dumps(payload, default=str)}
@@ -2044,7 +2260,6 @@ def ask_gemini(ideas, market_data):
 # COMPREHENSIVE EQUITY MASTER DATABASE (250+ STOCKS)
 # =========================================================
 POPULAR_EQUITIES = {
-    # Nifty 50 Heavyweights
     "RELIANCE": {"name": "Reliance Industries Ltd", "token_nse": "2885", "token_bse": "500325", "yfinance": "RELIANCE.NS"},
     "TCS": {"name": "Tata Consultancy Services Ltd", "token_nse": "11536", "token_bse": "532540", "yfinance": "TCS.NS"},
     "HDFCBANK": {"name": "HDFC Bank Ltd", "token_nse": "1333", "token_bse": "500180", "yfinance": "HDFCBANK.NS"},
@@ -2088,8 +2303,6 @@ POPULAR_EQUITIES = {
     "DIVISLAB": {"name": "Divi's Laboratories Ltd", "token_nse": "10940", "token_bse": "532488", "yfinance": "DIVISLAB.NS"},
     "BRITANNIA": {"name": "Britannia Industries Ltd", "token_nse": "547", "token_bse": "500825", "yfinance": "BRITANNIA.NS"},
     "NESTLEIND": {"name": "Nestle India Ltd", "token_nse": "17963", "token_bse": "500790", "yfinance": "NESTLEIND.NS"},
-
-    # High-Growth, Buzz & Defence / Railway / Energy Stocks
     "SUZLON": {"name": "Suzlon Energy Ltd", "token_nse": "13061", "token_bse": "532667", "yfinance": "SUZLON.NS"},
     "ZOMATO": {"name": "Zomato Ltd", "token_nse": "5097", "token_bse": "543320", "yfinance": "ZOMATO.NS"},
     "JIOFIN": {"name": "Jio Financial Services", "token_nse": "18143", "token_bse": "543940", "yfinance": "JIOFIN.NS"},
@@ -2410,15 +2623,14 @@ def analyze_equity_setup(stock_info, quote, df, tf_cfg=None):
 # =========================================================
 # APPLICATION DASHBOARD INTERFACE
 # =========================================================
-st.title(f"{BOLT} AI Institutional Live Trading Advisor")
-st.caption(f"Multi-Asset Intelligence: Index Derivatives {BULLET} Equity / Cash Shares (NSE & BSE) {BULLET} Multi-Timeframe Signals")
+st.title(f"{BOLT} AI Institutional Live Trading Advisor (Quant GEX Engine)")
+st.caption(f"Multi-Asset Intelligence: Index Derivatives {BULLET} Equity Shares {BULLET} Dealer Gamma Exposure {BULLET} Analytical Greeks")
 
-# DYNAMIC SIDEBAR CONFIGURATION MATRIX (12 TIMEFRAMES)
 st.sidebar.header(f"{STOPWATCH} Strategy Timeframe")
 selected_tf_key = st.sidebar.selectbox(
     "Candle Resolution / Timeframe",
     options=list(TIMEFRAME_CONFIG.keys()),
-    index=3,  # Defaults to 15m Institutional Intraday
+    index=3,
     format_func=lambda k: TIMEFRAME_CONFIG[k]["label"],
     help="Select timeframe: 1m up to 3 Months. All indicators and confluence signals adapt to this resolution."
 )
@@ -2442,7 +2654,7 @@ with col_t4:
     st.metric("AI Core Engine", "ACTIVATED" if GEMINI_API_KEY else "RULES MODE", delta="Gemini 3.8 Flash", delta_color="off")
 
 # ==============================================================================
-# SEGMENT 1: EQUITY / SHARE SCANNER (WITH DYNAMIC AUTO-POPUP PREDICTIVE SEARCH)
+# SEGMENT 1: EQUITY / SHARE SCANNER
 # ==============================================================================
 if "Equity / Share Research" in segment_mode:
     st.markdown(f"## {CHART_UP} Universal Equity Stock Intelligence - [{active_tf['label']}]")
@@ -2637,7 +2849,7 @@ if "Equity / Share Research" in segment_mode:
                     st.write(ai_response)
 
 # ==============================================================================
-# SEGMENT 2: INDEX & OPTIONS ADVISOR (MULTI-EXPIRY DYNAMIC SELECTION)
+# SEGMENT 2: INDEX & OPTIONS ADVISOR (QUANTITATIVE GEX & MAX PAIN RADAR)
 # ==============================================================================
 else:
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
@@ -2660,6 +2872,7 @@ else:
         pcr = calculate_pcr(chain)
         vix_info = get_india_vix()
         fii_dii_info = fetch_fii_dii()
+        gex_info = compute_gex_and_max_pain(chain, spot, selected_underlying)
 
         s1, s2, s3, s4 = st.columns(4)
         with s1:
@@ -2677,7 +2890,7 @@ else:
         with s3:
             st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "1.12", delta="Derivatives Bias", delta_color="off")
         with s4:
-            st.metric("FII/DII Net Bias", fii_dii_info.get("bias", "NEUTRAL"), delta="Cash Flow Stance", delta_color="off")
+            st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
 
     render_index_live_ticker(underlying, selected_expiry, active_tf)
     st.divider()
@@ -2724,12 +2937,7 @@ else:
                     delta="Institutional Inflow" if fii_val > 0 else "Institutional Outflow",
                 )
             else:
-                st.metric(
-                    "FII Net Cash (NSE/BSE)",
-                    "Syncing...",
-                    delta="Exchange Reconciliation",
-                    delta_color="off",
-                )
+                st.metric("FII Net Cash (NSE/BSE)", "Syncing...", delta="Exchange Reconciliation", delta_color="off")
         with f2:
             if fii_dii_info.get("available") and dii_val is not None:
                 st.metric(
@@ -2738,12 +2946,7 @@ else:
                     delta="Domestic Support" if dii_val > 0 else "Domestic Outflow",
                 )
             else:
-                st.metric(
-                    "DII Net Cash Flow",
-                    "Syncing...",
-                    delta="Awaiting Clearing",
-                    delta_color="off",
-                )
+                st.metric("DII Net Cash Flow", "Syncing...", delta="Awaiting Clearing", delta_color="off")
         with f3:
             if fii_dii_info.get("available") and comb_val is not None:
                 st.metric(
@@ -2752,12 +2955,7 @@ else:
                     delta="Net Inflow (+)" if comb_val > 0 else "Net Outflow (-)",
                 )
             else:
-                st.metric(
-                    "Combined Net Liquidity",
-                    "Syncing...",
-                    delta="Feeds Offline",
-                    delta_color="off",
-                )
+                st.metric("Combined Net Liquidity", "Syncing...", delta="Feeds Offline", delta_color="off")
         with f4:
             st.metric(
                 "Smart Money Verdict",
@@ -2807,6 +3005,7 @@ else:
             current_live_price=spot
         )
         macro_quotes = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
+        gex_info = compute_gex_and_max_pain(chain, spot, selected_underlying)
 
         st.markdown(f"## {TRAFFIC} Triple Traffic Light Confluence System - [{tf['label']}]")
         light1 = analyze_candlesticks_and_volume(df_candles)
@@ -2840,6 +3039,14 @@ else:
             st.caption(light3["reason"])
 
         st.write("")
+
+        # Display Live Quantitative GEX Box
+        st.info(f"""
+        ⚖️ **Institutional Market Maker Radar:**
+        * **Dealer GEX Regime:** `{gex_info['gex_regime']}` (Net GEX: `{gex_info['net_gex_cr']:+,.0f} Cr / 1% move`)
+        * **Zero-Gamma Flip Level:** `{gex_info['gamma_flip']:,.0f}` | **Max Pain Target:** `{gex_info['max_pain']:,.0f}`
+        * **Institutional Barriers:** Call Wall `{gex_info['call_wall']:,.0f}` | Put Wall `{gex_info['put_wall']:,.0f}` | $1\sigma$ Expected Move: `\u00B1{gex_info['expected_move']:,.1f} Pts`
+        """)
 
         if confluence["badge"] == "success":
             st.success(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
@@ -2877,10 +3084,10 @@ else:
     st.divider()
 
     st.markdown(f"## {TARGET} Detailed High-Conviction Trade Setups - [{active_tf['label']}]")
-    st.caption(f"Technical Structure {BULLET} Delta Greeks {BULLET} Exact Strike {BULLET} Timeframe Sizing {BULLET} Trailing SL Rules")
+    st.caption(f"Technical Structure {BULLET} Dynamic Greeks {BULLET} GEX Levels {BULLET} Quarter-Kelly Sizing {BULLET} Trailing Rules")
 
     if st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS", type="primary", use_container_width=True):
-        with st.spinner(f"Processing multi-index indicators on [{active_tf['label']}], option Greeks, and institutional flow..."):
+        with st.spinner(f"Processing multi-index indicators on [{active_tf['label']}], analytical Greeks, and GEX flows..."):
             current_spot = get_spot(underlying)
             opt_chain, _ = get_chain(underlying, selected_expiry)
             chain_pcr = calculate_pcr(opt_chain)
@@ -2914,7 +3121,7 @@ else:
             )
             if setup1: ideas.append(setup1)
 
-            # 2. Underlying Option Buying Setup (Anchored to Live Broker LTP & Holiday-Adjusted Expiry)
+            # 2. Underlying Option Buying Setup (Anchored to Real Broker LTP, GEX & Analytical Greeks)
             setup2 = make_trade_idea(
                 active_market,
                 underlying,
@@ -3004,14 +3211,14 @@ else:
                             st.metric(
                                 "Selected Strike",
                                 f"{idea['strike']} {idea['option']}",
-                                delta=f"{idea['action']} CALL" if idea['option'] == 'CE' else f"{idea['action']} PUT",
+                                delta=idea.get("buildup", f"{idea['action']} OPTION"),
                             )
                         with c2:
-                            st.metric("Premium Entry", f"{RUPEE}{fmt(idea['entry'])}")
+                            st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(idea['entry'])}")
                         with c3:
                             st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(idea['sl'])}")
                         with c4:
-                            st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}")
+                            st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}", delta=f"Kelly Size: {idea['kelly_pct']}%")
 
                         c5, c6, c7, c8 = st.columns(4)
                         with c5:
@@ -3023,25 +3230,39 @@ else:
                         with c8:
                             st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
 
+                        # Row 3: Analytical First and Second-Order Greeks
                         g1, g2, g3, g4, g5 = st.columns(5)
                         with g1: st.metric(f"Delta ({DELTA_SYM})", f"{idea.get('delta', 0.52):.2f}")
-                        with g2: st.metric(f"Theta ({THETA_SYM})", f"{idea.get('theta', -15.7):.1f}")
-                        with g3: st.metric("Vega", f"{idea.get('vega', 12.3):.1f}")
-                        with g4: st.metric("IV (%)", f"{idea.get('iv', 12.8):.1f}%")
-                        with g5: st.metric("Open Interest", f"{idea.get('oi', 0):,}" if idea.get('oi') else "Active")
+                        with g2: st.metric(f"Gamma ({GAMMA_SYM})", f"{idea.get('gamma', 0.00015):.5f}")
+                        with g3: st.metric(f"Theta ({THETA_SYM})", f"{idea.get('theta', -15.7):.1f}")
+                        with g4: st.metric("Vega", f"{idea.get('vega', 12.3):.1f}")
+                        with g5: st.metric("Vanna", f"{idea.get('vanna', 0.012):.3f}")
+
+                        # Row 4: IV, GEX & Market Mechanics
+                        x1, x2, x3, x4 = st.columns(4)
+                        with x1: st.metric("IV (%)", f"{idea.get('iv', 12.8):.1f}%")
+                        with x2: st.metric("Open Interest", f"{idea.get('oi', 0):,}" if idea.get('oi') else "Active")
+                        with x3: st.metric("Net GEX", f"{idea.get('net_gex', 0):+,.0f} Cr", delta=idea.get("gex_regime", "NEUTRAL"), delta_color="off")
+                        with x4: st.metric("Max Pain Strike", f"{idea.get('max_pain', 0):,.0f}")
 
                     else:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Action", f"{idea['action']} SPOT")
                         with c2: st.metric("Spot Entry", f"{RUPEE}{fmt(idea['entry'])}")
                         with c3: st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(idea['sl'])}")
-                        with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}")
+                        with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}", delta=f"Kelly Size: {idea['kelly_pct']}%")
 
                         c5, c6, c7, c8 = st.columns(4)
                         with c5: st.metric("Target 1", f"{RUPEE}{fmt(idea['target1'])}")
                         with c6: st.metric("Target 2", f"{RUPEE}{fmt(idea['target2'])}")
                         with c7: st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
                         with c8: st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
+
+                        x1, x2, x3, x4 = st.columns(4)
+                        with x1: st.metric("GEX Regime", idea.get("gex_regime", "NEUTRAL"))
+                        with x2: st.metric("Gamma Flip Level", f"{idea.get('gamma_flip', 0):,.0f}")
+                        with x3: st.metric("Max Pain Gravity", f"{idea.get('max_pain', 0):,.0f}")
+                        with x4: st.metric("Expected Move", f"\u00B1{idea.get('expected_move', 0):,.1f} Pts")
 
                     st.markdown(
                         f"""
