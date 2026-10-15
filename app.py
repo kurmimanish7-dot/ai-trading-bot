@@ -8,7 +8,7 @@ Dealer GEX Radar, Stateful Paper-Trading Risk Engine, and Grounded Gemini Synthe
 """
 
 import datetime
-from datetime import datetime as dtime_cls, date, time as dtime, timedelta
+from datetime import datetime, date, time as dtime, timedelta
 import json
 import logging
 import math
@@ -28,7 +28,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # =====================================================================
-# 1. BUILT-IN PURE MATH NORMAL DISTRIBUTION (ZERO EXTERNAL DEPENDENCY)
+# 1. BUILT-IN PURE MATH NORMAL DISTRIBUTION (ZERO SCIPY DEPENDENCY)
 # =====================================================================
 def norm_cdf(x: float) -> float:
     """Standard Normal Cumulative Distribution Function using built-in math.erf."""
@@ -83,7 +83,7 @@ BULLET = " • "
 # 3. AUTHORITATIVE EXCHANGE TRADING CALENDAR (2025–2026)
 # =====================================================================
 NSE_TRADING_HOLIDAYS = {
-    # 2025 Declared Trading Holidays
+    # 2025 Standard Trading Holidays
     date(2025, 1, 26), date(2025, 2, 26), date(2025, 3, 14), date(2025, 3, 31),
     date(2025, 4, 10), date(2025, 4, 14), date(2025, 4, 18), date(2025, 5, 1),
     date(2025, 8, 15), date(2025, 8, 27), date(2025, 10, 2), date(2025, 10, 21),
@@ -119,7 +119,7 @@ def get_preceding_trading_day(d: date) -> date:
 
 def market_open() -> bool:
     """Evaluates whether Indian financial markets are currently in continuous trading."""
-    now = dtime_cls.now(IST)
+    now = datetime.now(IST)
     if is_trading_holiday(now.date()):
         return False
     return dtime(9, 15) <= now.time() <= dtime(15, 30)
@@ -387,14 +387,14 @@ if "paper_portfolio" not in st.session_state:
         "starting_balance": 500000.0,
         "daily_realized_pnl": 0.0,
         "positions": {},       # Active open simulated orders
-        "trade_history": [],   # Journal of completed paper trades
-        "session_date": dtime_cls.now(IST).date().isoformat(),
+        "trade_history": [],   # Completed paper trades journal
+        "session_date": datetime.now(IST).date().isoformat(),
         "daily_loss_limit": 10000.0,
         "circuit_broken": False,
     }
 
 def check_daily_reset():
-    today_str = dtime_cls.now(IST).date().isoformat()
+    today_str = datetime.now(IST).date().isoformat()
     if st.session_state.paper_portfolio.get("session_date") != today_str:
         st.session_state.paper_portfolio["session_date"] = today_str
         st.session_state.paper_portfolio["daily_realized_pnl"] = 0.0
@@ -410,7 +410,10 @@ class NSEExchangeSession:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            ),
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.nseindia.com/option-chain",
@@ -436,27 +439,35 @@ class NSEExchangeSession:
             resp = self.session.get(url, timeout=4)
             if resp.status_code == 200:
                 data = resp.json()
-                for rec in data.get("FO", []):
-                    dt = dtime_cls.strptime(rec["tradingDate"], "%d-%b-%Y").date()
-                    NSE_TRADING_HOLIDAYS.add(dt)
+                if isinstance(data, dict):
+                    for rec in data.get("FO", []):
+                        if isinstance(rec, dict) and "tradingDate" in rec:
+                            dt = datetime.strptime(rec["tradingDate"], "%d-%b-%Y").date()
+                            NSE_TRADING_HOLIDAYS.add(dt)
         except Exception:
             pass
 
-    def get_json(self, url: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    def get_json(self, url: str) -> Optional[Any]:
         self.warm_cookies()
         try:
             resp = self.session.get(url, timeout=6)
             if resp.status_code == 200:
-                return resp.json(), "LIVE"
+                try:
+                    return resp.json()
+                except Exception:
+                    return None
             elif resp.status_code in [401, 403]:
                 self.cookie_timestamp = 0.0
                 self.warm_cookies()
                 retry_resp = self.session.get(url, timeout=6)
                 if retry_resp.status_code == 200:
-                    return retry_resp.json(), "LIVE"
+                    try:
+                        return retry_resp.json()
+                    except Exception:
+                        return None
         except Exception as exc:
             logger.warning("NSE endpoint request failed on %s: %s", url, exc)
-        return None, "UNAVAILABLE"
+        return None
 
 @st.cache_resource(show_spinner=False)
 def get_nse_session() -> NSEExchangeSession:
@@ -479,7 +490,6 @@ ANGEL_JWT_TOKEN = secret("ANGEL_JWT_TOKEN")
 GEMINI_API_KEY = secret("GEMINI_API_KEY") or secret("GOOGLE_API_KEY")
 GEMINI_MODEL = secret("GEMINI_MODEL") or "gemini-2.5-flash"
 
-# Optional telemetry bindings
 try:
     from telemetry_engine import TelemetryEngine
 except Exception:
@@ -634,25 +644,27 @@ def load_5000_equity_master() -> Dict[str, Dict[str, Any]]:
         resp = requests.get(angel_master_url, timeout=6)
         if resp.ok:
             data = resp.json()
-            for item in data:
-                exch = str(item.get("exch_seg", "")).upper()
-                inst = str(item.get("instrumenttype", "")).strip()
-                if exch in ["NSE", "BSE"] and (inst == "" or inst == "EQUITY"):
-                    sym = str(item.get("symbol", "")).replace("-EQ", "").strip().upper()
-                    token = str(item.get("token", "")).strip()
-                    name = str(item.get("name", sym)).strip()
-                    if sym and len(sym) <= 25:
-                        if sym in master:
-                            if exch == "NSE": master[sym]["token_nse"] = token
-                            elif exch == "BSE": master[sym]["token_bse"] = token
-                        else:
-                            master[sym] = {
-                                "name": name,
-                                "token_nse": token if exch == "NSE" else None,
-                                "token_bse": token if exch == "BSE" else None,
-                                "yfinance": f"{sym}.{'NS' if exch == 'NSE' else 'BO'}",
-                                "exchange": exch
-                            }
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        exch = str(item.get("exch_seg", "")).upper()
+                        inst = str(item.get("instrumenttype", "")).strip()
+                        if exch in ["NSE", "BSE"] and (inst == "" or inst == "EQUITY"):
+                            sym = str(item.get("symbol", "")).replace("-EQ", "").strip().upper()
+                            token = str(item.get("token", "")).strip()
+                            name = str(item.get("name", sym)).strip()
+                            if sym and len(sym) <= 25:
+                                if sym in master:
+                                    if exch == "NSE": master[sym]["token_nse"] = token
+                                    elif exch == "BSE": master[sym]["token_bse"] = token
+                                else:
+                                    master[sym] = {
+                                        "name": name,
+                                        "token_nse": token if exch == "NSE" else None,
+                                        "token_bse": token if exch == "BSE" else None,
+                                        "yfinance": f"{sym}.{'NS' if exch == 'NSE' else 'BO'}",
+                                        "exchange": exch
+                                    }
     except Exception as exc:
         logger.info("Angel OpenAPI scrip master online fetch skipped: %s", exc)
 
@@ -796,27 +808,29 @@ def resample_5m_to_10m(df: pd.DataFrame) -> pd.DataFrame:
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
     """Retrieves verified spot price with strict provenance tracking; no fake defaults."""
-    now_str = dtime_cls.now(IST).strftime("%H:%M:%S IST")
+    now_str = datetime.now(IST).strftime("%H:%M:%S IST")
     
     # 1. Primary: Official NSE All Indices API
     try:
         url = "https://www.nseindia.com/api/allIndices"
-        data, status = nse_client.get_json(url)
-        if data and "data" in data:
+        raw = nse_client.get_json(url)
+        data = raw[0] if isinstance(raw, tuple) else raw
+        if data and isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
             name_check = "NIFTY BANK" if symbol == "BANKNIFTY" else ("NIFTY 50" if symbol == "NIFTY" else symbol)
             for idx in data["data"]:
-                idx_sym = str(idx.get("indexSymbol", "")).strip().upper()
-                idx_name = str(idx.get("index", "")).strip().upper()
-                if idx_sym == name_check or idx_name == name_check:
-                    val = num(idx.get("last"))
-                    change = num(idx.get("variation"))
-                    p_change = num(idx.get("percentChange"))
-                    if val and val > 0:
-                        return {
-                            "price": val, "change": change or 0.0, "p_change": p_change or 0.0,
-                            "source": "NSE_PRIMARY_API", "status": "LIVE" if market_open() else "CACHED",
-                            "timestamp": now_str
-                        }
+                if isinstance(idx, dict):
+                    idx_sym = str(idx.get("indexSymbol", "")).strip().upper()
+                    idx_name = str(idx.get("index", "")).strip().upper()
+                    if idx_sym == name_check or idx_name == name_check:
+                        val = num(idx.get("last"))
+                        change = num(idx.get("variation"))
+                        p_change = num(idx.get("percentChange"))
+                        if val and val > 0:
+                            return {
+                                "price": val, "change": change or 0.0, "p_change": p_change or 0.0,
+                                "source": "NSE_PRIMARY_API", "status": "LIVE" if market_open() else "CACHED",
+                                "timestamp": now_str
+                            }
     except Exception:
         pass
 
@@ -853,7 +867,7 @@ def get_spot(symbol: str) -> Optional[float]:
 def get_india_vix() -> Dict[str, Any]:
     vix_quote = fetch_verified_spot("INDIA_VIX")
     vix = vix_quote.get("price")
-    now_str = dtime_cls.now(IST).strftime("%H:%M:%S IST")
+    now_str = datetime.now(IST).strftime("%H:%M:%S IST")
 
     if vix is None or vix <= 0:
         return {"vix": None, "regime": "DATA UNAVAILABLE", "sl_multiplier": 1.0, "status": "UNAVAILABLE", "timestamp": now_str}
@@ -866,27 +880,58 @@ def get_india_vix() -> Dict[str, Any]:
     return {"vix": vix, "regime": regime, "sl_multiplier": sl_mult, "status": vix_quote["status"], "timestamp": now_str}
 
 def determine_settlement_phase() -> str:
-    now = dtime_cls.now(IST)
+    now = datetime.now(IST)
     if is_trading_holiday(now.date()): return "MARKET HOLIDAY / SETTLED PREVIOUS CLOSE"
     current_time = now.time()
     if current_time < dtime(17, 30): return "LIVE SESSION (PREVIOUS CLOSE)"
     elif dtime(17, 30) <= current_time <= dtime(19, 0): return "RECONCILIATION IN PROGRESS"
     else: return "TODAY'S PROVISIONAL FIGURES"
 
+# =====================================================================
+# REVISED RESILIENT FII / DII INGESTION ENGINE (ATTRIBUTEERROR DEFECT FIXED)
+# =====================================================================
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_fii_dii() -> Dict[str, Any]:
+    """
+    Robust institutional cash market parser with defensive type-checking to
+    prevent AttributeError when exchange endpoints return dictionary error objects.
+    """
     url = "https://www.nseindia.com/api/fiidiiTradeReact"
-    data, status = nse_client.get_json(url)
+    raw_response = nse_client.get_json(url)
     settlement_status = determine_settlement_phase()
-    now_str = dtime_cls.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
+    now_str = datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
 
-    if data:
+    if isinstance(raw_response, tuple):
+        data = raw_response[0]
+    else:
+        data = raw_response
+
+    # Defensive normalization: Ensure items is strictly a list of dicts
+    items = []
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        if "data" in data and isinstance(data["data"], list):
+            items = data["data"]
+        elif "category" in data:
+            items = [data]
+
+    if items:
         fii_net, dii_net = None, None
-        for row in data:
+        for row in items:
+            if not isinstance(row, dict):
+                continue
             cat = str(row.get("category", "")).upper()
-            val = num(row.get("netValue"))
-            if "FII" in cat or "FPI" in cat: fii_net = val
-            elif "DII" in cat: dii_net = val
+            raw_val = str(row.get("netValue", "0")).replace(",", "").strip()
+            try:
+                net_val = float(raw_val)
+            except Exception:
+                net_val = 0.0
+
+            if "FII" in cat or "FPI" in cat:
+                fii_net = net_val
+            elif "DII" in cat:
+                dii_net = net_val
 
         if fii_net is not None and dii_net is not None:
             combined = round(fii_net + dii_net, 2)
@@ -920,22 +965,22 @@ fii_dii = fetch_fii_dii()
 # =====================================================================
 def expiry_norm(x: Any) -> Optional[str]:
     if not x: return None
-    if isinstance(x, (datetime.datetime, date)): return x.strftime("%Y-%m-%d")
+    if isinstance(x, (datetime, date)): return x.strftime("%Y-%m-%d")
     s = str(x).strip().upper()
     for f in ["%Y-%m-%d", "%d-%b-%Y", "%d-%m-%Y", "%d/%m/%Y", "%d%b%Y"]:
-        try: return dtime_cls.strptime(s, f).strftime("%Y-%m-%d")
+        try: return datetime.strptime(s, f).strftime("%Y-%m-%d")
         except Exception: pass
     return s
 
 def expiry_label(x: Any) -> str:
     n = expiry_norm(x)
     if not n: return "-"
-    try: return dtime_cls.strptime(n, "%Y-%m-%d").strftime("%d %b %Y")
+    try: return datetime.strptime(n, "%Y-%m-%d").strftime("%d %b %Y")
     except Exception: return str(x)
 
 def generate_calendar_expiries(symbol: str) -> List[str]:
     """Generates valid expiries adhering strictly to SEBI weekly/monthly restrictions."""
-    now = dtime_cls.now(IST)
+    now = datetime.now(IST)
     meta = INDEX_METADATA.get(symbol, INDEX_METADATA["NIFTY"])
     target_weekday = meta["weekly_day"]
     has_weekly = meta["has_weekly"]
@@ -985,11 +1030,15 @@ def load_expiries(symbol: str) -> List[str]:
 
     try:
         url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
-        data, status = nse_client.get_json(url)
-        if data:
-            exp_dates = data.get("records", {}).get("expiryDates", [])
-            vals = [expiry_norm(x) for x in exp_dates if expiry_norm(x)]
-            if vals: return sorted(set(vals))
+        raw = nse_client.get_json(url)
+        data = raw[0] if isinstance(raw, tuple) else raw
+        if data and isinstance(data, dict):
+            records = data.get("records", {})
+            if isinstance(records, dict):
+                exp_dates = records.get("expiryDates", [])
+                if isinstance(exp_dates, list):
+                    vals = [expiry_norm(x) for x in exp_dates if expiry_norm(x)]
+                    if vals: return sorted(set(vals))
     except Exception:
         pass
 
@@ -1009,38 +1058,41 @@ def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.Data
     if expiry and symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]:
         try:
             url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
-            data, status = nse_client.get_json(url)
-            if data:
+            raw = nse_client.get_json(url)
+            data = raw[0] if isinstance(raw, tuple) else raw
+            if data and isinstance(data, dict):
                 records = data.get("records", {})
-                data_items = records.get("data", [])
-                target_exp_norm = expiry_norm(expiry)
-                available_expiries = [expiry_norm(x) for x in records.get("expiryDates", []) if expiry_norm(x)]
-                if target_exp_norm not in available_expiries and available_expiries:
-                    target_exp_norm = available_expiries[0]
+                if isinstance(records, dict):
+                    data_items = records.get("data", [])
+                    target_exp_norm = expiry_norm(expiry)
+                    available_expiries = [expiry_norm(x) for x in records.get("expiryDates", []) if expiry_norm(x)]
+                    if target_exp_norm not in available_expiries and available_expiries:
+                        target_exp_norm = available_expiries[0]
 
-                matched_rows = []
-                for item in data_items:
-                    if expiry_norm(item.get("expiryDate")) == target_exp_norm:
-                        strike = num(item.get("strikePrice"))
-                        if "CE" in item:
-                            ce = item["CE"]
-                            matched_rows.append({
-                                "strikePrice": strike, "option_type": "CE", "lastPrice": num(ce.get("lastPrice"), 0.0),
-                                "openInterest": int(num(ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(ce.get("changeinOpenInterest"), 0)),
-                                "change": num(ce.get("change"), 0.0), "impliedVolatility": num(ce.get("impliedVolatility"), 12.8),
-                                "expiryDate": target_exp_norm,
-                            })
-                        if "PE" in item:
-                            pe = item["PE"]
-                            matched_rows.append({
-                                "strikePrice": strike, "option_type": "PE", "lastPrice": num(pe.get("lastPrice"), 0.0),
-                                "openInterest": int(num(pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(pe.get("changeinOpenInterest"), 0)),
-                                "change": num(pe.get("change"), 0.0), "impliedVolatility": num(pe.get("impliedVolatility"), 12.8),
-                                "expiryDate": target_exp_norm,
-                            })
-                if matched_rows:
-                    df = pd.DataFrame(matched_rows)
-                    return df, df
+                    matched_rows = []
+                    if isinstance(data_items, list):
+                        for item in data_items:
+                            if isinstance(item, dict) and expiry_norm(item.get("expiryDate")) == target_exp_norm:
+                                strike = num(item.get("strikePrice"))
+                                if "CE" in item and isinstance(item["CE"], dict):
+                                    ce = item["CE"]
+                                    matched_rows.append({
+                                        "strikePrice": strike, "option_type": "CE", "lastPrice": num(ce.get("lastPrice"), 0.0),
+                                        "openInterest": int(num(ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(ce.get("changeinOpenInterest"), 0)),
+                                        "change": num(ce.get("change"), 0.0), "impliedVolatility": num(ce.get("impliedVolatility"), 12.8),
+                                        "expiryDate": target_exp_norm,
+                                    })
+                                if "PE" in item and isinstance(item["PE"], dict):
+                                    pe = item["PE"]
+                                    matched_rows.append({
+                                        "strikePrice": strike, "option_type": "PE", "lastPrice": num(pe.get("lastPrice"), 0.0),
+                                        "openInterest": int(num(pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(pe.get("changeinOpenInterest"), 0)),
+                                        "change": num(pe.get("change"), 0.0), "impliedVolatility": num(pe.get("impliedVolatility"), 12.8),
+                                        "expiryDate": target_exp_norm,
+                                    })
+                    if matched_rows:
+                        df = pd.DataFrame(matched_rows)
+                        return df, df
         except Exception:
             pass
 
@@ -1279,7 +1331,7 @@ def fetch_ohlcv(symbol: str, interval: str = "FIVE_MINUTE", days: int = 5) -> pd
                 quotes = data["indicators"]["quote"][0]
                 timestamps = data.get("timestamp", [])
                 df = pd.DataFrame({
-                    "datetime": [dtime_cls.fromtimestamp(ts, tz=IST) for ts in timestamps] if timestamps else None,
+                    "datetime": [datetime.fromtimestamp(ts, tz=IST) for ts in timestamps] if timestamps else None,
                     "open": quotes.get("open", []), "high": quotes.get("high", []),
                     "low": quotes.get("low", []), "close": quotes.get("close", []),
                     "volume": quotes.get("volume", []),
@@ -1462,8 +1514,7 @@ def analyze_candlesticks_and_volume(df: pd.DataFrame) -> Dict[str, Any]:
     if body >= (0.50 * rng):
         status = "RED" if close_p < open_p else "GREEN"
         name = "BEARISH BREAKDOWN" if close_p < open_p else "BULLISH MARUBOZU"
-        reason = f"Directional expansion confirmed ({vol_ratio:.2f}x vol)."
-        return {"status": status, "pattern": name, "vol_ratio": vol_ratio, "reversal_risk": (status == "RED"), "reason": reason}
+        return {"status": status, "pattern": name, "vol_ratio": vol_ratio, "reversal_risk": (status == "RED"), "reason": f"Directional expansion confirmed ({vol_ratio:.2f}x vol)."}
 
     if is_continuous_fall:
         return {"status": "RED", "pattern": "STEADY BEARISH MOMENTUM", "vol_ratio": vol_ratio, "reversal_risk": False, "reason": "Consecutive lower closes confirm active downward trend."}
@@ -1492,10 +1543,10 @@ def analyze_smart_money(fii_dii_data: Dict[str, Any], pcr_val: Optional[float], 
         vwap_val = float(df["VWAP"].iloc[-1]) if "VWAP" in df.columns and pd.notna(df["VWAP"].iloc[-1]) else day_open
         if current_spot < vwap_val and current_spot < day_open:
             score -= 2
-            notes.append(f"VWAP Breakdown (Spot ₹{current_spot:,.0f} < VWAP ₹{vwap_val:,.0f})")
+            notes.append(f"Institutional VWAP Breakdown (Spot {RUPEE}{current_spot:,.0f} < VWAP {RUPEE}{vwap_val:,.0f})")
         elif current_spot > vwap_val and current_spot > day_open:
             score += 2
-            notes.append(f"VWAP Support (Spot ₹{current_spot:,.0f} > VWAP ₹{vwap_val:,.0f})")
+            notes.append(f"Institutional VWAP Support (Spot {RUPEE}{current_spot:,.0f} > VWAP {RUPEE}{vwap_val:,.0f})")
 
     status = "GREEN" if score >= 2 else ("RED" if score <= -2 else "YELLOW")
     final_reason = " | ".join(notes) if notes else "Smart Money neutral."
@@ -1659,7 +1710,7 @@ def execute_paper_order(symbol: str, action: str, strike: int, option_type: str,
         "trade_id": trade_id, "symbol": symbol, "action": action, "strike": strike,
         "option_type": option_type, "entry_price": fill_price, "qty": qty,
         "sl": sl, "t1": t1, "t2": t2, "expiry": expiry, "reasons": reasons,
-        "entry_time": dtime_cls.now(IST).strftime("%H:%M:%S"), "status": "OPEN"
+        "entry_time": datetime.now(IST).strftime("%H:%M:%S"), "status": "OPEN"
     }
 
     st.session_state.paper_portfolio["positions"][trade_id] = position_entry
@@ -1676,7 +1727,7 @@ def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
 
     costs = calculate_trade_friction(pos["entry_price"], fill_exit, pos["qty"], is_option=True)
     pos["exit_price"] = fill_exit
-    pos["exit_time"] = dtime_cls.now(IST).strftime("%H:%M:%S")
+    pos["exit_time"] = datetime.now(IST).strftime("%H:%M:%S")
     pos["exit_reason"] = exit_reason
     pos.update(costs)
 
@@ -1698,9 +1749,9 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
     dte_days = 6.0
     if expiry:
         try:
-            exp_date = dtime_cls.strptime(expiry_norm(expiry), "%Y-%m-%d").date()
-            expiry_close = dtime_cls.combine(exp_date, dtime(15, 30), tzinfo=IST)
-            now_dt = dtime_cls.now(IST)
+            exp_date = datetime.strptime(expiry_norm(expiry), "%Y-%m-%d").date()
+            expiry_close = datetime.combine(exp_date, dtime(15, 30), tzinfo=IST)
+            now_dt = datetime.now(IST)
             diff = (expiry_close - now_dt).total_seconds() / 86400.0
             dte_days = max(diff, 0.05)
         except Exception:
@@ -1915,7 +1966,7 @@ def fetch_equity_candles(symbol: str, token: Optional[str] = None, exchange: str
             quotes = data["indicators"]["quote"][0]
             timestamps = data.get("timestamp", [])
             df = pd.DataFrame({
-                "datetime": [dtime_cls.fromtimestamp(ts, tz=IST) for ts in timestamps] if timestamps else None,
+                "datetime": [datetime.fromtimestamp(ts, tz=IST) for ts in timestamps] if timestamps else None,
                 "open": quotes.get("open", []), "high": quotes.get("high", []),
                 "low": quotes.get("low", []), "close": quotes.get("close", []),
                 "volume": quotes.get("volume", []),
@@ -1976,17 +2027,17 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
     elif last < ema20 < ema50:
         tech_score -= 2; reasons.append(f"Price sustained below EMA20 and EMA50 ({tf_cfg['label']}).")
 
-    if last > ema200: tech_score += 1; reasons.append("Trading above 200 EMA (Macro Bullish Territory).")
-    else: tech_score -= 1; reasons.append("Trading below 200 EMA (Overhead Supply Resistance).")
+    if last > ema200: tech_score += 1; reasons.append("Trading above Institutional 200 EMA (Macro Bullish Territory).")
+    else: tech_score -= 1; reasons.append("Trading below 200 EMA (Long-term Overhead Supply Resistance).")
 
     if vwap and last > vwap: tech_score += 1; reasons.append(f"Holding above Institutional Benchmark VWAP ({RUPEE}{vwap:,.2f}).")
-    elif vwap: tech_score -= 1; reasons.append(f"Trading below VWAP ({RUPEE}{vwap:,.2f}) indicating intraday supply.")
+    elif vwap: tech_score -= 1; reasons.append(f"Trading below VWAP ({RUPEE}{vwap:,.2f}) indicating intraday supply pressure.")
 
-    if rsi >= 60: tech_score += 1; reasons.append(f"RSI ({rsi:.1f}) in bullish expansion zone.")
-    elif rsi <= 40: tech_score -= 1; reasons.append(f"RSI ({rsi:.1f}) in bearish distribution zone.")
+    if rsi >= 60: tech_score += 1; reasons.append(f"RSI ({rsi:.1f}) strong bullish expansion zone mein hai.")
+    elif rsi <= 40: tech_score -= 1; reasons.append(f"RSI ({rsi:.1f}) bearish distribution zone mein hai.")
 
     is_sideways = (adx < 20)
-    sideways_notes = f"ADX {adx:.1f} (< 20): In range consolidation. Breakout expected above {RUPEE}{resistance:,.2f}." if is_sideways else f"ADX {adx:.1f} (> 20): Directional momentum intact."
+    sideways_notes = f"ADX {adx:.1f} (< 20) hai. Stock [{tf_cfg['label']}] range consolidation mein hai. Fresh directional move {RUPEE}{resistance:,.2f} breakout par aayega." if is_sideways else f"ADX {adx:.1f} (> 20) hai. Active directional trend chal raha hai. Momentum intact hai."
     atr_mult = tf_cfg.get("atr_mult", 1.0)
 
     if tech_score >= 2 and not (is_sideways and abs(tech_score) < 3):
@@ -2288,12 +2339,13 @@ else:
         chain, _ = get_chain(selected_underlying, current_expiry)
         pcr = calculate_pcr(chain)
         vix_info = get_india_vix()
+        fii_dii_info = fetch_fii_dii()
         gex_info = compute_gex_and_max_pain(chain, spot, selected_underlying)
 
         s1, s2, s3, s4 = st.columns(4)
         with s1:
             if spot is not None and spot > 0:
-                st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(spot), delta="Verified Live Feed" if market_open() else "Official Session Close", delta_color="normal")
+                st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(spot), delta="Verified Exchange Feed" if market_open() else "Official Session Close", delta_color="normal")
             else:
                 st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Feeds")
         with s2: st.metric("India VIX", fmt(vix_info['vix']), delta=vix_info['regime'], delta_color="off")
@@ -2339,12 +2391,12 @@ else:
 
         with f1:
             if fii_dii_info.get("available") and fii_val is not None:
-                st.metric("FII Net Cash Flow", f"{RUPEE}{fii_val:,.2f} Cr", delta="Institutional Inflow" if fii_val > 0 else "Institutional Outflow")
+                st.metric("FII Net Cash (NSE/BSE)", f"{RUPEE}{fii_val:,.2f} Cr", delta="Institutional Inflow" if fii_val > 0 else "Institutional Outflow")
             else:
-                st.metric("FII Net Cash Flow", "Syncing...", delta="Exchange Clearing", delta_color="off")
+                st.metric("FII Net Cash (NSE/BSE)", "Syncing...", delta="Exchange Reconciliation", delta_color="off")
         with f2:
             if fii_dii_info.get("available") and dii_val is not None:
-                st.metric("DII Net Cash Flow", f"{RUPEE}{dii_val:,.2f} Cr", delta="Domestic Inflow" if dii_val > 0 else "Domestic Outflow")
+                st.metric("DII Net Cash Flow", f"{RUPEE}{dii_val:,.2f} Cr", delta="Domestic Support" if dii_val > 0 else "Domestic Outflow")
             else:
                 st.metric("DII Net Cash Flow", "Syncing...", delta="Awaiting Clearing", delta_color="off")
         with f3:
@@ -2480,7 +2532,6 @@ else:
             setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup2: ideas.append(setup2)
 
-            # Alternate Indices Multi-Scan with Regulatory Lot Sizes
             for alt_sym in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"]:
                 if alt_sym != underlying:
                     alt_spot = get_spot(alt_sym)
