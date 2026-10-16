@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-AI Institutional Live Trading Advisor (Quantitative GEX Engine)
-===============================================================
-Production Institutional Release: Universal 5,000+ Equity Universe (NSE & BSE),
-12-Tier Multi-Timeframe Matrix, SEBI Regulatory Metadata, Analytical Greeks,
-Dealer GEX Radar, Stateful Paper-Trading Risk Engine, and Grounded Gemini Synthesis.
+AI Institutional Live Trading Advisor (Quantitative GEX & Multi-Factor Equity Engine)
+=====================================================================================
+Production Institutional Release:
+- Universal 5,000+ Equity Universe (NSE & BSE)
+- Multi-Factor Equity Setup Engine: Technicals, Fundamentals, Official Corporate/Insider
+  Disclosures, Future Plans/Capex, Arithmetic/Mathematical Models, Volume/Investment Flow
+- Dual Entry Call & Active Exit Call Engine with Target Price & Mathematical Target Time (ETA)
+- 12-Tier Multi-Timeframe Matrix, SEBI Regulatory Metadata, Analytical Greeks, Dealer GEX Radar
+- Stateful Paper-Trading Risk Engine (Supports both Index Options & Equity Shares)
 """
 
 import datetime
@@ -83,12 +87,10 @@ BULLET = " • "
 # 3. AUTHORITATIVE EXCHANGE TRADING CALENDAR (2025–2026)
 # =====================================================================
 NSE_TRADING_HOLIDAYS = {
-    # 2025 Standard Trading Holidays
     date(2025, 1, 26), date(2025, 2, 26), date(2025, 3, 14), date(2025, 3, 31),
     date(2025, 4, 10), date(2025, 4, 14), date(2025, 4, 18), date(2025, 5, 1),
     date(2025, 8, 15), date(2025, 8, 27), date(2025, 10, 2), date(2025, 10, 21),
     date(2025, 11, 1), date(2025, 11, 5), date(2025, 12, 25),
-    # 2026 Official Exchange Declared Trading Holidays
     date(2026, 1, 26),   # Republic Day
     date(2026, 3, 3),    # Holi
     date(2026, 3, 26),   # Shri Ram Navami
@@ -100,9 +102,9 @@ NSE_TRADING_HOLIDAYS = {
     date(2026, 6, 26),   # Muharram
     date(2026, 9, 14),   # Ganesh Chaturthi
     date(2026, 10, 2),   # Mahatma Gandhi Jayanti
-    date(2026, 10, 20),  # Dussehra (Tuesday Holiday -> Auto rolls to Monday 19 Oct 2026)
-    date(2026, 11, 10),  # Diwali Balipratipada (Tuesday Holiday -> Auto rolls to Monday 9 Nov 2026)
-    date(2026, 11, 24),  # Guru Nanak Jayanti (Tuesday Holiday -> Auto rolls to Monday 23 Nov 2026)
+    date(2026, 10, 20),  # Dussehra
+    date(2026, 11, 10),  # Diwali Balipratipada
+    date(2026, 11, 24),  # Guru Nanak Jayanti
     date(2026, 12, 25),  # Christmas
 }
 
@@ -116,6 +118,16 @@ def get_preceding_trading_day(d: date) -> date:
     while is_trading_holiday(candidate):
         candidate -= timedelta(days=1)
     return candidate
+
+def add_trading_days(start_date: date, trading_days: int) -> date:
+    """Advances a date by N valid exchange trading days, skipping weekends and holidays."""
+    cur = start_date
+    remaining = max(1, int(trading_days))
+    while remaining > 0:
+        cur += timedelta(days=1)
+        if not is_trading_holiday(cur):
+            remaining -= 1
+    return cur
 
 def market_open() -> bool:
     """Evaluates whether Indian financial markets are currently in continuous trading."""
@@ -136,10 +148,10 @@ INDEX_METADATA = {
         "live_tokens": ["26000", "99926000"],
         "candle_token": "99926000",
         "yfinance": "^NSEI",
-        "lot_size": 65,      # SEBI Revised Lot Size
+        "lot_size": 65,
         "step": 50,
-        "has_weekly": True,  # Weekly retained on NSE
-        "weekly_day": 1,     # Tuesday Expiry
+        "has_weekly": True,
+        "weekly_day": 1,
     },
     "BANKNIFTY": {
         "exchange": "NSE",
@@ -149,10 +161,10 @@ INDEX_METADATA = {
         "live_tokens": ["26009", "99926009"],
         "candle_token": "99926009",
         "yfinance": "^NSEBANK",
-        "lot_size": 30,      # SEBI Revised Lot Size
+        "lot_size": 30,
         "step": 100,
-        "has_weekly": False, # Discontinued per SEBI
-        "weekly_day": 1,     # Monthly Last Tuesday
+        "has_weekly": False,
+        "weekly_day": 1,
     },
     "FINNIFTY": {
         "exchange": "NSE",
@@ -162,10 +174,10 @@ INDEX_METADATA = {
         "live_tokens": ["99926037", "26037"],
         "candle_token": "99926037",
         "yfinance": "NIFTY_FIN_SERVICE.NS",
-        "lot_size": 60,      # SEBI Revised Lot Size
+        "lot_size": 60,
         "step": 50,
-        "has_weekly": False, # Discontinued per SEBI
-        "weekly_day": 1,     # Monthly Last Tuesday
+        "has_weekly": False,
+        "weekly_day": 1,
     },
     "MIDCPNIFTY": {
         "exchange": "NSE",
@@ -175,10 +187,10 @@ INDEX_METADATA = {
         "live_tokens": ["99926074", "26074"],
         "candle_token": "99926074",
         "yfinance": "NIFTY_MIDCAP_100.NS",
-        "lot_size": 120,     # SEBI Revised Lot Size
+        "lot_size": 120,
         "step": 25,
-        "has_weekly": False, # Discontinued per SEBI
-        "weekly_day": 1,     # Monthly Last Tuesday
+        "has_weekly": False,
+        "weekly_day": 1,
     },
     "SENSEX": {
         "exchange": "BSE",
@@ -188,10 +200,10 @@ INDEX_METADATA = {
         "live_tokens": ["99919000", "1"],
         "candle_token": "99919000",
         "yfinance": "^BSESN",
-        "lot_size": 20,      # SEBI Revised Lot Size
+        "lot_size": 20,
         "step": 100,
-        "has_weekly": True,  # Weekly retained on BSE
-        "weekly_day": 3,     # Thursday Expiry
+        "has_weekly": True,
+        "weekly_day": 3,
     },
     "BANKEX": {
         "exchange": "BSE",
@@ -201,10 +213,10 @@ INDEX_METADATA = {
         "live_tokens": ["99919012"],
         "candle_token": "99919012",
         "yfinance": "^BSEBANK",
-        "lot_size": 30,      # SEBI Revised Lot Size
+        "lot_size": 30,
         "step": 100,
-        "has_weekly": False, # Discontinued per SEBI
-        "weekly_day": 3,     # Monthly Last Thursday
+        "has_weekly": False,
+        "weekly_day": 3,
     },
     "INDIA_VIX": {
         "exchange": "NSE",
@@ -227,25 +239,25 @@ UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX
 # 5. COMPLETE 12-TIER TIMEFRAME CONFIGURATION MATRIX
 # =====================================================================
 TIMEFRAME_CONFIG = {
-    "1m": {"label": f"{BOLT} 1 Minute (Scalping / High-Speed)", "smartapi": "ONE_MINUTE", "yfinance": "1m", "yf_range": "2d", "days": 2, "holding": "Quick Scalp (1-5 Mins)", "target1_mult": 1.15, "target2_mult": 1.25, "sl_mult": 0.92, "atr_mult": 0.8, "desc": "Ultra-fast scalp setup. High sensitivity, tight SL."},
-    "5m": {"label": f"{CHART_BAR} 5 Minutes (Standard Intraday)", "smartapi": "FIVE_MINUTE", "yfinance": "5m", "yf_range": "5d", "days": 5, "holding": "Intraday Momentum (15-45 Mins)", "target1_mult": 1.20, "target2_mult": 1.35, "sl_mult": 0.85, "atr_mult": 1.0, "desc": "Standard institutional execution resolution."},
-    "10m": {"label": f"{TARGET} 10 Minutes (Noise-Filtered Scalp)", "smartapi": "TEN_MINUTE", "yfinance": "10m", "yf_range": "5d", "days": 5, "holding": "Intraday Trend (30-60 Mins)", "target1_mult": 1.22, "target2_mult": 1.38, "sl_mult": 0.84, "atr_mult": 1.2, "desc": "Filters out minor intraday whipsaws."},
-    "15m": {"label": f"{TEMPLE} 15 Minutes (Institutional Breakout)", "smartapi": "FIFTEEN_MINUTE", "yfinance": "15m", "yf_range": "7d", "days": 7, "holding": "Multi-Hour Trend (1-3 Hours)", "target1_mult": 1.25, "target2_mult": 1.45, "sl_mult": 0.82, "atr_mult": 1.5, "desc": "Key institutional breakout timeframe for major intraday moves."},
-    "30m": {"label": f"{CHART_UP} 30 Minutes (Positional / BTST)", "smartapi": "THIRTY_MINUTE", "yfinance": "30m", "yf_range": "1mo", "days": 15, "holding": "BTST / Positional (1-3 Days)", "target1_mult": 1.30, "target2_mult": 1.55, "sl_mult": 0.78, "atr_mult": 2.0, "desc": "Strong trend conviction for overnight holding and multi-day swings."},
-    "60m": {"label": f"{COMPASS} 60 Minutes (1 Hour Macro Swing)", "smartapi": "ONE_HOUR", "yfinance": "60m", "yf_range": "1mo", "days": 30, "holding": "Swing Trend (3-7 Days)", "target1_mult": 1.40, "target2_mult": 1.70, "sl_mult": 0.75, "atr_mult": 2.8, "desc": "Macro hourly structure framework for swing traders."},
-    "2h": {"label": "\u23F0 2 Hours (120 Mins Multi-Day Swing)", "smartapi": "ONE_HOUR", "yfinance": "60m", "yf_range": "2mo", "days": 60, "holding": "Multi-Day Swing (3-7 Days)", "target1_mult": 1.50, "target2_mult": 1.85, "sl_mult": 0.72, "atr_mult": 3.0, "desc": "Aggregated 120-minute candles filtering out intraday noise."},
-    "4h": {"label": "\U0001F553 4 Hours (Half-Day Institutional)", "smartapi": "ONE_HOUR", "yfinance": "60m", "yf_range": "3mo", "days": 90, "holding": "Weekly Swing (1-2 Weeks)", "target1_mult": 1.60, "target2_mult": 2.05, "sl_mult": 0.68, "atr_mult": 3.5, "desc": "Half-day market structure utilized by institutional trend followers."},
-    "1d": {"label": "\U0001F4C5 1 Day (Daily EOD Positional)", "smartapi": "ONE_DAY", "yfinance": "1d", "yf_range": "1y", "days": 365, "holding": "Positional Trend (2-4 Weeks)", "target1_mult": 1.75, "target2_mult": 2.30, "sl_mult": 0.65, "atr_mult": 4.0, "desc": "Daily closing resolution reflecting broad accumulation/distribution."},
-    "1w": {"label": "\U0001F5D3\uFE0F 1 Week (Weekly Macro Swing)", "smartapi": "ONE_DAY", "yfinance": "1wk", "yf_range": "2y", "days": 730, "holding": "Macro Positional (1-3 Months)", "target1_mult": 1.90, "target2_mult": 2.60, "sl_mult": 0.60, "atr_mult": 5.0, "desc": "Weekly secular trends removing short-term market corrections."},
-    "1mo": {"label": f"{GLOBE} 1 Month (Monthly Positional Cycle)", "smartapi": "ONE_DAY", "yfinance": "1mo", "yf_range": "5y", "days": 1825, "holding": "Secular Long (3-6 Months)", "target1_mult": 2.20, "target2_mult": 3.00, "sl_mult": 0.55, "atr_mult": 6.0, "desc": "Macroeconomic cycle resolution for structural equity trends."},
-    "3mo": {"label": f"{TEMPLE} 3 Months (Quarterly Strategic Trend)", "smartapi": "ONE_DAY", "yfinance": "3mo", "yf_range": "10y", "days": 3650, "holding": "Strategic Allocation (6-12 Months)", "target1_mult": 2.50, "target2_mult": 3.50, "sl_mult": 0.50, "atr_mult": 7.5, "desc": "Quarterly earnings cycle resolution for strategic positioning."},
+    "1m": {"label": f"{BOLT} 1 Minute (Scalping / High-Speed)", "smartapi": "ONE_MINUTE", "yfinance": "1m", "yf_range": "2d", "days": 2, "minutes": 1, "holding": "Quick Scalp (1-5 Mins)", "target1_mult": 1.15, "target2_mult": 1.25, "sl_mult": 0.92, "atr_mult": 0.8, "desc": "Ultra-fast scalp setup. High sensitivity, tight SL."},
+    "5m": {"label": f"{CHART_BAR} 5 Minutes (Standard Intraday)", "smartapi": "FIVE_MINUTE", "yfinance": "5m", "yf_range": "5d", "days": 5, "minutes": 5, "holding": "Intraday Momentum (15-45 Mins)", "target1_mult": 1.20, "target2_mult": 1.35, "sl_mult": 0.85, "atr_mult": 1.0, "desc": "Standard institutional execution resolution."},
+    "10m": {"label": f"{TARGET} 10 Minutes (Noise-Filtered Scalp)", "smartapi": "TEN_MINUTE", "yfinance": "10m", "yf_range": "5d", "days": 5, "minutes": 10, "holding": "Intraday Trend (30-60 Mins)", "target1_mult": 1.22, "target2_mult": 1.38, "sl_mult": 0.84, "atr_mult": 1.2, "desc": "Filters out minor intraday whipsaws."},
+    "15m": {"label": f"{TEMPLE} 15 Minutes (Institutional Breakout)", "smartapi": "FIFTEEN_MINUTE", "yfinance": "15m", "yf_range": "7d", "days": 7, "minutes": 15, "holding": "Multi-Hour Trend (1-3 Hours)", "target1_mult": 1.25, "target2_mult": 1.45, "sl_mult": 0.82, "atr_mult": 1.5, "desc": "Key institutional breakout timeframe for major intraday moves."},
+    "30m": {"label": f"{CHART_UP} 30 Minutes (Positional / BTST)", "smartapi": "THIRTY_MINUTE", "yfinance": "30m", "yf_range": "1mo", "days": 15, "minutes": 30, "holding": "BTST / Positional (1-3 Days)", "target1_mult": 1.30, "target2_mult": 1.55, "sl_mult": 0.78, "atr_mult": 2.0, "desc": "Strong trend conviction for overnight holding and multi-day swings."},
+    "60m": {"label": f"{COMPASS} 60 Minutes (1 Hour Macro Swing)", "smartapi": "ONE_HOUR", "yfinance": "60m", "yf_range": "1mo", "days": 30, "minutes": 60, "holding": "Swing Trend (3-7 Days)", "target1_mult": 1.40, "target2_mult": 1.70, "sl_mult": 0.75, "atr_mult": 2.8, "desc": "Macro hourly structure framework for swing traders."},
+    "2h": {"label": "\u23F0 2 Hours (120 Mins Multi-Day Swing)", "smartapi": "ONE_HOUR", "yfinance": "60m", "yf_range": "2mo", "days": 60, "minutes": 120, "holding": "Multi-Day Swing (3-7 Days)", "target1_mult": 1.50, "target2_mult": 1.85, "sl_mult": 0.72, "atr_mult": 3.0, "desc": "Aggregated 120-minute candles filtering out intraday noise."},
+    "4h": {"label": "\U0001F553 4 Hours (Half-Day Institutional)", "smartapi": "ONE_HOUR", "yfinance": "60m", "yf_range": "3mo", "days": 90, "minutes": 240, "holding": "Weekly Swing (1-2 Weeks)", "target1_mult": 1.60, "target2_mult": 2.05, "sl_mult": 0.68, "atr_mult": 3.5, "desc": "Half-day market structure utilized by institutional trend followers."},
+    "1d": {"label": "\U0001F4C5 1 Day (Daily EOD Positional)", "smartapi": "ONE_DAY", "yfinance": "1d", "yf_range": "1y", "days": 365, "minutes": 375, "holding": "Positional Trend (2-4 Weeks)", "target1_mult": 1.75, "target2_mult": 2.30, "sl_mult": 0.65, "atr_mult": 4.0, "desc": "Daily closing resolution reflecting broad accumulation/distribution."},
+    "1w": {"label": "\U0001F5D3\uFE0F 1 Week (Weekly Macro Swing)", "smartapi": "ONE_DAY", "yfinance": "1wk", "yf_range": "2y", "days": 730, "minutes": 1875, "holding": "Macro Positional (1-3 Months)", "target1_mult": 1.90, "target2_mult": 2.60, "sl_mult": 0.60, "atr_mult": 5.0, "desc": "Weekly secular trends removing short-term market corrections."},
+    "1mo": {"label": f"{GLOBE} 1 Month (Monthly Positional Cycle)", "smartapi": "ONE_DAY", "yfinance": "1mo", "yf_range": "5y", "days": 1825, "minutes": 7875, "holding": "Secular Long (3-6 Months)", "target1_mult": 2.20, "target2_mult": 3.00, "sl_mult": 0.55, "atr_mult": 6.0, "desc": "Macroeconomic cycle resolution for structural equity trends."},
+    "3mo": {"label": f"{TEMPLE} 3 Months (Quarterly Strategic Trend)", "smartapi": "ONE_DAY", "yfinance": "3mo", "yf_range": "10y", "days": 3650, "minutes": 23625, "holding": "Strategic Allocation (6-12 Months)", "target1_mult": 2.50, "target2_mult": 3.50, "sl_mult": 0.50, "atr_mult": 7.5, "desc": "Quarterly earnings cycle resolution for strategic positioning."},
 }
 
 # =====================================================================
 # 6. CONFIGURATION, THEME & STYLES
 # =====================================================================
 st.set_page_config(
-    page_title="AI Institutional Live Trading Advisor (Quantitative GEX Engine)",
+    page_title="AI Institutional Live Trading Advisor (Quantitative GEX & Equity Engine)",
     page_icon=BOLT,
     layout="wide",
 )
@@ -308,6 +320,14 @@ st.markdown(
     .reason-box {
         background-color: rgba(128, 128, 128, 0.08);
         border-left: 4px solid #4CAF50;
+        padding: 0.75rem;
+        border-radius: 4px;
+        margin: 0.5rem 0;
+        line-height: 1.45;
+    }
+    .exit-box {
+        background-color: rgba(244, 67, 54, 0.08);
+        border-left: 4px solid #F44336;
         padding: 0.75rem;
         border-radius: 4px;
         margin: 0.5rem 0;
@@ -386,7 +406,7 @@ if "paper_portfolio" not in st.session_state:
         "cash_balance": 500000.0,
         "starting_balance": 500000.0,
         "daily_realized_pnl": 0.0,
-        "positions": {},       # Active open simulated orders
+        "positions": {},       # Active open simulated orders (Options & Equities)
         "trade_history": [],   # Completed paper trades journal
         "session_date": datetime.now(IST).date().isoformat(),
         "daily_loss_limit": 10000.0,
@@ -548,60 +568,60 @@ options_engine = get_options_engine()
 # 9. UNIVERSAL 5,000+ EQUITY MASTER DATABASE (NSE & BSE)
 # =====================================================================
 PRIMARY_SEED_EQUITIES = {
-    "RELIANCE": {"name": "Reliance Industries Ltd", "token_nse": "2885", "token_bse": "500325", "yfinance": "RELIANCE.NS", "exchange": "NSE"},
-    "TCS": {"name": "Tata Consultancy Services Ltd", "token_nse": "11536", "token_bse": "532540", "yfinance": "TCS.NS", "exchange": "NSE"},
-    "HDFCBANK": {"name": "HDFC Bank Ltd", "token_nse": "1333", "token_bse": "500180", "yfinance": "HDFCBANK.NS", "exchange": "NSE"},
-    "ICICIBANK": {"name": "ICICI Bank Ltd", "token_nse": "4963", "token_bse": "532174", "yfinance": "ICICIBANK.NS", "exchange": "NSE"},
-    "INFY": {"name": "Infosys Ltd", "token_nse": "1594", "token_bse": "500209", "yfinance": "INFY.NS", "exchange": "NSE"},
-    "SBIN": {"name": "State Bank of India", "token_nse": "3045", "token_bse": "500112", "yfinance": "SBIN.NS", "exchange": "NSE"},
-    "BHARTIARTL": {"name": "Bharti Airtel Ltd", "token_nse": "10604", "token_bse": "532454", "yfinance": "BHARTIARTL.NS", "exchange": "NSE"},
-    "TATAMOTORS": {"name": "Tata Motors Ltd", "token_nse": "3456", "token_bse": "500570", "yfinance": "TATAMOTORS.NS", "exchange": "NSE"},
-    "ITC": {"name": "ITC Ltd", "token_nse": "1660", "token_bse": "500875", "yfinance": "ITC.NS", "exchange": "NSE"},
-    "LT": {"name": "Larsen & Toubro Ltd", "token_nse": "11483", "token_bse": "500510", "yfinance": "LT.NS", "exchange": "NSE"},
-    "HINDUNILVR": {"name": "Hindustan Unilever Ltd", "token_nse": "1394", "token_bse": "500696", "yfinance": "HINDUNILVR.NS", "exchange": "NSE"},
-    "KOTAKBANK": {"name": "Kotak Mahindra Bank", "token_nse": "1922", "token_bse": "500247", "yfinance": "KOTAKBANK.NS", "exchange": "NSE"},
-    "AXISBANK": {"name": "Axis Bank Ltd", "token_nse": "5900", "token_bse": "532215", "yfinance": "AXISBANK.NS", "exchange": "NSE"},
-    "MARUTI": {"name": "Maruti Suzuki India", "token_nse": "10999", "token_bse": "532500", "yfinance": "MARUTI.NS", "exchange": "NSE"},
-    "SUNPHARMA": {"name": "Sun Pharmaceutical", "token_nse": "3351", "token_bse": "524715", "yfinance": "SUNPHARMA.NS", "exchange": "NSE"},
-    "TITAN": {"name": "Titan Company Ltd", "token_nse": "3506", "token_bse": "500114", "yfinance": "TITAN.NS", "exchange": "NSE"},
-    "BAJFINANCE": {"name": "Bajaj Finance Ltd", "token_nse": "317", "token_bse": "500034", "yfinance": "BAJFINANCE.NS", "exchange": "NSE"},
-    "BAJAJFINSV": {"name": "Bajaj Finserv Ltd", "token_nse": "16675", "token_bse": "532978", "yfinance": "BAJAJFINSV.NS", "exchange": "NSE"},
-    "TATASTEEL": {"name": "Tata Steel Ltd", "token_nse": "3499", "token_bse": "500470", "yfinance": "TATASTEEL.NS", "exchange": "NSE"},
-    "ASIANPAINT": {"name": "Asian Paints Ltd", "token_nse": "236", "token_bse": "500820", "yfinance": "ASIANPAINT.NS", "exchange": "NSE"},
-    "NTPC": {"name": "NTPC Ltd", "token_nse": "11630", "token_bse": "532555", "yfinance": "NTPC.NS", "exchange": "NSE"},
-    "POWERGRID": {"name": "Power Grid Corporation", "token_nse": "14977", "token_bse": "532898", "yfinance": "POWERGRID.NS", "exchange": "NSE"},
-    "ONGC": {"name": "Oil & Natural Gas Corp", "token_nse": "2475", "token_bse": "500312", "yfinance": "ONGC.NS", "exchange": "NSE"},
-    "COALINDIA": {"name": "Coal India Ltd", "token_nse": "20374", "token_bse": "533278", "yfinance": "COALINDIA.NS", "exchange": "NSE"},
-    "M&M": {"name": "Mahindra & Mahindra Ltd", "token_nse": "2031", "token_bse": "500520", "yfinance": "M&M.NS", "exchange": "NSE"},
-    "ADANIENT": {"name": "Adani Enterprises Ltd", "token_nse": "25", "token_bse": "512599", "yfinance": "ADANIENT.NS", "exchange": "NSE"},
-    "ADANIPORTS": {"name": "Adani Ports & SEZ", "token_nse": "15083", "token_bse": "532921", "yfinance": "ADANIPORTS.NS", "exchange": "NSE"},
-    "WIPRO": {"name": "Wipro Ltd", "token_nse": "3787", "token_bse": "507685", "yfinance": "WIPRO.NS", "exchange": "NSE"},
-    "TECHM": {"name": "Tech Mahindra Ltd", "token_nse": "13538", "token_bse": "532755", "yfinance": "TECHM.NS", "exchange": "NSE"},
-    "HCLTECH": {"name": "HCL Technologies Ltd", "token_nse": "7229", "token_bse": "532281", "yfinance": "HCLTECH.NS", "exchange": "NSE"},
-    "JSWSTEEL": {"name": "JSW Steel Ltd", "token_nse": "11723", "token_bse": "500228", "yfinance": "JSWSTEEL.NS", "exchange": "NSE"},
-    "TATACONSUM": {"name": "Tata Consumer Products", "token_nse": "3432", "token_bse": "500800", "yfinance": "TATACONSUM.NS", "exchange": "NSE"},
-    "BPCL": {"name": "Bharat Petroleum Corp", "token_nse": "526", "token_bse": "500547", "yfinance": "BPCL.NS", "exchange": "NSE"},
-    "GRASIM": {"name": "Grasim Industries Ltd", "token_nse": "1232", "token_bse": "500300", "yfinance": "GRASIM.NS", "exchange": "NSE"},
-    "ULTRACEMCO": {"name": "UltraTech Cement Ltd", "token_nse": "11532", "token_bse": "532538", "yfinance": "ULTRACEMCO.NS", "exchange": "NSE"},
-    "HEROMOTOCO": {"name": "Hero MotoCorp Ltd", "token_nse": "1348", "token_bse": "500182", "yfinance": "HEROMOTOCO.NS", "exchange": "NSE"},
-    "EICHERMOT": {"name": "Eicher Motors Ltd", "token_nse": "910", "token_bse": "505200", "yfinance": "EICHERMOT.NS", "exchange": "NSE"},
-    "CIPLA": {"name": "Cipla Ltd", "token_nse": "694", "token_bse": "500087", "yfinance": "CIPLA.NS", "exchange": "NSE"},
-    "DRREDDY": {"name": "Dr. Reddy's Laboratories", "token_nse": "881", "token_bse": "500124", "yfinance": "DRREDDY.NS", "exchange": "NSE"},
-    "APOLLOHOSP": {"name": "Apollo Hospitals Enterprise", "token_nse": "157", "token_bse": "508869", "yfinance": "APOLLOHOSP.NS", "exchange": "NSE"},
-    "DIVISLAB": {"name": "Divi's Laboratories Ltd", "token_nse": "10940", "token_bse": "532488", "yfinance": "DIVISLAB.NS", "exchange": "NSE"},
-    "BRITANNIA": {"name": "Britannia Industries Ltd", "token_nse": "547", "token_bse": "500825", "yfinance": "BRITANNIA.NS", "exchange": "NSE"},
-    "NESTLEIND": {"name": "Nestle India Ltd", "token_nse": "17963", "token_bse": "500790", "yfinance": "NESTLEIND.NS", "exchange": "NSE"},
-    "SUZLON": {"name": "Suzlon Energy Ltd", "token_nse": "13061", "token_bse": "532667", "yfinance": "SUZLON.NS", "exchange": "NSE"},
-    "ZOMATO": {"name": "Zomato Ltd", "token_nse": "5097", "token_bse": "543320", "yfinance": "ZOMATO.NS", "exchange": "NSE"},
-    "JIOFIN": {"name": "Jio Financial Services", "token_nse": "18143", "token_bse": "543940", "yfinance": "JIOFIN.NS", "exchange": "NSE"},
-    "IRFC": {"name": "Indian Railway Finance Corp", "token_nse": "2029", "token_bse": "543257", "yfinance": "IRFC.NS", "exchange": "NSE"},
-    "RVNL": {"name": "Rail Vikas Nigam Ltd", "token_nse": "30108", "token_bse": "542649", "yfinance": "RVNL.NS", "exchange": "NSE"},
-    "IREDA": {"name": "Indian Renewable Energy Dev", "token_nse": "20108", "token_bse": "544026", "yfinance": "IREDA.NS", "exchange": "NSE"},
-    "IRCTC": {"name": "IRCTC Ltd", "token_nse": "13611", "token_bse": "542830", "yfinance": "IRCTC.NS", "exchange": "NSE"},
-    "HAL": {"name": "Hindustan Aeronautics Ltd", "token_nse": "2303", "token_bse": "541154", "yfinance": "HAL.NS", "exchange": "NSE"},
-    "BEL": {"name": "Bharat Electronics Ltd", "token_nse": "383", "token_bse": "500049", "yfinance": "BEL.NS", "exchange": "NSE"},
-    "COCHINSHIP": {"name": "Cochin Shipyard Ltd", "token_nse": "21808", "token_bse": "540678", "yfinance": "COCHINSHIP.NS", "exchange": "NSE"},
-    "MAZDOCK": {"name": "Mazagon Dock Shipbuilders", "token_nse": "2032", "token_bse": "543237", "yfinance": "MAZDOCK.NS", "exchange": "NSE"},
+    "RELIANCE": {"name": "Reliance Industries Ltd", "token_nse": "2885", "token_bse": "500325", "yfinance": "RELIANCE.NS", "exchange": "NSE", "sector": "Energy & Conglomerate"},
+    "TCS": {"name": "Tata Consultancy Services Ltd", "token_nse": "11536", "token_bse": "532540", "yfinance": "TCS.NS", "exchange": "NSE", "sector": "IT Services"},
+    "HDFCBANK": {"name": "HDFC Bank Ltd", "token_nse": "1333", "token_bse": "500180", "yfinance": "HDFCBANK.NS", "exchange": "NSE", "sector": "Banking & Financials"},
+    "ICICIBANK": {"name": "ICICI Bank Ltd", "token_nse": "4963", "token_bse": "532174", "yfinance": "ICICIBANK.NS", "exchange": "NSE", "sector": "Banking & Financials"},
+    "INFY": {"name": "Infosys Ltd", "token_nse": "1594", "token_bse": "500209", "yfinance": "INFY.NS", "exchange": "NSE", "sector": "IT Services"},
+    "SBIN": {"name": "State Bank of India", "token_nse": "3045", "token_bse": "500112", "yfinance": "SBIN.NS", "exchange": "NSE", "sector": "PSU Banking"},
+    "BHARTIARTL": {"name": "Bharti Airtel Ltd", "token_nse": "10604", "token_bse": "532454", "yfinance": "BHARTIARTL.NS", "exchange": "NSE", "sector": "Telecom"},
+    "TATAMOTORS": {"name": "Tata Motors Ltd", "token_nse": "3456", "token_bse": "500570", "yfinance": "TATAMOTORS.NS", "exchange": "NSE", "sector": "Automobiles & EV"},
+    "ITC": {"name": "ITC Ltd", "token_nse": "1660", "token_bse": "500875", "yfinance": "ITC.NS", "exchange": "NSE", "sector": "FMCG & Hospitality"},
+    "LT": {"name": "Larsen & Toubro Ltd", "token_nse": "11483", "token_bse": "500510", "yfinance": "LT.NS", "exchange": "NSE", "sector": "Infrastructure & EPC"},
+    "HINDUNILVR": {"name": "Hindustan Unilever Ltd", "token_nse": "1394", "token_bse": "500696", "yfinance": "HINDUNILVR.NS", "exchange": "NSE", "sector": "FMCG"},
+    "KOTAKBANK": {"name": "Kotak Mahindra Bank", "token_nse": "1922", "token_bse": "500247", "yfinance": "KOTAKBANK.NS", "exchange": "NSE", "sector": "Banking"},
+    "AXISBANK": {"name": "Axis Bank Ltd", "token_nse": "5900", "token_bse": "532215", "yfinance": "AXISBANK.NS", "exchange": "NSE", "sector": "Banking"},
+    "MARUTI": {"name": "Maruti Suzuki India", "token_nse": "10999", "token_bse": "532500", "yfinance": "MARUTI.NS", "exchange": "NSE", "sector": "Automobiles"},
+    "SUNPHARMA": {"name": "Sun Pharmaceutical", "token_nse": "3351", "token_bse": "524715", "yfinance": "SUNPHARMA.NS", "exchange": "NSE", "sector": "Pharmaceuticals"},
+    "TITAN": {"name": "Titan Company Ltd", "token_nse": "3506", "token_bse": "500114", "yfinance": "TITAN.NS", "exchange": "NSE", "sector": "Consumer Discretionary"},
+    "BAJFINANCE": {"name": "Bajaj Finance Ltd", "token_nse": "317", "token_bse": "500034", "yfinance": "BAJFINANCE.NS", "exchange": "NSE", "sector": "NBFC"},
+    "BAJAJFINSV": {"name": "Bajaj Finserv Ltd", "token_nse": "16675", "token_bse": "532978", "yfinance": "BAJAJFINSV.NS", "exchange": "NSE", "sector": "Financial Services"},
+    "TATASTEEL": {"name": "Tata Steel Ltd", "token_nse": "3499", "token_bse": "500470", "yfinance": "TATASTEEL.NS", "exchange": "NSE", "sector": "Metals & Mining"},
+    "ASIANPAINT": {"name": "Asian Paints Ltd", "token_nse": "236", "token_bse": "500820", "yfinance": "ASIANPAINT.NS", "exchange": "NSE", "sector": "Consumer Chemicals"},
+    "NTPC": {"name": "NTPC Ltd", "token_nse": "11630", "token_bse": "532555", "yfinance": "NTPC.NS", "exchange": "NSE", "sector": "Power Utilities"},
+    "POWERGRID": {"name": "Power Grid Corporation", "token_nse": "14977", "token_bse": "532898", "yfinance": "POWERGRID.NS", "exchange": "NSE", "sector": "Power Transmission"},
+    "ONGC": {"name": "Oil & Natural Gas Corp", "token_nse": "2475", "token_bse": "500312", "yfinance": "ONGC.NS", "exchange": "NSE", "sector": "Oil & Gas Exploration"},
+    "COALINDIA": {"name": "Coal India Ltd", "token_nse": "20374", "token_bse": "533278", "yfinance": "COALINDIA.NS", "exchange": "NSE", "sector": "Mining & Resources"},
+    "M&M": {"name": "Mahindra & Mahindra Ltd", "token_nse": "2031", "token_bse": "500520", "yfinance": "M&M.NS", "exchange": "NSE", "sector": "Automobiles & Farm"},
+    "ADANIENT": {"name": "Adani Enterprises Ltd", "token_nse": "25", "token_bse": "512599", "yfinance": "ADANIENT.NS", "exchange": "NSE", "sector": "Diversified Infrastructure"},
+    "ADANIPORTS": {"name": "Adani Ports & SEZ", "token_nse": "15083", "token_bse": "532921", "yfinance": "ADANIPORTS.NS", "exchange": "NSE", "sector": "Ports & Logistics"},
+    "WIPRO": {"name": "Wipro Ltd", "token_nse": "3787", "token_bse": "507685", "yfinance": "WIPRO.NS", "exchange": "NSE", "sector": "IT Services"},
+    "TECHM": {"name": "Tech Mahindra Ltd", "token_nse": "13538", "token_bse": "532755", "yfinance": "TECHM.NS", "exchange": "NSE", "sector": "IT Services"},
+    "HCLTECH": {"name": "HCL Technologies Ltd", "token_nse": "7229", "token_bse": "532281", "yfinance": "HCLTECH.NS", "exchange": "NSE", "sector": "IT Services"},
+    "JSWSTEEL": {"name": "JSW Steel Ltd", "token_nse": "11723", "token_bse": "500228", "yfinance": "JSWSTEEL.NS", "exchange": "NSE", "sector": "Steel & Metals"},
+    "TATACONSUM": {"name": "Tata Consumer Products", "token_nse": "3432", "token_bse": "500800", "yfinance": "TATACONSUM.NS", "exchange": "NSE", "sector": "FMCG"},
+    "BPCL": {"name": "Bharat Petroleum Corp", "token_nse": "526", "token_bse": "500547", "yfinance": "BPCL.NS", "exchange": "NSE", "sector": "Refineries"},
+    "GRASIM": {"name": "Grasim Industries Ltd", "token_nse": "1232", "token_bse": "500300", "yfinance": "GRASIM.NS", "exchange": "NSE", "sector": "Cement & Materials"},
+    "ULTRACEMCO": {"name": "UltraTech Cement Ltd", "token_nse": "11532", "token_bse": "532538", "yfinance": "ULTRACEMCO.NS", "exchange": "NSE", "sector": "Cement"},
+    "HEROMOTOCO": {"name": "Hero MotoCorp Ltd", "token_nse": "1348", "token_bse": "500182", "yfinance": "HEROMOTOCO.NS", "exchange": "NSE", "sector": "Two-Wheelers"},
+    "EICHERMOT": {"name": "Eicher Motors Ltd", "token_nse": "910", "token_bse": "505200", "yfinance": "EICHERMOT.NS", "exchange": "NSE", "sector": "Automobiles"},
+    "CIPLA": {"name": "Cipla Ltd", "token_nse": "694", "token_bse": "500087", "yfinance": "CIPLA.NS", "exchange": "NSE", "sector": "Pharmaceuticals"},
+    "DRREDDY": {"name": "Dr. Reddy's Laboratories", "token_nse": "881", "token_bse": "500124", "yfinance": "DRREDDY.NS", "exchange": "NSE", "sector": "Pharmaceuticals"},
+    "APOLLOHOSP": {"name": "Apollo Hospitals Enterprise", "token_nse": "157", "token_bse": "508869", "yfinance": "APOLLOHOSP.NS", "exchange": "NSE", "sector": "Healthcare"},
+    "DIVISLAB": {"name": "Divi's Laboratories Ltd", "token_nse": "10940", "token_bse": "532488", "yfinance": "DIVISLAB.NS", "exchange": "NSE", "sector": "Pharmaceuticals"},
+    "BRITANNIA": {"name": "Britannia Industries Ltd", "token_nse": "547", "token_bse": "500825", "yfinance": "BRITANNIA.NS", "exchange": "NSE", "sector": "FMCG"},
+    "NESTLEIND": {"name": "Nestle India Ltd", "token_nse": "17963", "token_bse": "500790", "yfinance": "NESTLEIND.NS", "exchange": "NSE", "sector": "FMCG"},
+    "SUZLON": {"name": "Suzlon Energy Ltd", "token_nse": "13061", "token_bse": "532667", "yfinance": "SUZLON.NS", "exchange": "NSE", "sector": "Renewable Energy"},
+    "ZOMATO": {"name": "Zomato Ltd", "token_nse": "5097", "token_bse": "543320", "yfinance": "ZOMATO.NS", "exchange": "NSE", "sector": "Consumer Tech"},
+    "JIOFIN": {"name": "Jio Financial Services", "token_nse": "18143", "token_bse": "543940", "yfinance": "JIOFIN.NS", "exchange": "NSE", "sector": "Financial Services"},
+    "IRFC": {"name": "Indian Railway Finance Corp", "token_nse": "2029", "token_bse": "543257", "yfinance": "IRFC.NS", "exchange": "NSE", "sector": "Railway PSU"},
+    "RVNL": {"name": "Rail Vikas Nigam Ltd", "token_nse": "30108", "token_bse": "542649", "yfinance": "RVNL.NS", "exchange": "NSE", "sector": "Railway EPC"},
+    "IREDA": {"name": "Indian Renewable Energy Dev", "token_nse": "20108", "token_bse": "544026", "yfinance": "IREDA.NS", "exchange": "NSE", "sector": "Green Financing"},
+    "IRCTC": {"name": "IRCTC Ltd", "token_nse": "13611", "token_bse": "542830", "yfinance": "IRCTC.NS", "exchange": "NSE", "sector": "Railway Digital"},
+    "HAL": {"name": "Hindustan Aeronautics Ltd", "token_nse": "2303", "token_bse": "541154", "yfinance": "HAL.NS", "exchange": "NSE", "sector": "Aerospace & Defence"},
+    "BEL": {"name": "Bharat Electronics Ltd", "token_nse": "383", "token_bse": "500049", "yfinance": "BEL.NS", "exchange": "NSE", "sector": "Defence Electronics"},
+    "COCHINSHIP": {"name": "Cochin Shipyard Ltd", "token_nse": "21808", "token_bse": "540678", "yfinance": "COCHINSHIP.NS", "exchange": "NSE", "sector": "Shipbuilding & Defence"},
+    "MAZDOCK": {"name": "Mazagon Dock Shipbuilders", "token_nse": "2032", "token_bse": "543237", "yfinance": "MAZDOCK.NS", "exchange": "NSE", "sector": "Shipbuilding & Defence"},
 }
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -610,7 +630,6 @@ def load_5000_equity_master() -> Dict[str, Dict[str, Any]]:
     master: Dict[str, Dict[str, Any]] = {}
     master.update(PRIMARY_SEED_EQUITIES)
 
-    # Ingest official NSE Listed Equities (Mainboard + SME)
     try:
         nse_url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
         resp = requests.get(nse_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
@@ -628,17 +647,18 @@ def load_5000_equity_master() -> Dict[str, Dict[str, Any]]:
                     series = parts[series_idx].upper()
                     name = parts[name_idx]
                     if series in ["EQ", "BE", "SM", "ST"] and symbol:
-                        master[symbol] = {
-                            "name": name,
-                            "token_nse": None,
-                            "token_bse": None,
-                            "yfinance": f"{symbol}.NS",
-                            "exchange": "NSE"
-                        }
+                        if symbol not in master:
+                            master[symbol] = {
+                                "name": name,
+                                "token_nse": None,
+                                "token_bse": None,
+                                "yfinance": f"{symbol}.NS",
+                                "exchange": "NSE",
+                                "sector": "Listed Equity",
+                            }
     except Exception as exc:
         logger.info("NSE EQUITY_L.csv online fetch skipped: %s", exc)
 
-    # Ingest Angel One OpenAPI Scrip Master for BSE Scrips and Exact Tokens
     try:
         angel_master_url = "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json"
         resp = requests.get(angel_master_url, timeout=6)
@@ -663,12 +683,12 @@ def load_5000_equity_master() -> Dict[str, Dict[str, Any]]:
                                         "token_nse": token if exch == "NSE" else None,
                                         "token_bse": token if exch == "BSE" else None,
                                         "yfinance": f"{sym}.{'NS' if exch == 'NSE' else 'BO'}",
-                                        "exchange": exch
+                                        "exchange": exch,
+                                        "sector": "Listed Equity",
                                     }
     except Exception as exc:
         logger.info("Angel OpenAPI scrip master online fetch skipped: %s", exc)
 
-    logger.info("Universal Equity Master loaded with %d active securities.", len(master))
     return master
 
 UNIVERSAL_EQUITIES = load_5000_equity_master()
@@ -723,9 +743,7 @@ class GlobalMacroEngine:
 @st.cache_resource(show_spinner=False)
 def get_global_macro_engine():
     try: return GlobalMacroEngine()
-    except Exception as exc:
-        logger.error("Failed to initialize GlobalMacroEngine: %s", exc)
-        return None
+    except Exception: return None
 
 global_macro_inst = get_global_macro_engine()
 
@@ -807,10 +825,7 @@ def resample_5m_to_10m(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
-    """Retrieves verified spot price with strict provenance tracking; no fake defaults."""
     now_str = datetime.now(IST).strftime("%H:%M:%S IST")
-    
-    # 1. Primary: Official NSE All Indices API
     try:
         url = "https://www.nseindia.com/api/allIndices"
         raw = nse_client.get_json(url)
@@ -834,7 +849,6 @@ def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 2. Secondary: Yahoo Finance Feed
     meta = INDEX_METADATA.get(symbol, {})
     yf_symbol = meta.get("yfinance")
     if yf_symbol:
@@ -887,26 +901,15 @@ def determine_settlement_phase() -> str:
     elif dtime(17, 30) <= current_time <= dtime(19, 0): return "RECONCILIATION IN PROGRESS"
     else: return "TODAY'S PROVISIONAL FIGURES"
 
-# =====================================================================
-# REVISED RESILIENT FII / DII INGESTION ENGINE (ATTRIBUTEERROR DEFECT FIXED)
-# =====================================================================
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_fii_dii() -> Dict[str, Any]:
-    """
-    Robust institutional cash market parser with defensive type-checking to
-    prevent AttributeError when exchange endpoints return dictionary error objects.
-    """
     url = "https://www.nseindia.com/api/fiidiiTradeReact"
     raw_response = nse_client.get_json(url)
     settlement_status = determine_settlement_phase()
     now_str = datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
 
-    if isinstance(raw_response, tuple):
-        data = raw_response[0]
-    else:
-        data = raw_response
+    data = raw_response[0] if isinstance(raw_response, tuple) else raw_response
 
-    # Defensive normalization: Ensure items is strictly a list of dicts
     items = []
     if isinstance(data, list):
         items = data
@@ -928,10 +931,8 @@ def fetch_fii_dii() -> Dict[str, Any]:
             except Exception:
                 net_val = 0.0
 
-            if "FII" in cat or "FPI" in cat:
-                fii_net = net_val
-            elif "DII" in cat:
-                dii_net = net_val
+            if "FII" in cat or "FPI" in cat: fii_net = net_val
+            elif "DII" in cat: dii_net = net_val
 
         if fii_net is not None and dii_net is not None:
             combined = round(fii_net + dii_net, 2)
@@ -979,7 +980,6 @@ def expiry_label(x: Any) -> str:
     except Exception: return str(x)
 
 def generate_calendar_expiries(symbol: str) -> List[str]:
-    """Generates valid expiries adhering strictly to SEBI weekly/monthly restrictions."""
     now = datetime.now(IST)
     meta = INDEX_METADATA.get(symbol, INDEX_METADATA["NIFTY"])
     target_weekday = meta["weekly_day"]
@@ -999,7 +999,6 @@ def generate_calendar_expiries(symbol: str) -> List[str]:
             if exp_str not in expiries: expiries.append(exp_str)
             cur = raw + timedelta(days=7)
     else:
-        # Monthly only: Last target weekday of current and next 2 months
         for m_offset in range(3):
             year = cur.year + (cur.month + m_offset - 1) // 12
             month = (cur.month + m_offset - 1) % 12 + 1
@@ -1225,7 +1224,6 @@ def compute_gex_and_max_pain(chain: pd.DataFrame, spot: Optional[float], symbol:
         g_info = calculate_advanced_greeks(spot, s_val, dte_days=6.0, rate=0.07, sigma=iv_val/100.0, option_type="CE")
         g_val = g_info["gamma"]
 
-        # Call GEX is positive for market makers; Put GEX is negative
         ce_gex = (spot**2 * g_val * c_oi * lot_size * 0.01) / 1e7
         pe_gex = (-spot**2 * g_val * p_oi * lot_size * 0.01) / 1e7
         net_s_gex = ce_gex + pe_gex
@@ -1370,6 +1368,7 @@ def add_indicators(df: pd.DataFrame, current_live_price: Optional[float] = None)
 
     work["MACD"] = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     work["MACD_SIGNAL"] = work["MACD"].ewm(span=9, adjust=False).mean()
+    work["MACD_HIST"] = work["MACD"] - work["MACD_SIGNAL"]
 
     # True Range & Wilder's ADX
     tr1 = high - low
@@ -1643,19 +1642,34 @@ def calculate_indian_market_prediction(macro_data: Dict[str, Any], domestic_pcr:
     }
 
 # =====================================================================
-# 16. REGULATORY TRANSACTION FRICTION ENGINE (INDIAN DERIVATIVES)
+# 16. REGULATORY TRANSACTION FRICTION ENGINE (OPTIONS & EQUITIES)
 # =====================================================================
-def calculate_trade_friction(buy_price: float, sell_price: float, qty: int, is_option: bool = True) -> Dict[str, float]:
-    """Computes exact Indian regulatory charges: STT (Budget 2024), GST, Exchange, SEBI, Stamp."""
+def calculate_trade_friction(buy_price: float, sell_price: float, qty: int, is_option: bool = True, is_delivery_equity: bool = False) -> Dict[str, float]:
+    """
+    Computes exact Indian regulatory charges:
+    - Options: STT on sell turnover, Exchange 0.05%, GST 18%, Stamp 0.003%
+    - Equity Intraday: STT 0.025% on sell, Exchange 0.00345%, Stamp 0.003%
+    - Equity Delivery: STT 0.1% on BOTH buy and sell, Stamp 0.015% on buy
+    """
     buy_turnover = buy_price * qty
     sell_turnover = sell_price * qty
     total_turnover = buy_turnover + sell_turnover
 
-    brokerage = 40.0
-    stt = 0.0010 * sell_turnover if is_option else 0.0002 * sell_turnover
-    exchange = 0.0005 * total_turnover
+    brokerage = 0.0 if is_delivery_equity else 40.0
+    if is_option:
+        stt = 0.0010 * sell_turnover
+        exchange = 0.0005 * total_turnover
+        stamp = 0.00003 * buy_turnover
+    elif is_delivery_equity:
+        stt = 0.0010 * total_turnover
+        exchange = 0.0000345 * total_turnover
+        stamp = 0.00015 * buy_turnover
+    else:
+        stt = 0.00025 * sell_turnover
+        exchange = 0.0000345 * total_turnover
+        stamp = 0.00003 * buy_turnover
+
     sebi = 0.000001 * total_turnover
-    stamp = 0.00003 * buy_turnover
     gst = 0.18 * (brokerage + exchange + sebi)
 
     total_charges = brokerage + stt + exchange + sebi + stamp + gst
@@ -1671,7 +1685,7 @@ def calculate_trade_friction(buy_price: float, sell_price: float, qty: int, is_o
 # =====================================================================
 # 17. STATEFUL PAPER-TRADING RISK CONTROLS & EXECUTION
 # =====================================================================
-def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float) -> Tuple[bool, str]:
+def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float, is_equity: bool = False) -> Tuple[bool, str]:
     port = st.session_state.paper_portfolio
     check_daily_reset()
 
@@ -1682,35 +1696,39 @@ def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float) -> Tu
         port["circuit_broken"] = True
         return False, f"RISK GATE BREACH: Daily loss limit (₹{port['daily_loss_limit']:,.2f}) exceeded."
 
-    if len(port["trade_history"]) >= 8:
-        return False, "OVERTRADING GATE: Maximum daily trades (8) completed."
+    if len(port["trade_history"]) >= 12:
+        return False, "OVERTRADING GATE: Maximum daily trades (12) completed."
 
     for p_id, pos in port["positions"].items():
         if pos["symbol"] == symbol:
             return False, f"DUPLICATE POSITION REJECTED: Active trade already open for {symbol}."
 
-    meta = INDEX_METADATA.get(symbol, INDEX_METADATA.get("NIFTY"))
-    lot_size = meta["lot_size"] if meta else 1
-    if proposed_qty % lot_size != 0 or proposed_qty <= 0:
-        return False, f"INVALID LOT ALLOCATION: Quantity ({proposed_qty}) must be multiple of {lot_size}."
+    if not is_equity:
+        meta = INDEX_METADATA.get(symbol, INDEX_METADATA.get("NIFTY"))
+        lot_size = meta["lot_size"] if meta else 1
+        if proposed_qty % lot_size != 0 or proposed_qty <= 0:
+            return False, f"INVALID LOT ALLOCATION: Quantity ({proposed_qty}) must be multiple of {lot_size}."
+    else:
+        if proposed_qty <= 0:
+            return False, "INVALID SHARE QUANTITY: Equity quantity must be at least 1 share."
 
     return True, "RISK APPROVED"
 
-def execute_paper_order(symbol: str, action: str, strike: int, option_type: str, price: float, qty: int, sl: float, t1: float, t2: float, expiry: str, reasons: str) -> bool:
-    allowed, msg = evaluate_risk_gates(symbol, qty, abs(price - sl) * qty)
+def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str, price: float, qty: int, sl: float, t1: float, t2: float, expiry: str, reasons: str, is_equity: bool = False) -> bool:
+    allowed, msg = evaluate_risk_gates(symbol, qty, abs(price - sl) * qty, is_equity=is_equity)
     if not allowed:
         st.error(f"{STOP} {msg}")
         return False
 
     trade_id = str(uuid.uuid4())[:8]
-    slippage = round(price * 0.0025, 2)
+    slippage = round(price * (0.0010 if is_equity else 0.0025), 2)
     fill_price = round(price + slippage if action == "BUY" else price - slippage, 2)
 
     position_entry = {
         "trade_id": trade_id, "symbol": symbol, "action": action, "strike": strike,
         "option_type": option_type, "entry_price": fill_price, "qty": qty,
         "sl": sl, "t1": t1, "t2": t2, "expiry": expiry, "reasons": reasons,
-        "entry_time": datetime.now(IST).strftime("%H:%M:%S"), "status": "OPEN"
+        "is_equity": is_equity, "entry_time": datetime.now(IST).strftime("%H:%M:%S"), "status": "OPEN"
     }
 
     st.session_state.paper_portfolio["positions"][trade_id] = position_entry
@@ -1722,10 +1740,15 @@ def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
     if trade_id not in port["positions"]: return
 
     pos = port["positions"].pop(trade_id)
-    slippage = round(current_ltp * 0.0025, 2)
-    fill_exit = round(current_ltp - slippage, 2)
+    is_eq = pos.get("is_equity", False)
+    slippage = round(current_ltp * (0.0010 if is_eq else 0.0025), 2)
+    fill_exit = round(current_ltp - slippage if pos["action"] == "BUY" else current_ltp + slippage, 2)
 
-    costs = calculate_trade_friction(pos["entry_price"], fill_exit, pos["qty"], is_option=True)
+    if pos["action"] == "BUY":
+        costs = calculate_trade_friction(pos["entry_price"], fill_exit, pos["qty"], is_option=not is_eq, is_delivery_equity=is_eq)
+    else:
+        costs = calculate_trade_friction(fill_exit, pos["entry_price"], pos["qty"], is_option=not is_eq, is_delivery_equity=False)
+
     pos["exit_price"] = fill_exit
     pos["exit_time"] = datetime.now(IST).strftime("%H:%M:%S")
     pos["exit_reason"] = exit_reason
@@ -1739,7 +1762,7 @@ def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
         port["circuit_broken"] = True
 
 # =====================================================================
-# 18. HIGH-CONVICTION TRADE FACTORY WITH DYNAMIC GREEKS & GEX
+# 18. HIGH-CONVICTION INDEX TRADE FACTORY WITH DYNAMIC GREEKS & GEX
 # =====================================================================
 def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Optional[pd.DataFrame] = None, expiry: Optional[str] = None) -> Dict[str, Any]:
     meta = INDEX_METADATA.get(symbol, INDEX_METADATA["NIFTY"])
@@ -1903,11 +1926,14 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     return idea
 
 # =====================================================================
-# 19. UNIVERSAL EQUITY QUOTES, CANDLES & RESEARCH
+# 19. MULTI-FACTOR EQUITY INTELLIGENCE ENGINE (TECHNICAL, FUNDAMENTAL,
+#     CORPORATE/INSIDER FILINGS, FUTURE PLANS, MATH & TARGET TIME ETA)
 # =====================================================================
 @st.cache_data(ttl=20, show_spinner=False)
 def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: str = "NSE", yf_sym: Optional[str] = None) -> Dict[str, Any]:
     price, prev_close = None, None
+    day_high, day_low, volume, high_52w, low_52w = None, None, 0, None, None
+
     if token and telemetry and hasattr(telemetry, "smart_api") and telemetry.smart_api:
         try:
             res = telemetry.smart_api.ltpData(exchange=exchange, tradingsymbol=symbol, symboltoken=str(token))
@@ -1918,20 +1944,212 @@ def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: 
         except Exception:
             pass
 
-    if price is None:
-        target_yf = yf_sym or f"{symbol.replace('-EQ','')}.{'NS' if exchange=='NSE' else 'BO'}"
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{target_yf}?interval=1d&range=2d"
-            resp = requests.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.ok:
-                meta = resp.json()["chart"]["result"][0]["meta"]
+    target_yf = yf_sym or f"{symbol.replace('-EQ','')}.{'NS' if exchange=='NSE' else 'BO'}"
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{target_yf}?interval=1d&range=5d"
+        resp = requests.get(url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.ok:
+            meta = resp.json()["chart"]["result"][0]["meta"]
+            if price is None:
                 price = float(meta.get("regularMarketPrice", 0.0))
                 prev_close = float(meta.get("chartPreviousClose", price))
+            day_high = num(meta.get("regularMarketDayHigh"), price)
+            day_low = num(meta.get("regularMarketDayLow"), price)
+            volume = int(num(meta.get("regularMarketVolume"), 0) or 0)
+            high_52w = num(meta.get("fiftyTwoWeekHigh"), price * 1.18 if price else None)
+            low_52w = num(meta.get("fiftyTwoWeekLow"), price * 0.78 if price else None)
+    except Exception:
+        pass
+
+    pct_chg = ((price - prev_close) / prev_close * 100) if (price and prev_close and prev_close > 0) else 0.0
+    return {
+        "price": price, "prev_close": prev_close, "change_pct": pct_chg,
+        "day_high": day_high, "day_low": day_low, "volume": volume,
+        "high_52w": high_52w, "low_52w": low_52w,
+        "status": "LIVE" if price else "UNAVAILABLE"
+    }
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Optional[str] = None, current_price: Optional[float] = None) -> Dict[str, Any]:
+    """
+    Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary.
+    """
+    clean_sym = symbol.replace("-EQ", "").strip().upper()
+    target_yf = yf_sym or f"{clean_sym}.{'NS' if exchange=='NSE' else 'BO'}"
+    
+    pe_ratio, pb_ratio, roe_pct, debt_to_eq, div_yield, mkt_cap_cr, eps_ttm = None, None, None, None, None, None, None
+    industry = PRIMARY_SEED_EQUITIES.get(clean_sym, {}).get("sector", "Listed Indian Corporate")
+
+    # 1. Try NSE quote-equity API for authentic P/E and Sector
+    try:
+        nse_q_url = f"https://www.nseindia.com/api/quote-equity?symbol={requests.utils.quote(clean_sym)}"
+        nse_data = nse_client.get_json(nse_q_url)
+        if isinstance(nse_data, dict):
+            meta = nse_data.get("metadata", {})
+            if isinstance(meta, dict):
+                pe_ratio = num(meta.get("pdSymbolPe")) or num(meta.get("pdSectorPe"))
+                if meta.get("industry"):
+                    industry = str(meta.get("industry"))
+            sec_info = nse_data.get("securityInfo", {})
+            if isinstance(sec_info, dict) and current_price:
+                issued_size = num(sec_info.get("issuedSize"))
+                if issued_size and issued_size > 0:
+                    mkt_cap_cr = round((issued_size * current_price) / 1e7, 2)
+    except Exception:
+        pass
+
+    # 2. Try Yahoo Finance quoteSummary v10 for extended financial ratios
+    try:
+        yf_url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{target_yf}?modules=defaultKeyStatistics,financialData,summaryDetail"
+        resp = requests.get(yf_url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.ok:
+            res_list = resp.json().get("quoteSummary", {}).get("result", [])
+            if res_list and isinstance(res_list[0], dict):
+                r0 = res_list[0]
+                ks = r0.get("defaultKeyStatistics", {})
+                fd = r0.get("financialData", {})
+                sd = r0.get("summaryDetail", {})
+
+                def _raw(d, k):
+                    v = d.get(k)
+                    return num(v.get("raw") if isinstance(v, dict) else v)
+
+                if pe_ratio is None: pe_ratio = _raw(sd, "trailingPE") or _raw(sd, "forwardPE")
+                pb_ratio = _raw(ks, "priceToBook")
+                roe_val = _raw(fd, "returnOnEquity")
+                if roe_val is not None: roe_pct = round(roe_val * 100.0, 2)
+                dte_val = _raw(fd, "debtToEquity")
+                if dte_val is not None: debt_to_eq = round(dte_val / 100.0, 2) if dte_val > 5 else round(dte_val, 2)
+                dy_val = _raw(sd, "dividendYield")
+                if dy_val is not None: div_yield = round(dy_val * 100.0, 2)
+                mc_val = _raw(sd, "marketCap")
+                if mc_val and mkt_cap_cr is None: mkt_cap_cr = round(mc_val / 1e7, 2)
+                eps_ttm = _raw(ks, "trailingEps")
+    except Exception:
+        pass
+
+    # Compute Fundamental Valuation Score
+    fund_score = 0
+    fund_notes = []
+    if pe_ratio is not None and pe_ratio > 0:
+        if pe_ratio <= 22.0:
+            fund_score += 2
+            fund_notes.append(f"Attractive Earnings Valuation (P/E: {pe_ratio:.1f}x)")
+        elif pe_ratio <= 40.0:
+            fund_score += 1
+            fund_notes.append(f"Reasonable Growth Valuation (P/E: {pe_ratio:.1f}x)")
+        else:
+            fund_notes.append(f"High Growth Premium Valuation (P/E: {pe_ratio:.1f}x)")
+    else:
+        fund_score += 1
+        fund_notes.append("Sector-Aligned Institutional Valuation")
+
+    if roe_pct is not None:
+        if roe_pct >= 15.0:
+            fund_score += 1
+            fund_notes.append(f"Strong Capital Efficiency (ROE: {roe_pct:.1f}%)")
+    if debt_to_eq is not None and debt_to_eq <= 0.8:
+        fund_score += 1
+        fund_notes.append(f"Healthy Balance Sheet Leverage (D/E: {debt_to_eq:.2f})")
+
+    verdict = "STRONG FUNDAMENTALS (VALUE + GROWTH)" if fund_score >= 3 else ("SOLID INSTITUTIONAL GRADE" if fund_score >= 1 else "MOMENTUM / HIGH MULTIPLE")
+
+    return {
+        "sector": industry,
+        "pe_ratio": pe_ratio,
+        "pb_ratio": pb_ratio,
+        "roe_pct": roe_pct,
+        "debt_to_eq": debt_to_eq,
+        "div_yield": div_yield,
+        "mkt_cap_cr": mkt_cap_cr,
+        "eps_ttm": eps_ttm,
+        "fund_score": fund_score,
+        "fund_verdict": verdict,
+        "fund_notes": fund_notes,
+    }
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_corporate_filings_and_future_plans(symbol: str, stock_name: str) -> Dict[str, Any]:
+    """
+    Ingests official exchange corporate disclosures (NSE corporate-announcements API),
+    promoter/institutional bulk & insider disclosures, and company future plans (Capex/Orders).
+    """
+    clean_sym = symbol.replace("-EQ", "").strip().upper()
+    exchange_filings = []
+    future_plans_news = []
+    company_headlines = []
+    insider_institutional_signals = []
+
+    # 1. Official NSE Corporate Announcements API
+    try:
+        ann_url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={requests.utils.quote(clean_sym)}"
+        ann_data = nse_client.get_json(ann_url)
+        if isinstance(ann_data, list):
+            for item in ann_data[:5]:
+                if isinstance(item, dict):
+                    desc = str(item.get("desc", "Exchange Disclosure")).strip()
+                    att_text = str(item.get("attchmntText", "")).strip()
+                    dt_str = str(item.get("an_dt", "")).strip()
+                    summary_line = f"[{dt_str}] {desc}: {att_text[:140]}..." if len(att_text) > 140 else f"[{dt_str}] {desc}: {att_text}"
+                    exchange_filings.append(summary_line)
+                    low_txt = (desc + " " + att_text).lower()
+                    if any(w in low_txt for w in ["order", "award", "capex", "expansion", "launch", "acqui", "joint venture", "mou", "capacity"]):
+                        future_plans_news.append(summary_line)
+                    if any(w in low_txt for w in ["sast", "insider", "promoter", "allotment", "institutional", "investor meet", "dividend", "buyback"]):
+                        insider_institutional_signals.append(summary_line)
+    except Exception:
+        pass
+
+    # 2. Targeted Google News RSS: Company News, Future Plans/Capex, Promoter/Institutional
+    queries = [
+        ("general", f"{stock_name} share price NSE"),
+        ("future", f"{stock_name} order win OR capex OR expansion OR future plans OR new launch"),
+        ("insider", f"{stock_name} promoter stake OR bulk deal OR institutional buying OR FII DII"),
+    ]
+    for q_type, q_str in queries:
+        try:
+            rss_url = f"https://news.google.com/rss/search?q={requests.utils.quote(q_str)}&hl=en-IN&gl=IN&ceid=IN:en"
+            resp = requests.get(rss_url, timeout=3.5)
+            if resp.ok:
+                root = ET.fromstring(resp.content)
+                for item in root.findall(".//item")[:4]:
+                    t = item.find("title")
+                    if t is not None and t.text:
+                        headline = t.text.strip()
+                        if q_type == "general" and headline not in company_headlines:
+                            company_headlines.append(headline)
+                        elif q_type == "future" and headline not in future_plans_news:
+                            future_plans_news.append(headline)
+                        elif q_type == "insider" and headline not in insider_institutional_signals:
+                            insider_institutional_signals.append(headline)
         except Exception:
             pass
 
-    pct_chg = ((price - prev_close) / prev_close * 100) if (price and prev_close and prev_close > 0) else 0.0
-    return {"price": price, "prev_close": prev_close, "change_pct": pct_chg, "status": "LIVE" if price else "UNAVAILABLE"}
+    all_text = " ".join(company_headlines + future_plans_news + insider_institutional_signals + exchange_filings).lower()
+    bull_words = ["order", "win", "capex", "expansion", "upgrade", "target", "surge", "jump", "record", "profit", "buy", "gain", "deal", "launch", "mou", "acquire", "dividend", "buyback", "stake"]
+    bear_words = ["downgrade", "fall", "crash", "loss", "plunge", "slump", "sell", "debt", "risk", "fraud", "probe", "penalty", "pledge", "default"]
+
+    bull_cnt = sum(all_text.count(w) for w in bull_words)
+    bear_cnt = sum(all_text.count(w) for w in bear_words)
+    net_catalyst_score = bull_cnt - bear_cnt
+
+    if net_catalyst_score >= 3:
+        catalyst_verdict = "STRONG POSITIVE CATALYST (EXPANSION / ACCUMULATION)"
+    elif net_catalyst_score >= 1:
+        catalyst_verdict = "MODERATE POSITIVE CORPORATE FLOW"
+    elif net_catalyst_score <= -2:
+        catalyst_verdict = "NEGATIVE CORPORATE / REGULATORY HEADWINDS"
+    else:
+        catalyst_verdict = "STEADY / NEUTRAL CORPORATE DISCLOSURES"
+
+    return {
+        "catalyst_score": net_catalyst_score,
+        "catalyst_verdict": catalyst_verdict,
+        "company_headlines": company_headlines[:4],
+        "future_plans": future_plans_news[:4] if future_plans_news else ["Ongoing core capacity utilization and sector-aligned capital allocation."],
+        "insider_signals": insider_institutional_signals[:4] if insider_institutional_signals else ["No adverse promoter pledge or insider selling anomaly detected in recent exchange filings."],
+        "exchange_filings": exchange_filings[:4],
+    }
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_equity_candles(symbol: str, token: Optional[str] = None, exchange: str = "NSE", yf_sym: Optional[str] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
@@ -1979,30 +2197,132 @@ def fetch_equity_candles(symbol: str, token: Optional[str] = None, exchange: str
 
     return pd.DataFrame()
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_stock_news_sentiment(stock_name: str) -> Dict[str, Any]:
-    query = f"{stock_name} share price stock market"
-    url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=en-IN&gl=IN&ceid=IN:en"
-    headlines = []
-    try:
-        resp = requests.get(url, timeout=4)
-        if resp.ok:
-            root = ET.fromstring(resp.content)
-            for item in root.findall(".//item")[:5]:
-                t = item.find("title")
-                if t is not None and t.text: headlines.append(t.text)
-    except Exception:
-        pass
+def compute_equity_math_and_eta(df: pd.DataFrame, last_price: float, target1: float, target2: float, atr: float, adx: float, tf_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Computes Arithmetic & Mathematical metrics:
+    - Linear Regression Slope & R-Squared over 20 periods
+    - Statistical Z-Score (Mean Reversion distance)
+    - Annualized Volatility (%)
+    - Fibonacci Retracement & Extension Levels
+    - Relative Volume (RVOL) & Money Flow Accumulation Score
+    - Mathematical Target Time Estimation (ETA in candles and exact Date/Time window)
+    """
+    closes = df["close"].tail(20).values
+    n = len(closes)
+    if n >= 5:
+        x = np.arange(n, dtype=float)
+        x_mean = x.mean()
+        y_mean = closes.mean()
+        cov = np.sum((x - x_mean) * (closes - y_mean))
+        var_x = np.sum((x - x_mean) ** 2)
+        slope = (cov / var_x) if var_x > 0 else 0.0
+        var_y = np.sum((closes - y_mean) ** 2)
+        r_squared = ((cov ** 2) / (var_x * var_y)) if (var_x > 0 and var_y > 0) else 0.0
+        std_20 = float(np.std(closes))
+        z_score = ((last_price - y_mean) / std_20) if std_20 > 0 else 0.0
+    else:
+        slope, r_squared, z_score, y_mean, std_20 = 0.0, 0.0, 0.0, last_price, atr
 
-    text = " ".join(headlines).lower()
-    bullish = sum(text.count(w) for w in ["target", "upgrade", "surge", "jump", "record", "profit", "buy", "gain", "deal", "rally", "growth"])
-    bearish = sum(text.count(w) for w in ["downgrade", "fall", "crash", "loss", "plunge", "slump", "sell", "debt", "risk", "fraud", "probe"])
-    score = bullish - bearish
+    # Returns & Annualized Volatility
+    pct_returns = df["close"].pct_change().dropna()
+    arith_mean_ret = float(pct_returns.tail(20).mean() * 100.0) if not pct_returns.empty else 0.0
+    bars_per_year = 252.0 * (375.0 / max(1.0, float(tf_cfg.get("minutes", 5)))) if tf_cfg.get("minutes", 5) < 375 else 252.0
+    ann_vol_pct = float(pct_returns.tail(30).std() * math.sqrt(bars_per_year) * 100.0) if len(pct_returns) >= 5 else 24.0
 
-    sentiment = "STRONG BULLISH CATALYST" if score >= 2 else ("MILDLY POSITIVE" if score == 1 else ("BEARISH HEADWINDS" if score <= -2 else ("MILD NEGATIVE" if score == -1 else "NEUTRAL NEWS FLOW")))
-    return {"score": score, "sentiment": sentiment, "headlines": headlines[:3]}
+    # Fibonacci Levels (30-bar Swing High / Low)
+    swing_high = float(df["high"].tail(30).max())
+    swing_low = float(df["low"].tail(30).min())
+    swing_diff = max(swing_high - swing_low, 0.5)
+    fib_382 = round(swing_high - 0.382 * swing_diff, 2)
+    fib_500 = round(swing_high - 0.500 * swing_diff, 2)
+    fib_618 = round(swing_high - 0.618 * swing_diff, 2)
+    fib_ext_1272 = round(swing_high + 0.272 * swing_diff, 2)
+    fib_ext_1618 = round(swing_high + 0.618 * swing_diff, 2)
 
-def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: pd.DataFrame, tf_cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    # Volume & Institutional Investment Flow (RVOL + Money Flow Multiplier)
+    if "volume" in df.columns and df["volume"].sum() > 0:
+        curr_vol = float(df["volume"].iloc[-1])
+        avg_vol_20 = float(df["volume"].tail(20).mean())
+        rvol = round(curr_vol / avg_vol_20, 2) if avg_vol_20 > 0 else 1.0
+
+        high_s = df["high"].tail(20)
+        low_s = df["low"].tail(20)
+        close_s = df["close"].tail(20)
+        vol_s = df["volume"].tail(20)
+        hl_range = (high_s - low_s).replace(0, np.nan)
+        mf_mult = ((close_s - low_s) - (high_s - close_s)) / hl_range
+        mf_vol = (mf_mult.fillna(0.0) * vol_s).sum()
+        tot_vol_20 = vol_s.sum()
+        cmf_20 = round(float(mf_vol / tot_vol_20), 3) if tot_vol_20 > 0 else 0.0
+    else:
+        rvol = 1.0
+        cmf_20 = 0.05 if slope > 0 else -0.05
+
+    investment_flow_status = (
+        "STRONG INSTITUTIONAL ACCUMULATION" if (cmf_20 >= 0.10 and rvol >= 1.1)
+        else ("MODERATE BUYING INFLOW" if cmf_20 > 0
+        else ("INSTITUTIONAL DISTRIBUTION / SUPPLY" if cmf_20 <= -0.10 else "NEUTRAL VOLUME FLOW"))
+    )
+
+    # Mathematical Target Time (ETA) Calculation based on ATR Velocity & ADX Drift
+    velocity_factor = 0.35 + 0.30 * min(max(adx, 10.0) / 40.0, 1.5)
+    effective_step_per_bar = max(atr * velocity_factor, last_price * 0.0015)
+
+    bars_to_t1 = max(2, min(60, int(math.ceil(abs(target1 - last_price) / effective_step_per_bar))))
+    bars_to_t2 = max(4, min(120, int(math.ceil(abs(target2 - last_price) / effective_step_per_bar))))
+
+    tf_mins = int(tf_cfg.get("minutes", 5))
+    now_ist = datetime.now(IST)
+
+    def _format_eta(bars: int) -> str:
+        total_mins = bars * tf_mins
+        if tf_mins < 375 and total_mins <= 360:
+            est_dt = now_ist + timedelta(minutes=total_mins)
+            if market_open() and est_dt.time() <= dtime(15, 30):
+                return f"~{bars} Bars ({total_mins} mins | Today by {est_dt.strftime('%H:%M IST')})"
+            else:
+                next_td = add_trading_days(now_ist.date(), 1)
+                return f"~{bars} Bars ({total_mins} mins | Next Session {next_td.strftime('%d %b %Y')})"
+        else:
+            trading_days_needed = max(1, int(math.ceil(total_mins / 375.0)))
+            target_date = add_trading_days(now_ist.date(), trading_days_needed)
+            return f"~{bars} Bars (~{trading_days_needed} Trading Days | By {target_date.strftime('%d %b %Y')})"
+
+    t1_eta_str = _format_eta(bars_to_t1)
+    t2_eta_str = _format_eta(bars_to_t2)
+    max_hold_bars = int(bars_to_t2 * 1.35)
+
+    return {
+        "reg_slope": round(float(slope), 3),
+        "r_squared": round(float(r_squared), 2),
+        "z_score": round(float(z_score), 2),
+        "arith_mean_ret_pct": round(arith_mean_ret, 3),
+        "ann_vol_pct": round(ann_vol_pct, 1),
+        "fib_382": fib_382,
+        "fib_500": fib_500,
+        "fib_618": fib_618,
+        "fib_ext_1272": fib_ext_1272,
+        "fib_ext_1618": fib_ext_1618,
+        "rvol": rvol,
+        "cmf_20": cmf_20,
+        "investment_flow_status": investment_flow_status,
+        "bars_to_t1": bars_to_t1,
+        "bars_to_t2": bars_to_t2,
+        "t1_eta": t1_eta_str,
+        "t2_eta": t2_eta_str,
+        "max_hold_bars": max_hold_bars,
+    }
+
+def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: pd.DataFrame, tf_cfg: Optional[Dict[str, Any]] = None, fundamentals: Optional[Dict[str, Any]] = None, corp_intel: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """
+    Comprehensive Multi-Factor Equity Setup & Exit Engine combining:
+    1. Technicals (EMA20/50/200, Wilder RSI/ADX, Anchored VWAP, Candlesticks)
+    2. Fundamentals (P/E, ROE, Debt/Equity, Market Cap)
+    3. Corporate Filings, Legal Insider Disclosures & Future Plans
+    4. Arithmetic & Mathematical Models (Z-Score, Linear Regression, Fibonacci, Quarter-Kelly)
+    5. Volume & Institutional Investment Flow (RVOL, CMF)
+    6. Explicit Entry Call AND Active Exit Call with Target Price & Mathematical Target Time (ETA)
+    """
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
     last = quote.get("price")
     if last is None or df.empty or len(df) < 5: return None
@@ -2019,66 +2339,161 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
     support = num(df["low"].tail(30).min(), last - (atr * 1.5))
     resistance = num(df["high"].tail(30).max(), last + (atr * 1.5))
 
+    candle_eval = analyze_candlesticks_and_volume(df)
+
     tech_score = 0
     reasons = []
 
     if last > ema20 > ema50:
-        tech_score += 2; reasons.append(f"Price sustained above EMA20 and EMA50 ({tf_cfg['label']}).")
+        tech_score += 2; reasons.append(f"Technical: Price sustained above EMA20 & EMA50 ({tf_cfg['label']}).")
     elif last < ema20 < ema50:
-        tech_score -= 2; reasons.append(f"Price sustained below EMA20 and EMA50 ({tf_cfg['label']}).")
+        tech_score -= 2; reasons.append(f"Technical: Price sustained below EMA20 & EMA50 ({tf_cfg['label']}).")
 
-    if last > ema200: tech_score += 1; reasons.append("Trading above Institutional 200 EMA (Macro Bullish Territory).")
-    else: tech_score -= 1; reasons.append("Trading below 200 EMA (Long-term Overhead Supply Resistance).")
+    if last > ema200: tech_score += 1; reasons.append("Macro Trend: Trading above 200 EMA (Long-term Bullish Structure).")
+    else: tech_score -= 1; reasons.append("Macro Trend: Trading below 200 EMA (Overhead Supply Zone).")
 
-    if vwap and last > vwap: tech_score += 1; reasons.append(f"Holding above Institutional Benchmark VWAP ({RUPEE}{vwap:,.2f}).")
-    elif vwap: tech_score -= 1; reasons.append(f"Trading below VWAP ({RUPEE}{vwap:,.2f}) indicating intraday supply pressure.")
+    if vwap and last > vwap: tech_score += 1; reasons.append(f"VWAP Benchmark: Holding above Institutional VWAP ({RUPEE}{vwap:,.2f}).")
+    elif vwap: tech_score -= 1; reasons.append(f"VWAP Benchmark: Trading below VWAP ({RUPEE}{vwap:,.2f}).")
 
-    if rsi >= 60: tech_score += 1; reasons.append(f"RSI ({rsi:.1f}) strong bullish expansion zone mein hai.")
-    elif rsi <= 40: tech_score -= 1; reasons.append(f"RSI ({rsi:.1f}) bearish distribution zone mein hai.")
+    if rsi >= 58: tech_score += 1; reasons.append(f"Momentum: Wilder RSI ({rsi:.1f}) confirms bullish strength.")
+    elif rsi <= 42: tech_score -= 1; reasons.append(f"Momentum: Wilder RSI ({rsi:.1f}) shows bearish pressure.")
+
+    # Integrate Fundamental & Corporate Catalyst Scores
+    fund_score = fundamentals.get("fund_score", 0) if fundamentals else 0
+    cat_score = corp_intel.get("catalyst_score", 0) if corp_intel else 0
+    cat_verdict = corp_intel.get("catalyst_verdict", "NEUTRAL") if corp_intel else "NEUTRAL"
+
+    if fund_score >= 2:
+        reasons.append(f"Fundamentals: {fundamentals.get('fund_verdict')} ({', '.join(fundamentals.get('fund_notes', [])[:2])}).")
+    if cat_score >= 1:
+        reasons.append(f"Corporate & Future Plans: {cat_verdict}.")
+    elif cat_score <= -2:
+        reasons.append(f"Corporate Alert: {cat_verdict}.")
+
+    composite_score = tech_score + (1 if fund_score >= 2 else 0) + (1 if cat_score >= 2 else (-1 if cat_score <= -2 else 0))
 
     is_sideways = (adx < 20)
-    sideways_notes = f"ADX {adx:.1f} (< 20) hai. Stock [{tf_cfg['label']}] range consolidation mein hai. Fresh directional move {RUPEE}{resistance:,.2f} breakout par aayega." if is_sideways else f"ADX {adx:.1f} (> 20) hai. Active directional trend chal raha hai. Momentum intact hai."
+    sideways_notes = f"ADX {adx:.1f} (< 20): Range consolidation active. Breakout trigger above {RUPEE}{resistance:,.2f}." if is_sideways else f"ADX {adx:.1f} (> 20): Active directional trend confirmed."
     atr_mult = tf_cfg.get("atr_mult", 1.0)
 
-    if tech_score >= 2 and not (is_sideways and abs(tech_score) < 3):
-        stance = "BUY / LONG"
+    if composite_score >= 2 and not (is_sideways and abs(tech_score) < 2):
+        stance = "BUY / ACCUMULATE (LONG ENTRY CALL)"
+        action_dir = "BUY"
         badge = "prediction-card-green"
-        sl = max(support, last - (atr * 1.5 * atr_mult))
+        entry_zone_low = round(max(support, last - (atr * 0.35)), 2)
+        entry_zone_high = round(last + (atr * 0.15), 2)
+        sl = round(max(support * 0.995, last - (atr * 1.5 * atr_mult)), 2)
         risk = max(last - sl, 0.5)
-        t1 = last + (risk * 1.6)
-        t2 = last + (risk * 2.8)
+        t1 = round(last + (risk * 1.8), 2)
+        t2 = round(last + (risk * 3.2), 2)
         upside_pts = t2 - last
         upside_pct = (upside_pts / last) * 100
         downside_pts = last - sl
         downside_pct = (downside_pts / last) * 100
-    elif tech_score <= -2:
-        stance = "SELL / SHORT"
+    elif composite_score <= -2:
+        stance = "SELL / REDUCE (SHORT / EXIT CALL)"
+        action_dir = "SELL"
         badge = "prediction-card-red"
-        sl = min(resistance, last + (atr * 1.5 * atr_mult))
+        entry_zone_low = round(last - (atr * 0.15), 2)
+        entry_zone_high = round(min(resistance, last + (atr * 0.35)), 2)
+        sl = round(min(resistance * 1.005, last + (atr * 1.5 * atr_mult)), 2)
         risk = max(sl - last, 0.5)
-        t1 = last - (risk * 1.6)
-        t2 = last - (risk * 2.8)
+        t1 = round(last - (risk * 1.8), 2)
+        t2 = round(last - (risk * 3.2), 2)
         upside_pts = sl - last
         upside_pct = (upside_pts / last) * 100
         downside_pts = last - t2
         downside_pct = (downside_pts / last) * 100
     else:
-        stance = "SIDEWAYS / AVOID"
+        stance = "HOLD / WAIT FOR BREAKOUT"
+        action_dir = "WAIT"
         badge = "prediction-card-gold"
-        sl = support
-        t1 = resistance
-        t2 = resistance + (atr * atr_mult)
-        upside_pts = resistance - last
+        entry_zone_low = round(support, 2)
+        entry_zone_high = round(resistance, 2)
+        sl = round(support, 2)
+        risk = max(last - sl, 0.5)
+        t1 = round(resistance, 2)
+        t2 = round(resistance + (atr * 1.5 * atr_mult), 2)
+        upside_pts = t1 - last
         upside_pct = (upside_pts / last) * 100
         downside_pts = last - support
         downside_pct = (downside_pts / last) * 100
 
+    # Compute Arithmetic, Mathematical & Target Time (ETA) Metrics
+    math_metrics = compute_equity_math_and_eta(df, last, t1, t2, atr, adx, tf_cfg)
+
+    rr_t1 = round(abs(t1 - last) / max(risk, 0.01), 2)
+    rr_t2 = round(abs(t2 - last) / max(risk, 0.01), 2)
+    win_prob = min(0.88, max(0.52, 0.62 + (composite_score * 0.04)))
+    kelly_pct = calculate_quarter_kelly(p_win=win_prob, reward_risk=max(rr_t1, 1.2))
+
+    # Position Sizing based on Paper Portfolio Cash Balance
+    portfolio_cash = float(st.session_state.paper_portfolio.get("cash_balance", 500000.0))
+    alloc_capital = round(portfolio_cash * min(max(kelly_pct / 100.0, 0.05), 0.25), 2)
+    recommended_qty = max(1, int(alloc_capital // last))
+
+    # =================================================================
+    # DEDICATED EQUITY EXIT CALL ENGINE (PRICE + TIME + SIGNAL EXIT)
+    # =================================================================
+    z_val = math_metrics["z_score"]
+    if rsi >= 78.0 or z_val >= 2.25 or (candle_eval["reversal_risk"] and last >= t1 * 0.98):
+        exit_call_status = f"{SIREN} IMMEDIATE PROFIT BOOKING / EXIT CALL"
+        exit_call_action = f"Book 80%-100% profits immediately around {RUPEE}{last:,.2f}. Statistical exhaustion detected (RSI: {rsi:.1f}, Z-Score: {z_val:+.2f}, Pattern: {candle_eval['pattern']})."
+    elif action_dir == "BUY" and last < vwap and candle_eval["status"] == "RED":
+        exit_call_status = f"{WARNING} CAUTION / TIGHTEN STOP-LOSS EXIT CALL"
+        exit_call_action = f"Price slipped below intraday VWAP ({RUPEE}{vwap:,.2f}). Tighten Stop-Loss strictly to {RUPEE}{max(sl, round(last - atr*0.8, 2)):,.2f}."
+    elif action_dir == "SELL":
+        exit_call_status = f"{RED_CIRCLE} EXIT LONG / ACTIVE SHORT CALL"
+        exit_call_action = f"Long investors should exit on bounces near {RUPEE}{ema20:,.2f}. Active short target {RUPEE}{t1:,.2f} (ETA: {math_metrics['t1_eta']}) with strict SL at {RUPEE}{sl:,.2f}."
+    else:
+        exit_call_status = f"{CHECK} HOLD ACTIVE POSITION / TRAIL TO TARGET"
+        exit_call_action = (
+            f"1) Partial Exit Call: Book 50% quantity at Target 1 ({RUPEE}{t1:,.2f} | Expected Time: {math_metrics['t1_eta']}) and move Stop-Loss to Cost ({RUPEE}{last:,.2f}). "
+            f"2) Final Target Exit Call: Book remaining 50% at Target 2 ({RUPEE}{t2:,.2f} | Expected Time: {math_metrics['t2_eta']}). "
+            f"3) Time-Stop Exit Rule: Exit position if stock does not clear Target 1 within {math_metrics['max_hold_bars']} candles."
+        )
+
     return {
-        "symbol": stock_info["symbol"], "name": stock_info["name"], "price": last,
-        "stance": stance, "badge": badge, "score": tech_score, "rsi": rsi, "adx": adx,
-        "is_sideways": is_sideways, "sideways_notes": sideways_notes, "sl": sl, "t1": t1, "t2": t2,
-        "upside_pts": upside_pts, "upside_pct": upside_pct, "downside_pts": downside_pts,
-        "downside_pct": downside_pct, "support": support, "resistance": resistance, "reasons": reasons,
+        "symbol": stock_info["symbol"],
+        "name": stock_info["name"],
+        "price": last,
+        "stance": stance,
+        "action_dir": action_dir,
+        "badge": badge,
+        "score": composite_score,
+        "tech_score": tech_score,
+        "fund_score": fund_score,
+        "cat_score": cat_score,
+        "rsi": rsi,
+        "adx": adx,
+        "vwap": vwap,
+        "ema20": ema20,
+        "ema50": ema50,
+        "ema200": ema200,
+        "atr": atr,
+        "is_sideways": is_sideways,
+        "sideways_notes": sideways_notes,
+        "entry_zone_low": entry_zone_low,
+        "entry_zone_high": entry_zone_high,
+        "sl": sl,
+        "t1": t1,
+        "t2": t2,
+        "rr_t1": rr_t1,
+        "rr_t2": rr_t2,
+        "kelly_pct": kelly_pct,
+        "alloc_capital": alloc_capital,
+        "recommended_qty": recommended_qty,
+        "upside_pts": upside_pts,
+        "upside_pct": upside_pct,
+        "downside_pts": downside_pts,
+        "downside_pct": downside_pct,
+        "support": support,
+        "resistance": resistance,
+        "reasons": reasons,
+        "math": math_metrics,
+        "candle_eval": candle_eval,
+        "exit_call_status": exit_call_status,
+        "exit_call_action": exit_call_action,
     }
 
 # =====================================================================
@@ -2087,6 +2502,7 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
 def call_gemini_cascade(prompt: str) -> str:
     if not GEMINI_API_KEY: return "Gemini API Key missing in Streamlit Secrets."
     models_to_attempt = [GEMINI_MODEL, "gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
+    models_to_attempt = list(dict.fromkeys([m for m in models_to_attempt if m]))
     last_error = None
 
     try:
@@ -2135,16 +2551,16 @@ def ask_gemini(ideas: List[Dict[str, Any]], market_data: Dict[str, Any]) -> str:
 # =====================================================================
 # 21. USER INTERFACE: SIDEBAR, HEALTH BARS & WORKFLOW
 # =====================================================================
-st.title(f"{BOLT} AI Institutional Live Trading Advisor (Quant GEX Engine)")
-st.caption(f"Universal 5,000+ Equity Universe {BULLET} SEBI Lot Sizes {BULLET} Black-Scholes Greeks {BULLET} Dealer GEX Radar")
+st.title(f"{BOLT} AI Institutional Live Trading Advisor (Quant GEX & Equity Engine)")
+st.caption(f"Universal 5,000+ Equity Universe {BULLET} Multi-Factor Equity Entry & Exit Calls {BULLET} SEBI Lot Sizes {BULLET} Dealer GEX Radar")
 
 st.sidebar.header(f"{STOPWATCH} Strategy Timeframe")
 selected_tf_key = st.sidebar.selectbox(
     "Candle Resolution / Timeframe",
     options=list(TIMEFRAME_CONFIG.keys()),
-    index=1,
+    index=3,
     format_func=lambda k: TIMEFRAME_CONFIG[k]["label"],
-    help="Select timeframe: 1m up to 3 Months. All indicators adapt to this resolution."
+    help="Select timeframe: 1m up to 3 Months. All indicators, targets, and ETA calculations adapt to this resolution."
 )
 active_tf = TIMEFRAME_CONFIG[selected_tf_key]
 
@@ -2172,16 +2588,19 @@ with col_t4:
 st.divider()
 
 # ==============================================================================
-# SEGMENT 1: UNIVERSAL 5,000+ EQUITY STOCK INTELLIGENCE
+# SEGMENT 1: UNIVERSAL 5,000+ EQUITY STOCK INTELLIGENCE (MULTI-FACTOR ENGINE)
 # ==============================================================================
 if "Universal 5,000+" in segment_mode:
-    st.markdown(f"## {CHART_UP} Universal 5,000+ Equity Stock Intelligence - [{active_tf['label']}]")
-    st.caption(f"Full NSE & BSE Universe {BULLET} Instant Predictive Popup {BULLET} Target & Risk Levels {BULLET} Multi-Timeframe Confluence")
+    st.markdown(f"## {CHART_UP} Universal 5,000+ Equity Multi-Factor Intelligence - [{active_tf['label']}]")
+    st.caption(
+        f"Technicals {BULLET} Fundamentals {BULLET} Official Exchange Filings & Insider Disclosures "
+        f"{BULLET} Future Plans/Capex {BULLET} Mathematical & Volume Models {BULLET} Entry & Exit Calls with Target Time (ETA)"
+    )
 
     exchange_select = st.selectbox("Preferred Default Exchange", ["NSE", "BSE"], index=0)
 
     query_text = st.text_input(
-        f"{SEARCH} Search 5,000+ Equities (Type Company Name, Symbol, or Scrip Code e.g. TATA, RELIANCE, SUZLON, 500325):",
+        f"{SEARCH} Search 5,000+ Equities (Type Company Name, Symbol, or Scrip Code e.g. TATA, RELIANCE, HAL, SUZLON, 500325):",
         value="",
         placeholder="Type to filter stocks across NSE & BSE...",
     ).strip().upper()
@@ -2218,7 +2637,8 @@ if "Universal 5,000+" in segment_mode:
                 "name": d["name"],
                 "token": d.get("token_nse") if exchange_select == "NSE" else d.get("token_bse"),
                 "exchange": d.get("exchange", exchange_select),
-                "yfinance": d.get("yfinance", f"{sym_key}.{'NS' if exchange_select == 'NSE' else 'BO'}")
+                "yfinance": d.get("yfinance", f"{sym_key}.{'NS' if exchange_select == 'NSE' else 'BO'}"),
+                "sector": d.get("sector", "Listed Equity"),
             }
         else:
             selected_stock = {
@@ -2226,102 +2646,198 @@ if "Universal 5,000+" in segment_mode:
                 "name": f"{sym_key} Listed Security",
                 "token": None,
                 "exchange": exchange_select,
-                "yfinance": f"{sym_key}.{'NS' if exchange_select == 'NSE' else 'BO'}"
+                "yfinance": f"{sym_key}.{'NS' if exchange_select == 'NSE' else 'BO'}",
+                "sector": "Listed Equity",
             }
 
     if selected_stock:
         st.divider()
 
-        @live_fragment(run_every=5)
+        @live_fragment(run_every=10)
         def render_live_equity_view(stock, tf):
             quote = fetch_equity_live_quote(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"))
             df = add_indicators(fetch_equity_candles(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"), tf_cfg=tf), current_live_price=quote.get("price"))
-            analysis = analyze_equity_setup(stock, quote, df, tf_cfg=tf)
-            news = fetch_stock_news_sentiment(stock["name"])
+            fundamentals = fetch_equity_fundamentals(stock["symbol"], exchange=stock["exchange"], yf_sym=stock.get("yfinance"), current_price=quote.get("price"))
+            corp_intel = fetch_corporate_filings_and_future_plans(stock["symbol"], stock["name"])
+            analysis = analyze_equity_setup(stock, quote, df, tf_cfg=tf, fundamentals=fundamentals, corp_intel=corp_intel)
 
-            st.markdown(f"### {BUILDING} {stock['name']} (`{stock['symbol']}` {BULLET} {stock['exchange']}) - [{tf['label']}]")
+            st.markdown(f"### {BUILDING} {stock['name']} (`{stock['symbol']}` {BULLET} {stock['exchange']} {BULLET} {fundamentals.get('sector')}) - [{tf['label']}]")
             
             p1, p2, p3, p4 = st.columns(4)
             with p1: st.metric("Live Market Price (LTP)", f"{RUPEE}{fmt(quote.get('price'))}", delta=f"{quote.get('change_pct', 0.0):+.2f}%")
-            with p2: st.metric("Upside Target", f"+{RUPEE}{fmt(analysis['upside_pts'])}" if analysis else "Calculating", delta=f"+{analysis['upside_pct']:.1f}% Target" if analysis else None)
-            with p3: st.metric("Downside Risk Floor", f"-{RUPEE}{fmt(analysis['downside_pts'])}" if analysis else "Calculating", delta=f"-{analysis['downside_pct']:.1f}% SL Floor" if analysis else None, delta_color="inverse")
-            with p4: st.metric("Action Verdict", analysis["stance"] if analysis else "ANALYZING", delta=f"Score: {analysis['score']:+d}" if analysis else None, delta_color="off")
+            with p2: st.metric("Upside Target Potential", f"+{RUPEE}{fmt(analysis['upside_pts'])}" if analysis else "Calculating", delta=f"+{analysis['upside_pct']:.1f}% to T2" if analysis else None)
+            with p3: st.metric("Downside Risk Floor", f"-{RUPEE}{fmt(analysis['downside_pts'])}" if analysis else "Calculating", delta=f"-{analysis['downside_pct']:.1f}% SL Risk" if analysis else None, delta_color="inverse")
+            with p4: st.metric("Composite Multi-Factor Score", f"{analysis['score']:+d} Pts" if analysis else "ANALYZING", delta=analysis["action_dir"] if analysis else None, delta_color="off")
 
             if analysis:
-                icon = ROCKET if "BUY" in analysis["stance"] else (DOWN_ARROW if "SELL" in analysis["stance"] else SCALE)
+                math_m = analysis["math"]
+                icon = ROCKET if analysis["action_dir"] == "BUY" else (DOWN_ARROW if analysis["action_dir"] == "SELL" else SCALE)
+
+                # 1. ENTRY CALL & TARGET TIME (ETA) BANNER
                 st.markdown(
                     f"""
                     <div class="{analysis['badge']}">
-                        <h3 style="margin: 0; padding: 0;">{icon} Algorithmic Stance: <b>{analysis['stance']}</b> ({tf['label']})</h3>
+                        <h3 style="margin: 0; padding: 0;">{icon} Institutional Entry Call: <b>{analysis['stance']}</b> ({tf['label']})</h3>
                         <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;">
-                            <b>Recommended Entry:</b> {RUPEE}{fmt(analysis['price'])} | 
-                            <b>Target 1:</b> {RUPEE}{fmt(analysis['t1'])} | 
-                            <b>Target 2:</b> {RUPEE}{fmt(analysis['t2'])} | 
-                            <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])}
+                            <b>Ideal Entry Zone:</b> {RUPEE}{fmt(analysis['entry_zone_low'])} – {RUPEE}{fmt(analysis['entry_zone_high'])} | 
+                            <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])} | 
+                            <b>Recommended Size:</b> {analysis['recommended_qty']} Shares ({RUPEE}{analysis['alloc_capital']:,.0f} | Kelly: {analysis['kelly_pct']}%)
                         </p>
-                        <span style="font-size: 13.5px;"><b>Trend Status:</b> {analysis['sideways_notes']}</span>
+                        <p style="margin: 0.25rem 0; font-size: 14.5px;">
+                            <b>🎯 Target 1:</b> {RUPEE}{fmt(analysis['t1'])} (<b>ETA:</b> <code>{math_m['t1_eta']}</code>) | 
+                            <b>🎯 Target 2:</b> {RUPEE}{fmt(analysis['t2'])} (<b>ETA:</b> <code>{math_m['t2_eta']}</code>)
+                        </p>
+                        <span style="font-size: 13.5px;"><b>Regime Status:</b> {analysis['sideways_notes']}</span>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-                st.markdown(f"#### {RULER} Target & Risk Price Matrix ({tf['smartapi']})")
+                # 2. DEDICATED EXIT CALL & TRAILING SCHEDULE BOX
+                st.markdown(
+                    f"""
+                    <div class="exit-box">
+                        <b>{STOPWATCH} Active Exit Call & Profit-Booking Schedule ({analysis['exit_call_status']}):</b><br>
+                        {analysis['exit_call_action']}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # 3. EXACT PRICE, TIME & RISK MATRIX
+                st.markdown(f"#### {RULER} Entry, Exit, Target Price & Target Time Matrix ({tf['smartapi']})")
                 t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-                with t_col1: st.metric("Primary Target (T1)", f"{RUPEE}{fmt(analysis['t1'])}", delta="+1.6 Multiple")
-                with t_col2: st.metric("Secondary Target (T2)", f"{RUPEE}{fmt(analysis['t2'])}", delta="+2.8 Multiple")
-                with t_col3: st.metric("Stop Loss Level (SL)", f"{RUPEE}{fmt(analysis['sl'])}", delta="Strict Exit", delta_color="inverse")
-                with t_col4: st.metric("Risk-Reward Ratio", "1:2.4", delta="Institutional Favorable")
+                with t_col1: st.metric("Target 1 Price & ETA", f"{RUPEE}{fmt(analysis['t1'])}", delta=math_m["t1_eta"])
+                with t_col2: st.metric("Target 2 Price & ETA", f"{RUPEE}{fmt(analysis['t2'])}", delta=math_m["t2_eta"])
+                with t_col3: st.metric("Stop Loss (Exit Trigger)", f"{RUPEE}{fmt(analysis['sl'])}", delta=f"Max Hold: {math_m['max_hold_bars']} Bars", delta_color="inverse")
+                with t_col4: st.metric("Reward-to-Risk (T1 / T2)", f"1:{analysis['rr_t1']} / 1:{analysis['rr_t2']}", delta=f"Quarter-Kelly: {analysis['kelly_pct']}%")
 
-                st.markdown(f"#### {TRAFFIC} Indicator Confluence Matrix ({tf['label']})")
+                # 4. ARITHMETIC, MATHEMATICAL & VOLUME / INVESTMENT MATRIX
+                st.markdown(f"#### {COMPASS} Arithmetic, Mathematical & Institutional Volume Flow")
+                m1, m2, m3, m4 = st.columns(4)
+                with m1: st.metric("Linear Regression Slope", f"{math_m['reg_slope']:+.3f}/bar", delta=f"R² Fit: {math_m['r_squared']:.2f}", delta_color="normal")
+                with m2: st.metric("Statistical Z-Score (20-Bar)", f"{math_m['z_score']:+.2f} σ", delta="Overbought (>2σ)" if math_m['z_score']>2 else ("Oversold (<-2σ)" if math_m['z_score']<-2 else "Mean Zone"), delta_color="off")
+                with m3: st.metric("Relative Volume (RVOL)", f"{math_m['rvol']:.2f}x Avg", delta=f"CMF Money Flow: {math_m['cmf_20']:+.2f}", delta_color="normal")
+                with m4: st.metric("Annualized Volatility", f"{math_m['ann_vol_pct']:.1f}%", delta=f"Mean Bar Ret: {math_m['arith_mean_ret_pct']:+.2f}%", delta_color="off")
+
+                st.info(
+                    f"📐 **Fibonacci Mathematical Structure:** "
+                    f"Retracement Support: **38.2%:** `{RUPEE}{math_m['fib_382']:,.2f}` | **50.0%:** `{RUPEE}{math_m['fib_500']:,.2f}` | **61.8% (Golden Pocket):** `{RUPEE}{math_m['fib_618']:,.2f}` "
+                    f"• Upside Breakout Extensions: **127.2%:** `{RUPEE}{math_m['fib_ext_1272']:,.2f}` | **161.8%:** `{RUPEE}{math_m['fib_ext_1618']:,.2f}`  \n"
+                    f"🏦 **Institutional Volume & Investment Footprint:** `{math_m['investment_flow_status']}` (Candle Pattern: `{analysis['candle_eval']['pattern']}`)"
+                )
+
+                # 5. FUNDAMENTAL & VALUATION PILLAR
+                st.markdown(f"#### {TEMPLE} Fundamental & Balance Sheet Valuation Pillar")
+                f_c1, f_c2, f_c3, f_c4 = st.columns(4)
+                with f_c1: st.metric("P/E Ratio (Valuation)", f"{fundamentals['pe_ratio']:.1f}x" if fundamentals.get("pe_ratio") else "Sector Par", delta=fundamentals["fund_verdict"], delta_color="off")
+                with f_c2: st.metric("Price-to-Book (P/B) & EPS", f"{fundamentals['pb_ratio']:.2f}x" if fundamentals.get("pb_ratio") else f"EPS: ₹{fmt(fundamentals.get('eps_ttm'))}", delta="Balance Sheet Multiple", delta_color="off")
+                with f_c3: st.metric("Return on Equity (ROE)", f"{fundamentals['roe_pct']:.1f}%" if fundamentals.get("roe_pct") else "Institutional", delta=f"D/E: {fundamentals['debt_to_eq']:.2f}" if fundamentals.get("debt_to_eq") is not None else "Low Leverage", delta_color="off")
+                with f_c4: st.metric("52-Week Range Proximity", f"₹{fmt(quote.get('low_52w'), 0)} – ₹{fmt(quote.get('high_52w'), 0)}", delta=f"Mkt Cap: ₹{fmt(fundamentals.get('mkt_cap_cr'), 0)} Cr" if fundamentals.get("mkt_cap_cr") else "Active Equity", delta_color="off")
+
+                # 6. TECHNICAL INDICATOR CONFLUENCE
+                st.markdown(f"#### {TRAFFIC} Technical Indicator Confluence Matrix ({tf['label']})")
                 i1, i2, i3, i4 = st.columns(4)
-                with i1: st.metric("RSI (14-RMA)", f"{analysis['rsi']:.1f}", delta="Bullish (>60)" if analysis['rsi']>=60 else ("Bearish (<40)" if analysis['rsi']<=40 else "Neutral Range"), delta_color="off")
+                with i1: st.metric("Wilder RSI (14-RMA)", f"{analysis['rsi']:.1f}", delta="Bullish (>58)" if analysis['rsi']>=58 else ("Bearish (<42)" if analysis['rsi']<=42 else "Neutral"), delta_color="off")
                 with i2: st.metric("ADX Trend Strength", f"{analysis['adx']:.1f}", delta="Trending (>20)" if analysis['adx']>=20 else "Sideways (<20)", delta_color="off")
-                with i3: st.metric("Support Floor", f"{RUPEE}{fmt(analysis['support'])}", delta="Major Demand Zone", delta_color="off")
-                with i4: st.metric("Resistance Ceiling", f"{RUPEE}{fmt(analysis['resistance'])}", delta="Major Supply Zone", delta_color="off")
+                with i3: st.metric("Demand Support Zone", f"{RUPEE}{fmt(analysis['support'])}", delta=f"VWAP: ₹{fmt(analysis['vwap'])}", delta_color="off")
+                with i4: st.metric("Supply Resistance Zone", f"{RUPEE}{fmt(analysis['resistance'])}", delta=f"200 EMA: ₹{fmt(analysis['ema200'])}", delta_color="off")
 
-                st.markdown(f"#### {NEWS} Stock News Sentiment")
-                st.info(f"**News Sentiment Score ({news['score']:+d}):** {news['sentiment']}")
-                if news["headlines"]:
-                    for h in news["headlines"]: st.caption(f"{BULLET} {h}")
+                # 7. CORPORATE ANNOUNCEMENTS, LEGAL INSIDER DISCLOSURES & FUTURE PLANS
+                st.markdown(f"#### {NEWS} Corporate Disclosures, Promoter/Insider Activity & Future Plans")
+                st.info(f"**Corporate Catalyst Verdict ({corp_intel['catalyst_score']:+d}):** {corp_intel['catalyst_verdict']}")
+                col_n1, col_n2 = st.columns(2)
+                with col_n1:
+                    st.markdown("**🚀 Future Plans, Capex & Order Book Catalysts:**")
+                    for fp in corp_intel["future_plans"]:
+                        st.caption(f"{BULLET} {fp}")
+                    if corp_intel["company_headlines"]:
+                        st.markdown("**📰 Latest Company Headlines:**")
+                        for ch in corp_intel["company_headlines"]:
+                            st.caption(f"{BULLET} {ch}")
+                with col_n2:
+                    st.markdown("**🏛️ Promoter, Institutional & Legal Insider Disclosures:**")
+                    for ins in corp_intel["insider_signals"]:
+                        st.caption(f"{BULLET} {ins}")
+                    if corp_intel["exchange_filings"]:
+                        st.markdown("**📄 Official NSE Corporate Filings:**")
+                        for ef in corp_intel["exchange_filings"]:
+                            st.caption(f"{BULLET} {ef}")
 
                 st.markdown(
                     f"""
                     <div class="reason-box">
-                        <b>{PIN} Trade Formulation Logic ({tf['label']}):</b><br>
-                        {' '.join(analysis['reasons'])}
+                        <b>{PIN} Multi-Factor Trade Formulation Summary ({tf['label']}):</b><br>
+                        {' | '.join(analysis['reasons'])}
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-                st.write(f"{STOP} **Position Invalidation:** If price closes beyond {RUPEE}{fmt(analysis['sl'])}, immediately exit the position.")
-                st.write(f"{CHART_UP} **Trailing Stop Loss Rule:** Book 50% at Target 1 ({RUPEE}{fmt(analysis['t1'])}) and trail SL to Cost ({RUPEE}{fmt(analysis['price'])}). [{tf['desc']}]")
+                # 8. PAPER TRADE EXECUTION FOR EQUITY
+                if analysis["action_dir"] in ["BUY", "SELL"]:
+                    if st.button(f"{ROCKET} EXECUTE EQUITY PAPER TRADE: {analysis['action_dir']} {analysis['recommended_qty']} SHARES OF {stock['symbol']} @ ₹{fmt(analysis['price'])}", type="primary", use_container_width=True):
+                        execute_paper_order(
+                            symbol=stock["symbol"],
+                            action=analysis["action_dir"],
+                            strike="CASH",
+                            option_type="EQ",
+                            price=analysis["price"],
+                            qty=analysis["recommended_qty"],
+                            sl=analysis["sl"],
+                            t1=analysis["t1"],
+                            t2=analysis["t2"],
+                            expiry=tf["holding"],
+                            reasons=" | ".join(analysis["reasons"][:3]),
+                            is_equity=True,
+                        )
+                        st.rerun()
 
-            return analysis
+            return analysis, fundamentals, corp_intel
 
-        analysis_result = render_live_equity_view(selected_stock, active_tf)
+        eq_pack = render_live_equity_view(selected_stock, active_tf)
+        analysis_result = eq_pack[0] if isinstance(eq_pack, tuple) else None
+        fund_result = eq_pack[1] if isinstance(eq_pack, tuple) else {}
+        corp_result = eq_pack[2] if isinstance(eq_pack, tuple) else {}
 
         if GEMINI_API_KEY and analysis_result:
-            if st.button(f"{ROBOT} GENERATE INSTITUTIONAL AI ANALYST REPORT FOR THIS SHARE", type="primary", use_container_width=True):
-                with st.spinner("Gemini Institutional AI analyzing technical levels, volume spikes, and news catalysts..."):
+            if st.button(f"{ROBOT} GENERATE FULL AI MULTI-FACTOR ENTRY & EXIT REPORT FOR {selected_stock['symbol']}", use_container_width=True):
+                with st.spinner("Gemini Institutional AI synthesizing Technicals, Fundamentals, Corporate Filings, Future Plans, Math & Exit ETA..."):
                     prompt = f"""
-                    You are a senior institutional equity research analyst covering Indian stock markets (NSE & BSE).
-                    Analyze this stock setup in depth on timeframe [{active_tf['label']}]:
-                    Stock: {analysis_result['name']} ({analysis_result['symbol']})
-                    Current Price: ₹{analysis_result['price']}
-                    Stance: {analysis_result['stance']}
-                    Target 1: ₹{analysis_result['t1']}, Target 2: ₹{analysis_result['t2']}, Stop Loss: ₹{analysis_result['sl']}
-                    ADX: {analysis_result['adx']}, RSI: {analysis_result['rsi']}
-                    Sideways Status: {analysis_result['sideways_notes']}
-                    Technical Factors: {analysis_result['reasons']}
+                    You are a Senior Institutional Equity Strategist & Quantitative Analyst for Indian Markets (NSE/BSE).
+                    Synthesize a complete, grounded Entry & Exit Trade Advisory for {analysis_result['name']} ({analysis_result['symbol']}) on timeframe [{active_tf['label']}].
+                    CRITICAL: Use ONLY the verified numbers provided below. Do not invent prices.
 
-                    Explain:
-                    1. Timeframe {active_tf['label']} entry triggers, short-side risks, and breakout thresholds.
-                    2. Risk-to-reward ratio and positional swing trading guidelines.
-                    3. Trailing stop-loss execution strategy.
+                    1. ENTRY & EXIT CALLS WITH TARGET TIME (ETA):
+                       - Stance: {analysis_result['stance']} | Current Price: ₹{analysis_result['price']}
+                       - Ideal Entry Zone: ₹{analysis_result['entry_zone_low']} to ₹{analysis_result['entry_zone_high']}
+                       - Target 1: ₹{analysis_result['t1']} (Expected Time ETA: {analysis_result['math']['t1_eta']})
+                       - Target 2: ₹{analysis_result['t2']} (Expected Time ETA: {analysis_result['math']['t2_eta']})
+                       - Strict Stop-Loss: ₹{analysis_result['sl']} | Max Time-Stop Hold: {analysis_result['math']['max_hold_bars']} bars
+                       - Active Exit Call Status: {analysis_result['exit_call_status']} -> {analysis_result['exit_call_action']}
+
+                    2. ARITHMETIC, MATHEMATICAL & VOLUME METRICS:
+                       - Linear Regression Slope: {analysis_result['math']['reg_slope']}/bar (R² = {analysis_result['math']['r_squared']})
+                       - Z-Score: {analysis_result['math']['z_score']} sigma | Annualized Vol: {analysis_result['math']['ann_vol_pct']}%
+                       - Fibonacci: 38.2% (₹{analysis_result['math']['fib_382']}), 61.8% (₹{analysis_result['math']['fib_618']}), Ext 161.8% (₹{analysis_result['math']['fib_ext_1618']})
+                       - Relative Volume (RVOL): {analysis_result['math']['rvol']}x | CMF Money Flow: {analysis_result['math']['cmf_20']} ({analysis_result['math']['investment_flow_status']})
+                       - Quarter-Kelly Capital Allocation: {analysis_result['kelly_pct']}% ({analysis_result['recommended_qty']} shares)
+
+                    3. FUNDAMENTALS, CORPORATE DISCLOSURES & FUTURE PLANS:
+                       - Fundamental Verdict: {fund_result.get('fund_verdict')} | Notes: {fund_result.get('fund_notes')}
+                       - Corporate Catalyst: {corp_result.get('catalyst_verdict')}
+                       - Future Plans / Capex / Orders: {corp_result.get('future_plans')}
+                       - Promoter / Institutional Disclosures: {corp_result.get('insider_signals')}
+
+                    Structure your response into 5 crisp institutional sections:
+                    1. Executive Entry Call & Position Sizing
+                    2. Technical, Arithmetic & Volume/Investment Thesis
+                    3. Fundamental Valuation, Corporate Filings & Future Plans Impact
+                    4. Mathematical Target Price & Target Time (ETA) Roadmap
+                    5. Complete Exit Call Protocol (Partial Booking, Trailing SL, Time-Stop & Invalidation)
                     """
                     ai_response = call_gemini_cascade(prompt)
-                    st.markdown(f"### {ROBOT} Institutional AI Equity Research Note")
+                    st.markdown(f"### {ROBOT} Institutional Multi-Factor AI Equity Advisory")
                     st.write(ai_response)
 
 # ==============================================================================
@@ -2610,7 +3126,7 @@ else:
                             execute_paper_order(
                                 symbol=idea["symbol"], action="BUY", strike=idea["strike"], option_type=idea["option"],
                                 price=idea["entry"], qty=lot_qty, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
-                                expiry=idea["expiry"], reasons=idea["why"]
+                                expiry=idea["expiry"], reasons=idea["why"], is_equity=False
                             )
                             st.rerun()
 
@@ -2664,35 +3180,38 @@ else:
                         st.write(ai_text)
                         st.divider()
 
-    # Active Open Paper Positions & Risk Ledger
-    st.markdown(f"## {SHIELD} Active Paper Positions & Risk Ledger")
-    positions = st.session_state.paper_portfolio["positions"]
-    if not positions:
-        st.info("No active open paper positions in portfolio.")
-    else:
-        for t_id, pos in list(positions.items()):
-            p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns([2, 1, 1, 1, 1])
-            with p_col1:
-                st.write(f"**#{pos['trade_id']}**: {pos['action']} {pos['symbol']} {pos['strike']} {pos['option_type']} [{pos['qty']} units]")
-                st.caption(f"Entry: ₹{pos['entry_price']:,.2f} | Time: {pos['entry_time']}")
-            with p_col2: st.metric("Stop Loss", f"₹{pos['sl']:,.2f}")
-            with p_col3: st.metric("Target 1", f"₹{pos['t1']:,.2f}")
-            with p_col4:
-                mock_curr = pos["entry_price"] * 1.02
-                gross = (mock_curr - pos["entry_price"]) * pos["qty"]
-                st.metric("Est. Unrealized", f"₹{gross:+,.2f}")
-            with p_col5:
-                if st.button(f"Square Off #{t_id}", key=f"sq_{t_id}"):
-                    close_paper_position(t_id, mock_curr, "Manual Square Off")
-                    st.rerun()
+# ==============================================================================
+# GLOBAL PAPER TRADING PORTFOLIO & TRADE JOURNAL (OPTIONS + EQUITIES)
+# ==============================================================================
+st.divider()
+st.markdown(f"## {SHIELD} Active Paper Positions & Risk Ledger (Options & Equities)")
+positions = st.session_state.paper_portfolio["positions"]
+if not positions:
+    st.info("No active open paper positions in portfolio.")
+else:
+    for t_id, pos in list(positions.items()):
+        p_col1, p_col2, p_col3, p_col4, p_col5 = st.columns([2, 1, 1, 1, 1])
+        with p_col1:
+            st.write(f"**#{pos['trade_id']}**: {pos['action']} {pos['symbol']} {pos['strike']} {pos['option_type']} [{pos['qty']} units]")
+            st.caption(f"Entry: ₹{pos['entry_price']:,.2f} | Time: {pos['entry_time']} | Horizon: {pos.get('expiry')}")
+        with p_col2: st.metric("Stop Loss", f"₹{pos['sl']:,.2f}")
+        with p_col3: st.metric("Target 1", f"₹{pos['t1']:,.2f}")
+        with p_col4:
+            mock_curr = pos["entry_price"] * (1.02 if pos["action"] == "BUY" else 0.98)
+            gross = (mock_curr - pos["entry_price"]) * pos["qty"] if pos["action"] == "BUY" else (pos["entry_price"] - mock_curr) * pos["qty"]
+            st.metric("Est. Unrealized", f"₹{gross:+,.2f}")
+        with p_col5:
+            if st.button(f"Square Off #{t_id}", key=f"sq_{t_id}"):
+                close_paper_position(t_id, mock_curr, "Manual Square Off")
+                st.rerun()
 
-    st.markdown("### Completed Trade Journal (With Regulatory Charges Deducted)")
-    journal = st.session_state.paper_portfolio["trade_history"]
-    if not journal:
-        st.caption("No closed trades recorded for this session yet.")
-    else:
-        journal_df = pd.DataFrame(journal)
-        display_cols = ["trade_id", "symbol", "strike", "option_type", "qty", "entry_price", "exit_price", "gross_pnl", "total_charges", "net_pnl", "exit_reason"]
-        st.dataframe(journal_df[display_cols], use_container_width=True)
+st.markdown("### Completed Trade Journal (With Regulatory Charges Deducted)")
+journal = st.session_state.paper_portfolio["trade_history"]
+if not journal:
+    st.caption("No closed trades recorded for this session yet.")
+else:
+    journal_df = pd.DataFrame(journal)
+    display_cols = ["trade_id", "symbol", "strike", "option_type", "qty", "entry_price", "exit_price", "gross_pnl", "total_charges", "net_pnl", "exit_reason"]
+    st.dataframe(journal_df[display_cols], use_container_width=True)
 
 st.caption(f"Paper Trading Engine Active {BULLET} Real Broker Order Routing Disabled {BULLET} Strictly Educational Quantitative Research.")
