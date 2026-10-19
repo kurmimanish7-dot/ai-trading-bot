@@ -3045,8 +3045,8 @@ else:
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
-    chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
-    _ = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
+        chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
+        _raw_chain = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
         pcr = calculate_pcr(chain)
         vix_info = get_india_vix()
         fii_dii_info = fetch_fii_dii()
@@ -3072,8 +3072,8 @@ else:
 
         macro_data = global_macro_inst.fetch_macro_quotes() if global_macro_inst else {}
         chain_result = get_chain(selected_underlying, current_expiry)
-    chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
-    _ = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
+        chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
+        _ = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
         pcr_val = calculate_pcr(chain) or 1.05
         fii_dii_info = fetch_fii_dii()
 
@@ -3140,8 +3140,8 @@ else:
     def render_market_confluence_dashboard(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
-    chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
-    _ = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
+        chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
+        _ = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
         pcr = calculate_pcr(chain)
         df_candles = add_indicators(fetch_ohlcv(selected_underlying, tf["smartapi"], tf["days"]), current_live_price=spot)
         macro_quotes = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
