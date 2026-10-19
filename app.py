@@ -1145,59 +1145,87 @@ def load_expiries(symbol: str) -> List[str]:
 
     return generate_calendar_expiries(symbol)
 
-@st.cache_data(ttl=15, show_spinner=False)
-def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+# === LIVE-FIRST ENGINE V4 - Fixed expiry + price source tracking ===
+@st.cache_data(ttl=2, show_spinner=False)
+def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
+    """Returns (chain_df, raw_contracts, source_tag). source_tag includes sync time."""
+    sync_tag = datetime.now(IST).strftime("%H:%M:%S")
     opt_eng = get_options_engine()
     if opt_eng is not None and expiry:
         try:
             contracts = clean_df(opt_eng.get_option_contracts(underlying=symbol, expiry_date=expiry))
             quoted = clean_df(opt_eng.get_market_quote(contracts)) if not contracts.empty else contracts
-            if not quoted.empty: return quoted, contracts
-        except Exception:
-            pass
+            if not quoted.empty:
+                # Check if ltp column exists and >0
+                ltp_col = find_column(quoted, ["ltp", "lastPrice", "last_traded_price"])
+                if ltp_col and (pd.to_numeric(quoted[ltp_col], errors='coerce').fillna(0) > 0).any():
+                    return quoted, contracts, f"ANGEL_LIVE_{sync_tag}"
+        except Exception as e:
+            logger.debug(f"Angel get_chain failed {symbol} {expiry}: {e}")
 
-    if expiry and symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]:
+    # NSE/BSE direct fallback with strict expiry validation
+    if expiry and symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50"]:
         try:
-            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
-            raw = nse_client.get_json(url)
-            data = raw[0] if isinstance(raw, tuple) else raw
-            if data and isinstance(data, dict):
-                records = data.get("records", {})
-                if isinstance(records, dict):
-                    data_items = records.get("data", [])
-                    target_exp_norm = expiry_norm(expiry)
-                    available_expiries = [expiry_norm(x) for x in records.get("expiryDates", []) if expiry_norm(x)]
-                    if target_exp_norm not in available_expiries and available_expiries:
-                        target_exp_norm = available_expiries[0]
+            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}" if symbol in ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"] else f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}" if symbol in ["SENSEX","BANKEX","SENSEX50"] else ""
+            if url:
+                raw = nse_client.get_json(url)
+                data = raw[0] if isinstance(raw, tuple) else raw
+                if data and isinstance(data, dict):
+                    records = data.get("records", {})
+                    if isinstance(records, dict):
+                        data_items = records.get("data", [])
+                        target_exp_norm = expiry_norm(expiry)
+                        available_expiries = [expiry_norm(x) for x in records.get("expiryDates", []) if expiry_norm(x)]
+                        # CRITICAL: Do NOT auto-switch expiry - warn instead
+                        if target_exp_norm not in available_expiries:
+                            if available_expiries:
+                                logger.warning(f"Expiry {target_exp_norm} not live, available {available_expiries[0]}. Returning empty to avoid mismatch.")
+                            return pd.DataFrame(), pd.DataFrame(), f"EXPIRY_NOT_LIVE_{sync_tag}_REQ_{target_exp_norm}"
+                        matched_rows = []
+                        if isinstance(data_items, list):
+                            for item in data_items:
+                                if isinstance(item, dict) and expiry_norm(item.get("expiryDate")) == target_exp_norm:
+                                    strike = num(item.get("strikePrice"))
+                                    # NEVER divide strike blindly - NSE always in rupees
+                                    if "CE" in item and isinstance(item["CE"], dict):
+                                        ce = item["CE"]
+                                        matched_rows.append({
+                                            "strikePrice": strike, "option_type": "CE", "lastPrice": num(ce.get("lastPrice"), 0.0),
+                                            "openInterest": int(num(ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(ce.get("changeinOpenInterest"), 0)),
+                                            "change": num(ce.get("change"), 0.0), "impliedVolatility": num(ce.get("impliedVolatility"), 0.0),
+                                            "bidQty": int(num(ce.get("bidQty"), 0)), "bidprice": num(ce.get("bidprice"), 0.0),
+                                            "askQty": int(num(ce.get("askQty"), 0)), "askPrice": num(ce.get("askPrice"), 0.0),
+                                            "lastUpdateTime": ce.get("lastUpdateTime", sync_tag),
+                                            "expiryDate": target_exp_norm, "price_source": "NSE_LIVE",
+                                        })
+                                    if "PE" in item and isinstance(item["PE"], dict):
+                                        pe = item["PE"]
+                                        matched_rows.append({
+                                            "strikePrice": strike, "option_type": "PE", "lastPrice": num(pe.get("lastPrice"), 0.0),
+                                            "openInterest": int(num(pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(pe.get("changeinOpenInterest"), 0)),
+                                            "change": num(pe.get("change"), 0.0), "impliedVolatility": num(pe.get("impliedVolatility"), 0.0),
+                                            "bidQty": int(num(pe.get("bidQty"), 0)), "bidprice": num(pe.get("bidprice"), 0.0),
+                                            "askQty": int(num(pe.get("askQty"), 0)), "askPrice": num(pe.get("askPrice"), 0.0),
+                                            "lastUpdateTime": pe.get("lastUpdateTime", sync_tag),
+                                            "expiryDate": target_exp_norm, "price_source": "NSE_LIVE",
+                                        })
+                        if matched_rows:
+                            df = pd.DataFrame(matched_rows)
+                            return df, df, f"NSE_LIVE_{sync_tag}"
+        except Exception as e:
+            logger.debug(f"NSE get_chain failed {symbol} {expiry}: {e}")
 
-                    matched_rows = []
-                    if isinstance(data_items, list):
-                        for item in data_items:
-                            if isinstance(item, dict) and expiry_norm(item.get("expiryDate")) == target_exp_norm:
-                                strike = num(item.get("strikePrice"))
-                                if "CE" in item and isinstance(item["CE"], dict):
-                                    ce = item["CE"]
-                                    matched_rows.append({
-                                        "strikePrice": strike, "option_type": "CE", "lastPrice": num(ce.get("lastPrice"), 0.0),
-                                        "openInterest": int(num(ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(ce.get("changeinOpenInterest"), 0)),
-                                        "change": num(ce.get("change"), 0.0), "impliedVolatility": num(ce.get("impliedVolatility"), 12.8),
-                                        "expiryDate": target_exp_norm,
-                                    })
-                                if "PE" in item and isinstance(item["PE"], dict):
-                                    pe = item["PE"]
-                                    matched_rows.append({
-                                        "strikePrice": strike, "option_type": "PE", "lastPrice": num(pe.get("lastPrice"), 0.0),
-                                        "openInterest": int(num(pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(pe.get("changeinOpenInterest"), 0)),
-                                        "change": num(pe.get("change"), 0.0), "impliedVolatility": num(pe.get("impliedVolatility"), 12.8),
-                                        "expiryDate": target_exp_norm,
-                                    })
-                    if matched_rows:
-                        df = pd.DataFrame(matched_rows)
-                        return df, df
-        except Exception:
-            pass
+    return pd.DataFrame(), pd.DataFrame(), f"NO_DATA_{sync_tag}"
 
-    return pd.DataFrame(), pd.DataFrame()
+# Backward compatible wrapper
+def get_chain_compat(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    chain, raw, tag = get_chain(symbol, expiry)
+    return chain, raw
+
+def _orig_get_chain_placeholder():
+    pass
+
 
 def calculate_pcr(chain: pd.DataFrame) -> Optional[float]:
     if chain is not None and not chain.empty:
@@ -1897,8 +1925,16 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
     chg_oi = 0
     p_change = 0.0
     iv = 12.80
+    bid_price = 0.0
+    ask_price = 0.0
+    price_source = "THEORETICAL"
+    is_live = False
+    last_update = ""
 
     if chain is not None and not chain.empty:
+        # chain may be tuple (new API) - handle both
+        if isinstance(chain, tuple):
+            chain = chain[0]
         t_col = find_column(chain, ["option_type", "optionType", "type"])
         s_col = find_column(chain, ["strike", "strikePrice"])
         if t_col and s_col:
@@ -1907,22 +1943,41 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
             work = work[work["_t"] == side].copy()
             if not work.empty:
                 work["_s"] = pd.to_numeric(work[s_col], errors="coerce")
-                if work["_s"].max() > 200000: work["_s"] = work["_s"] / 100.0
+                # FIX: Do NOT divide by 100 blindly - only if clearly in paise ( > 500000 for NIFTY)
+                if work["_s"].max() > 500000:
+                    work["_s"] = work["_s"] / 100.0
                 work = work.dropna(subset=["_s"])
                 if not work.empty:
                     work["_dist"] = (work["_s"] - spot).abs()
                     best = work.sort_values("_dist").iloc[0]
                     base_strike = int(best["_s"])
-                    fetched_ltp = num(first_value(best, ["ltp", "lastPrice", "close", "last_traded_price"]))
-                    if fetched_ltp and fetched_ltp > 0: ltp = fetched_ltp
+                    fetched_ltp = num(first_value(best, ["lastPrice", "ltp", "last_traded_price", "close"]))
+                    if fetched_ltp and fetched_ltp > 0:
+                        ltp = fetched_ltp
+                        price_source = str(best.get("price_source", "LIVE"))
+                        is_live = True
                     oi = int(num(first_value(best, ["openInterest", "oi"]), 0) or 0)
                     chg_oi = int(num(first_value(best, ["changeinOpenInterest", "changeInOpenInterest", "change_oi"]), 0) or 0)
                     p_change = float(num(first_value(best, ["change", "pChange"]), 0.0) or 0.0)
                     fetched_iv = num(first_value(best, ["impliedVolatility", "iv"]))
-                    if fetched_iv and fetched_iv > 0: iv = fetched_iv
+                    if fetched_iv and fetched_iv > 0:
+                        iv = fetched_iv
+                    bid_price = float(num(first_value(best, ["bidprice", "bidPrice", "bid"]), 0) or 0)
+                    ask_price = float(num(first_value(best, ["askPrice", "askprice", "ask"]), 0) or 0)
+                    last_update = str(best.get("lastUpdateTime", "") or best.get("lastUpdateTime", ""))
+
+                    # If spread >15% use mid-price for illiquid strikes
+                    if bid_price > 0 and ask_price > 0 and ltp and ltp > 0:
+                        spread_pct = (ask_price - bid_price) / ltp
+                        if spread_pct > 0.15:
+                            ltp = round((bid_price + ask_price) / 2.0, 2)
+                            price_source = "MID_PRICE_ILLIQUID"
 
     g_info = calculate_advanced_greeks(spot=spot, strike=base_strike, dte_days=dte_days, rate=0.07, sigma=iv / 100.0, option_type=side)
-    if ltp is None or ltp <= 0: ltp = round(g_info["price"], 2)
+    if ltp is None or ltp <= 0:
+        ltp = round(g_info["price"], 2)
+        price_source = "THEORETICAL_BLACK_SCHOLES"
+        is_live = False
     buildup_type = classify_oi_buildup(p_change, chg_oi)
 
     return {
@@ -1930,7 +1985,10 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
         "buildup": buildup_type, "delta": round(g_info["delta"], 2), "gamma": round(g_info["gamma"], 5),
         "theta": round(g_info["theta"], 1), "vega": round(g_info["vega"], 1), "vanna": round(g_info["vanna"], 3),
         "charm": round(g_info["charm"], 3), "iv": round(iv, 1),
+        "price_source": price_source, "is_live": is_live, "bid": bid_price, "ask": ask_price,
+        "last_update": last_update, "dte": round(dte_days, 2),
     }
+
 
 def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDEX", option_side: Optional[str] = None, expiry: Optional[str] = None, chain: Optional[pd.DataFrame] = None, confluence: Optional[Dict[str, Any]] = None, vix_info: Optional[Dict[str, Any]] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
