@@ -140,8 +140,16 @@ def market_open() -> bool:
     t = now.time()
     return dtime(9, 15) <= t <= dtime(15, 30)
 
+
 # =====================================================================
-# 4. REGULATORY CONTRACT METADATA (SEBI 2025–2026 MANDATE)
+# 4. REGULATORY CONTRACT METADATA (SEBI 2025–2026 MANDATE - UPDATED AS OF 20-OCT-2026)
+# Sources:
+# - NSE Circular FAOP/70616 lot size revision 75->65 etc effective Dec 30 2025 EOD [2335594941073333577†L5-L9]
+# - NSE lot table: NIFTY 65, BANKNIFTY 30, FINNIFTY 60, MIDCPNIFTY 120 [3824589797575533572†L17-L20]
+# - BSE lot table: SENSEX 10->20, BANKEX 15->30 [4021917005872316260†L30-L33]
+# - NSE expiry shift Thu->Tue from Aug 28 / Sep 1 2025 [3377495811424236939†L5-L10]
+# - BSE expiry Tue->Thu Sep 1 2025, SEBI one-expiry-per-exchange [1942418941039830722†L5-L9]
+# - SEBI single weekly benchmark rule Nov 20 2024, other weeklies discontinued [1942418941039830722†L19-L22]
 # =====================================================================
 INDEX_METADATA = {
     "NIFTY": {
@@ -152,10 +160,17 @@ INDEX_METADATA = {
         "live_tokens": ["26000", "99926000"],
         "candle_token": "99926000",
         "yfinance": "^NSEI",
-        "lot_size": 65,
+        "lot_size": 65,  # Revised from 75 to 65 effective Dec 30 2025 EOD per NSE circular
+        "lot_size_prev": 75,
+        "lot_effective_from": "2025-12-30",
         "step": 50,
-        "has_weekly": True,
-        "weekly_day": 1,
+        "has_weekly": True,  # Only NIFTY retains weekly on NSE post SEBI Nov 2024 rule
+        "weekly_day": 1,  # 1=Tuesday per Sep 1 2025 SEBI mandate (was 3=Thursday)
+        "weekly_day_name": "Tuesday",
+        "monthly_expiry": "last_tuesday",
+        "freeze_qty": 1800,  # NSE quantity freeze limit Sep 2026
+        "is_benchmark_weekly": True,
+        "sebi_weekly_benchmark": True,
     },
     "BANKNIFTY": {
         "exchange": "NSE",
@@ -165,10 +180,18 @@ INDEX_METADATA = {
         "live_tokens": ["26009", "99926009"],
         "candle_token": "99926009",
         "yfinance": "^NSEBANK",
-        "lot_size": 30,
+        "lot_size": 30,  # Revised from 35 to 30 effective Dec 30 2025 EOD
+        "lot_size_prev": 35,
+        "lot_effective_from": "2025-12-30",
         "step": 100,
-        "has_weekly": False,
-        "weekly_day": 1,
+        "has_weekly": False,  # DISCONTINUED Nov 13 2024 per SEBI one-benchmark rule
+        "weekly_day": 1,  # Monthly still Tuesday
+        "weekly_day_name": "Tuesday",
+        "monthly_expiry": "last_tuesday",
+        "freeze_qty": 600,
+        "is_benchmark_weekly": False,
+        "sebi_weekly_benchmark": False,
+        "weekly_discontinued_from": "2024-11-13",
     },
     "FINNIFTY": {
         "exchange": "NSE",
@@ -178,10 +201,17 @@ INDEX_METADATA = {
         "live_tokens": ["99926037", "26037"],
         "candle_token": "99926037",
         "yfinance": "NIFTY_FIN_SERVICE.NS",
-        "lot_size": 60,
+        "lot_size": 60,  # Revised from 65 to 60
+        "lot_size_prev": 65,
+        "lot_effective_from": "2025-12-30",
         "step": 50,
-        "has_weekly": False,
+        "has_weekly": False,  # Discontinued Nov 2024
         "weekly_day": 1,
+        "weekly_day_name": "Tuesday",
+        "monthly_expiry": "last_tuesday",
+        "freeze_qty": 1800,
+        "is_benchmark_weekly": False,
+        "weekly_discontinued_from": "2024-11-20",
     },
     "MIDCPNIFTY": {
         "exchange": "NSE",
@@ -191,10 +221,36 @@ INDEX_METADATA = {
         "live_tokens": ["99926074", "26074"],
         "candle_token": "99926074",
         "yfinance": "NIFTY_MIDCAP_100.NS",
-        "lot_size": 120,
+        "lot_size": 120,  # Revised from 140 to 120
+        "lot_size_prev": 140,
+        "lot_effective_from": "2025-12-30",
         "step": 25,
+        "has_weekly": False,  # Discontinued Nov 2024
+        "weekly_day": 1,
+        "weekly_day_name": "Tuesday",
+        "monthly_expiry": "last_tuesday",
+        "freeze_qty": 2800,
+        "is_benchmark_weekly": False,
+        "weekly_discontinued_from": "2024-11-20",
+    },
+    "NIFTYNXT50": {
+        "exchange": "NSE",
+        "symbol": "Nifty Next 50",
+        "alt_symbols": ["NIFTY NEXT 50", "NXT50"],
+        "token": "99926037",
+        "live_tokens": ["99926037"],
+        "candle_token": "99926037",
+        "yfinance": "^NIFTY",
+        "lot_size": 25,  # Unchanged
+        "lot_size_prev": 25,
+        "lot_effective_from": "2025-01-01",
+        "step": 50,
         "has_weekly": False,
         "weekly_day": 1,
+        "weekly_day_name": "Tuesday",
+        "monthly_expiry": "last_tuesday",
+        "freeze_qty": 600,
+        "is_benchmark_weekly": False,
     },
     "SENSEX": {
         "exchange": "BSE",
@@ -204,10 +260,17 @@ INDEX_METADATA = {
         "live_tokens": ["99919000", "1"],
         "candle_token": "99919000",
         "yfinance": "^BSESN",
-        "lot_size": 20,
+        "lot_size": 20,  # Revised from 10 to 20 in 2025
+        "lot_size_prev": 10,
+        "lot_effective_from": "2024-11-20",
         "step": 100,
-        "has_weekly": True,
-        "weekly_day": 3,
+        "has_weekly": True,  # BSE benchmark weekly - retained after SEBI Sep 2025 rule
+        "weekly_day": 3,  # Thursday per Sep 1 2025 (was Tuesday)
+        "weekly_day_name": "Thursday",
+        "monthly_expiry": "last_thursday",
+        "freeze_qty": 1000,
+        "is_benchmark_weekly": True,
+        "sebi_weekly_benchmark": True,
     },
     "BANKEX": {
         "exchange": "BSE",
@@ -217,10 +280,35 @@ INDEX_METADATA = {
         "live_tokens": ["99919012"],
         "candle_token": "99919012",
         "yfinance": "^BSEBANK",
-        "lot_size": 30,
+        "lot_size": 30,  # Revised from 15 to 30
+        "lot_size_prev": 15,
+        "lot_effective_from": "2024-11-20",
+        "step": 100,
+        "has_weekly": False,  # BSE only SENSEX weekly retained post Sep 2025
+        "weekly_day": 3,
+        "weekly_day_name": "Thursday",
+        "monthly_expiry": "last_thursday",
+        "freeze_qty": 600,
+        "is_benchmark_weekly": False,
+    },
+    "SENSEX50": {
+        "exchange": "BSE",
+        "symbol": "SENSEX 50",
+        "alt_symbols": ["BSE SENSEX 50"],
+        "token": "99919050",
+        "live_tokens": ["99919050"],
+        "candle_token": "99919050",
+        "yfinance": "^BSESN",
+        "lot_size": 70,  # Revised 60->70 effective Dec 31 2025
+        "lot_size_prev": 60,
+        "lot_effective_from": "2025-12-31",
         "step": 100,
         "has_weekly": False,
         "weekly_day": 3,
+        "weekly_day_name": "Thursday",
+        "monthly_expiry": "last_thursday",
+        "freeze_qty": 800,
+        "is_benchmark_weekly": False,
     },
     "INDIA_VIX": {
         "exchange": "NSE",
@@ -234,7 +322,20 @@ INDEX_METADATA = {
         "step": 1,
         "has_weekly": False,
         "weekly_day": 1,
+        "weekly_day_name": "Tuesday",
+        "monthly_expiry": "last_tuesday",
+        "freeze_qty": 1,
+        "is_benchmark_weekly": False,
     },
+}
+
+# Official SEBI/NSE/BSE expiry mapping for validation
+SEBI_EXPIRY_RULES = {
+    "effective_from": "2025-09-01",
+    "circular": "SEBI/HO/MRD/TPD-1/P/CIR/2025/76 dated 2025-05-26",
+    "NSE": {"day": "Tuesday", "day_num": 1, "weekly_benchmark": "NIFTY"},
+    "BSE": {"day": "Thursday", "day_num": 3, "weekly_benchmark": "SENSEX"},
+    "one_weekly_per_exchange": True,
 }
 
 UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]
