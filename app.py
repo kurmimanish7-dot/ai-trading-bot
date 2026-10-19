@@ -122,7 +122,9 @@ def get_preceding_trading_day(d: date) -> date:
 def add_trading_days(start_date: date, trading_days: int) -> date:
     """Advances a date by N valid exchange trading days, skipping weekends and holidays."""
     cur = start_date
-    remaining = max(1, int(trading_days))
+    remaining = max(0, int(trading_days))
+    if remaining == 0:
+        return cur
     while remaining > 0:
         cur += timedelta(days=1)
         if not is_trading_holiday(cur):
@@ -134,7 +136,9 @@ def market_open() -> bool:
     now = datetime.now(IST)
     if is_trading_holiday(now.date()):
         return False
-    return dtime(9, 15) <= now.time() <= dtime(15, 30)
+    # Compare using IST-aware time
+    t = now.time()
+    return dtime(9, 15) <= t <= dtime(15, 30)
 
 # =====================================================================
 # 4. REGULATORY CONTRACT METADATA (SEBI 2025–2026 MANDATE)
@@ -499,7 +503,8 @@ def secret(name: str) -> str:
     try:
         val = st.secrets.get(name)
         return str(val).strip() if val else ""
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Secret {name} not found: {e}")
         return ""
 
 ANGEL_API_KEY = secret("ANGEL_API_KEY")
@@ -631,31 +636,27 @@ def load_5000_equity_master() -> Dict[str, Dict[str, Any]]:
     master.update(PRIMARY_SEED_EQUITIES)
 
     try:
+        import csv, io
         nse_url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
         resp = requests.get(nse_url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
         if resp.ok and len(resp.text) > 1000:
-            lines = resp.text.splitlines()
-            header = [h.strip().upper() for h in lines[0].split(",")]
-            sym_idx = header.index("SYMBOL") if "SYMBOL" in header else 0
-            name_idx = header.index("NAME OF COMPANY") if "NAME OF COMPANY" in header else 1
-            series_idx = header.index("SERIES") if "SERIES" in header else 2
-
-            for line in lines[1:]:
-                parts = [p.strip().strip('"') for p in line.split(",")]
-                if len(parts) > max(sym_idx, name_idx, series_idx):
-                    symbol = parts[sym_idx].upper()
-                    series = parts[series_idx].upper()
-                    name = parts[name_idx]
-                    if series in ["EQ", "BE", "SM", "ST"] and symbol:
-                        if symbol not in master:
-                            master[symbol] = {
-                                "name": name,
-                                "token_nse": None,
-                                "token_bse": None,
-                                "yfinance": f"{symbol}.NS",
-                                "exchange": "NSE",
-                                "sector": "Listed Equity",
-                            }
+            reader = csv.DictReader(io.StringIO(resp.text))
+            for row in reader:
+                # Normalize keys
+                r = {k.strip().upper(): v for k,v in row.items()}
+                symbol = str(r.get("SYMBOL","")).strip().upper()
+                series = str(r.get("SERIES","")).strip().upper()
+                name = str(r.get("NAME OF COMPANY", symbol)).strip()
+                if series in ["EQ", "BE", "SM", "ST"] and symbol:
+                    if symbol not in master:
+                        master[symbol] = {
+                            "name": name,
+                            "token_nse": None,
+                            "token_bse": None,
+                            "yfinance": f"{symbol}.NS",
+                            "exchange": "NSE",
+                            "sector": "Listed Equity",
+                        }
     except Exception as exc:
         logger.info("NSE EQUITY_L.csv online fetch skipped: %s", exc)
 
@@ -1221,22 +1222,30 @@ def compute_gex_and_max_pain(chain: pd.DataFrame, spot: Optional[float], symbol:
         p_oi = float(p_sub["_oi"].iloc[0]) if not p_sub.empty else 0.0
         iv_val = float(c_sub["_iv"].iloc[0]) if not c_sub.empty and c_sub["_iv"].iloc[0] > 0 else 12.8
 
-        g_info = calculate_advanced_greeks(spot, s_val, dte_days=6.0, rate=0.07, sigma=iv_val/100.0, option_type="CE")
-        g_val = g_info["gamma"]
+        g_ce = calculate_advanced_greeks(spot, s_val, dte_days=6.0, rate=0.07, sigma=iv_val/100.0, option_type="CE")["gamma"]
+        g_pe = calculate_advanced_greeks(spot, s_val, dte_days=6.0, rate=0.07, sigma=iv_val/100.0, option_type="PE")["gamma"]
 
-        ce_gex = (spot**2 * g_val * c_oi * lot_size * 0.01) / 1e7
-        pe_gex = (-spot**2 * g_val * p_oi * lot_size * 0.01) / 1e7
+        ce_gex = (spot**2 * g_ce * c_oi * lot_size * 0.01) / 1e7
+        pe_gex = (-spot**2 * g_pe * p_oi * lot_size * 0.01) / 1e7
         net_s_gex = ce_gex + pe_gex
         strike_gex_map[s_val] = net_s_gex
         total_gex += net_s_gex
 
     gamma_flip = spot
     cum_gex = 0.0
-    for s in sorted(strike_gex_map.keys()):
+    # Cumulative from lowest strike upward; flip where sign changes to positive
+    sorted_strikes = sorted(strike_gex_map.keys())
+    prev_cum = None
+    for s in sorted_strikes:
+        prev_cum = cum_gex
         cum_gex += strike_gex_map[s]
-        if cum_gex >= 0:
+        if prev_cum is not None and prev_cum < 0 <= cum_gex:
             gamma_flip = s
             break
+    else:
+        # If never flipped, use spot where cum closest to zero
+        if sorted_strikes:
+            gamma_flip = min(sorted_strikes, key=lambda k: abs(sum(v for kk,v in strike_gex_map.items() if kk <= k)))
 
     gex_regime = "POSITIVE (MEAN-REVERTING)" if total_gex >= 0 else "NEGATIVE (VOLATILITY EXPANSION)"
 
@@ -1256,9 +1265,10 @@ def compute_gex_and_max_pain(chain: pd.DataFrame, spot: Optional[float], symbol:
 
 def calculate_quarter_kelly(p_win: float, reward_risk: float) -> float:
     if reward_risk <= 0: return 0.0
+    p_win = min(max(p_win, 0.01), 0.99)  # clamp to avoid 0/1 extremes
     q_loss = 1.0 - p_win
     kelly = (p_win * reward_risk - q_loss) / reward_risk
-    quarter_kelly = max(0.0, kelly / 4.0)
+    quarter_kelly = max(0.0, min(kelly / 4.0, 0.25))  # cap at 25%
     return round(quarter_kelly * 100.0, 1)
 
 def classify_oi_buildup(price_change: float, oi_change: float) -> str:
@@ -1747,7 +1757,8 @@ def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
     if pos["action"] == "BUY":
         costs = calculate_trade_friction(pos["entry_price"], fill_exit, pos["qty"], is_option=not is_eq, is_delivery_equity=is_eq)
     else:
-        costs = calculate_trade_friction(fill_exit, pos["entry_price"], pos["qty"], is_option=not is_eq, is_delivery_equity=False)
+        # SELL-first trade: buy back later, so friction params same as BUY case (buy=exit, sell=entry reversed for PnL but charges symmetric)
+        costs = calculate_trade_friction(fill_exit, pos["entry_price"], pos["qty"], is_option=not is_eq, is_delivery_equity=is_eq)
 
     pos["exit_price"] = fill_exit
     pos["exit_time"] = datetime.now(IST).strftime("%H:%M:%S")
