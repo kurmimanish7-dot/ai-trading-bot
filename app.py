@@ -1146,82 +1146,104 @@ def load_expiries(symbol: str) -> List[str]:
     return generate_calendar_expiries(symbol)
 
 
-# === LIVE-FIRST ENGINE V4 - Fixed expiry + price source tracking ===
+
+# === LIVE-FIRST ENGINE V4.1 - Backward Compatible Fix for line 3025 ===
+# Returns 2 values (chain_df, raw) to avoid ValueError, but embeds source in df.attrs and st.session_state
 @st.cache_data(ttl=2, show_spinner=False)
-def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
-    """Returns (chain_df, raw_contracts, source_tag). source_tag includes sync time."""
+def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Live-first chain fetcher - returns 2 values for backward compat. Source stored in df.attrs['source_tag']"""
     sync_tag = datetime.now(IST).strftime("%H:%M:%S")
+    source_tag = f"NO_DATA_{sync_tag}"
+    chain_df = pd.DataFrame()
+    raw_df = pd.DataFrame()
+
     opt_eng = get_options_engine()
     if opt_eng is not None and expiry:
         try:
             contracts = clean_df(opt_eng.get_option_contracts(underlying=symbol, expiry_date=expiry))
             quoted = clean_df(opt_eng.get_market_quote(contracts)) if not contracts.empty else contracts
             if not quoted.empty:
-                # Check if ltp column exists and >0
                 ltp_col = find_column(quoted, ["ltp", "lastPrice", "last_traded_price"])
                 if ltp_col and (pd.to_numeric(quoted[ltp_col], errors='coerce').fillna(0) > 0).any():
-                    return quoted, contracts, f"ANGEL_LIVE_{sync_tag}"
+                    chain_df = quoted
+                    raw_df = contracts
+                    source_tag = f"ANGEL_LIVE_{sync_tag}"
         except Exception as e:
             logger.debug(f"Angel get_chain failed {symbol} {expiry}: {e}")
 
-    # NSE/BSE direct fallback with strict expiry validation
-    if expiry and symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50"]:
+    # NSE fallback with strict expiry validation
+    if chain_df.empty and expiry and symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50"]:
         try:
-            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}" if symbol in ["NIFTY","BANKNIFTY","FINNIFTY","MIDCPNIFTY"] else f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}" if symbol in ["SENSEX","BANKEX","SENSEX50"] else ""
-            if url:
-                raw = nse_client.get_json(url)
-                data = raw[0] if isinstance(raw, tuple) else raw
-                if data and isinstance(data, dict):
-                    records = data.get("records", {})
-                    if isinstance(records, dict):
-                        data_items = records.get("data", [])
-                        target_exp_norm = expiry_norm(expiry)
-                        available_expiries = [expiry_norm(x) for x in records.get("expiryDates", []) if expiry_norm(x)]
-                        # CRITICAL: Do NOT auto-switch expiry - warn instead
-                        if target_exp_norm not in available_expiries:
-                            if available_expiries:
-                                logger.warning(f"Expiry {target_exp_norm} not live, available {available_expiries[0]}. Returning empty to avoid mismatch.")
-                            return pd.DataFrame(), pd.DataFrame(), f"EXPIRY_NOT_LIVE_{sync_tag}_REQ_{target_exp_norm}"
+            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
+            raw = nse_client.get_json(url)
+            data = raw[0] if isinstance(raw, tuple) else raw
+            if data and isinstance(data, dict):
+                records = data.get("records", {})
+                if isinstance(records, dict):
+                    data_items = records.get("data", [])
+                    target_exp_norm = expiry_norm(expiry)
+                    available_expiries = [expiry_norm(x) for x in records.get("expiryDates", []) if expiry_norm(x)]
+                    if target_exp_norm in available_expiries:
                         matched_rows = []
-                        if isinstance(data_items, list):
-                            for item in data_items:
-                                if isinstance(item, dict) and expiry_norm(item.get("expiryDate")) == target_exp_norm:
-                                    strike = num(item.get("strikePrice"))
-                                    # NEVER divide strike blindly - NSE always in rupees
-                                    if "CE" in item and isinstance(item["CE"], dict):
-                                        ce = item["CE"]
-                                        matched_rows.append({
-                                            "strikePrice": strike, "option_type": "CE", "lastPrice": num(ce.get("lastPrice"), 0.0),
-                                            "openInterest": int(num(ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(ce.get("changeinOpenInterest"), 0)),
-                                            "change": num(ce.get("change"), 0.0), "impliedVolatility": num(ce.get("impliedVolatility"), 0.0),
-                                            "bidQty": int(num(ce.get("bidQty"), 0)), "bidprice": num(ce.get("bidprice"), 0.0),
-                                            "askQty": int(num(ce.get("askQty"), 0)), "askPrice": num(ce.get("askPrice"), 0.0),
-                                            "lastUpdateTime": ce.get("lastUpdateTime", sync_tag),
-                                            "expiryDate": target_exp_norm, "price_source": "NSE_LIVE",
-                                        })
-                                    if "PE" in item and isinstance(item["PE"], dict):
-                                        pe = item["PE"]
-                                        matched_rows.append({
-                                            "strikePrice": strike, "option_type": "PE", "lastPrice": num(pe.get("lastPrice"), 0.0),
-                                            "openInterest": int(num(pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(pe.get("changeinOpenInterest"), 0)),
-                                            "change": num(pe.get("change"), 0.0), "impliedVolatility": num(pe.get("impliedVolatility"), 0.0),
-                                            "bidQty": int(num(pe.get("bidQty"), 0)), "bidprice": num(pe.get("bidprice"), 0.0),
-                                            "askQty": int(num(pe.get("askQty"), 0)), "askPrice": num(pe.get("askPrice"), 0.0),
-                                            "lastUpdateTime": pe.get("lastUpdateTime", sync_tag),
-                                            "expiryDate": target_exp_norm, "price_source": "NSE_LIVE",
-                                        })
+                        for item in data_items:
+                            if isinstance(item, dict) and expiry_norm(item.get("expiryDate")) == target_exp_norm:
+                                strike = num(item.get("strikePrice"))
+                                if "CE" in item and isinstance(item["CE"], dict):
+                                    ce = item["CE"]
+                                    matched_rows.append({
+                                        "strikePrice": strike, "option_type": "CE", "lastPrice": num(ce.get("lastPrice"), 0.0),
+                                        "openInterest": int(num(ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(ce.get("changeinOpenInterest"), 0)),
+                                        "change": num(ce.get("change"), 0.0), "impliedVolatility": num(ce.get("impliedVolatility"), 0.0),
+                                        "bidQty": int(num(ce.get("bidQty"), 0)), "bidprice": num(ce.get("bidprice"), 0.0),
+                                        "askQty": int(num(ce.get("askQty"), 0)), "askPrice": num(ce.get("askPrice"), 0.0),
+                                        "lastUpdateTime": ce.get("lastUpdateTime", sync_tag),
+                                        "expiryDate": target_exp_norm, "price_source": "NSE_LIVE",
+                                    })
+                                if "PE" in item and isinstance(item["PE"], dict):
+                                    pe = item["PE"]
+                                    matched_rows.append({
+                                        "strikePrice": strike, "option_type": "PE", "lastPrice": num(pe.get("lastPrice"), 0.0),
+                                        "openInterest": int(num(pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(pe.get("changeinOpenInterest"), 0)),
+                                        "change": num(pe.get("change"), 0.0), "impliedVolatility": num(pe.get("impliedVolatility"), 0.0),
+                                        "bidQty": int(num(pe.get("bidQty"), 0)), "bidprice": num(pe.get("bidprice"), 0.0),
+                                        "askQty": int(num(pe.get("askQty"), 0)), "askPrice": num(pe.get("askPrice"), 0.0),
+                                        "lastUpdateTime": pe.get("lastUpdateTime", sync_tag),
+                                        "expiryDate": target_exp_norm, "price_source": "NSE_LIVE",
+                                    })
                         if matched_rows:
-                            df = pd.DataFrame(matched_rows)
-                            return df, df, f"NSE_LIVE_{sync_tag}"
+                            chain_df = pd.DataFrame(matched_rows)
+                            raw_df = chain_df.copy()
+                            source_tag = f"NSE_LIVE_{sync_tag}"
+                    else:
+                        logger.warning(f"Expiry {target_exp_norm} not live, available {available_expiries[:2]}")
+                        source_tag = f"EXPIRY_NOT_LIVE_{sync_tag}"
         except Exception as e:
             logger.debug(f"NSE get_chain failed {symbol} {expiry}: {e}")
 
-    return pd.DataFrame(), pd.DataFrame(), f"NO_DATA_{sync_tag}"
+    # Store source tag in attrs for debugging (does not break unpacking)
+    try:
+        chain_df.attrs["source_tag"] = source_tag
+        raw_df.attrs["source_tag"] = source_tag
+        # Also store in session_state for UI
+        if "last_chain_source" not in st.session_state:
+            st.session_state["last_chain_source"] = {}
+        st.session_state["last_chain_source"][f"{symbol}_{expiry}"] = source_tag
+    except Exception:
+        pass
 
-# Backward compatible wrapper
-def get_chain_compat(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    chain, raw, tag = get_chain(symbol, expiry)
-    return chain, raw
+    return chain_df, raw_df
+
+def get_chain_with_tag(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
+    """Extended version that returns 3 values if you want tag explicitly"""
+    chain, raw = get_chain(symbol, expiry)
+    tag = ""
+    try:
+        tag = chain.attrs.get("source_tag", "") or raw.attrs.get("source_tag", "")
+        if not tag:
+            tag = st.session_state.get("last_chain_source", {}).get(f"{symbol}_{expiry}", "UNKNOWN")
+    except Exception:
+        tag = "UNKNOWN"
+    return chain, raw, tag
 
 def _orig_get_chain_placeholder():
     pass
@@ -3022,7 +3044,9 @@ else:
     @live_fragment(run_every=2)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
-        chain, _ = get_chain(selected_underlying, current_expiry)
+        chain_result = get_chain(selected_underlying, current_expiry)
+    chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
+    _ = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
         pcr = calculate_pcr(chain)
         vix_info = get_india_vix()
         fii_dii_info = fetch_fii_dii()
@@ -3047,7 +3071,9 @@ else:
         st.caption(f"Cross-Asset Synthesis: Nifty 50 Gap Model {BULLET} FII/DII Institutional Flow {BULLET} Global Radar")
 
         macro_data = global_macro_inst.fetch_macro_quotes() if global_macro_inst else {}
-        chain, _ = get_chain(selected_underlying, current_expiry)
+        chain_result = get_chain(selected_underlying, current_expiry)
+    chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
+    _ = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
         pcr_val = calculate_pcr(chain) or 1.05
         fii_dii_info = fetch_fii_dii()
 
@@ -3113,7 +3139,9 @@ else:
     @live_fragment(run_every=10)
     def render_market_confluence_dashboard(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
-        chain, _ = get_chain(selected_underlying, current_expiry)
+        chain_result = get_chain(selected_underlying, current_expiry)
+    chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
+    _ = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
         pcr = calculate_pcr(chain)
         df_candles = add_indicators(fetch_ohlcv(selected_underlying, tf["smartapi"], tf["days"]), current_live_price=spot)
         macro_quotes = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
