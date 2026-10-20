@@ -602,11 +602,43 @@ nse_client = get_nse_session()
 
 def secret(name: str) -> str:
     try:
-        val = st.secrets.get(name)
-        return str(val).strip() if val else ""
+        # Try Streamlit secrets first
+        if hasattr(st, 'secrets') and name in st.secrets:
+            val = st.secrets.get(name)
+            if val:
+                return str(val).strip()
     except Exception as e:
-        logger.debug(f"Secret {name} not found: {e}")
+        logger.debug(f"Secret {name} not found in st.secrets: {e}")
+    # Fallback to env
+    try:
+        import os
+        val = os.getenv(name, "")
+        return str(val).strip() if val else ""
+    except Exception:
         return ""
+
+@st.cache_resource(ttl=82800, show_spinner=False)
+def get_cached_telemetry(api_key, client_code, pin, totp_secret):
+    from file5839641660682980609 import TelemetryEngine
+    # Import locally to avoid circular
+    import importlib.util, sys
+    # Use the fixed class if available
+    try:
+        # Try to use existing TelemetryEngine from global scope
+        return TelemetryEngine(api_key, client_code, pin, totp_secret)
+    except Exception as e:
+        logger.error(f"TelemetryEngine init failed: {e}")
+        raise
+
+@st.cache_resource(ttl=86400, show_spinner=False)
+def get_cached_options_engine(jwt_token, api_key, client_code):
+    try:
+        from options_engine import create_options_engine
+        return create_options_engine(jwt_token, api_key, client_code)
+    except Exception:
+        from file5074849387051092380 import create_options_engine as _create
+        return _create(jwt_token, api_key, client_code)
+""
 
 ANGEL_API_KEY = secret("ANGEL_API_KEY")
 ANGEL_CLIENT_CODE = secret("ANGEL_CLIENT_CODE")
