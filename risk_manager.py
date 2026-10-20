@@ -261,3 +261,12 @@ class RiskManager:
             "quantity_fraction": quantity_fraction,
             "reason": "Risk validation passed.",
         }
+
+
+    def validate_position_size(self, quantity: int, price: float, max_capital_pct: float = 2.0, capital: float = 500000.0) -> dict:
+        """FIX: Added position size vs capital check"""
+        notional = quantity * price
+        max_allowed = capital * (max_capital_pct / 100.0)
+        if notional > max_allowed:
+            return {"allowed": False, "reason": f"Position notional {notional} exceeds {max_capital_pct}% of capital {max_allowed}"}
+        return {"allowed": True}
