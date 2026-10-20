@@ -1,3 +1,6 @@
+from zoneinfo import ZoneInfo
+IST = ZoneInfo('Asia/Kolkata')
+import time
 import datetime
 import pandas as pd
 
@@ -45,10 +48,11 @@ class TelemetryEngine:
                 f"Angel One login failed: {session}"
             )
 
+        self.session_data = session.get('data', {}) if isinstance(session, dict) else {}
+        self.jwt_token = self.session_data.get('jwtToken') or self.session_data.get('jwt_token') or ''
+        self.refresh_token = self.session_data.get('refreshToken') or ''
         try:
-            self.feed_token = (
-                self.smart_api.getfeedToken()
-            )
+            self.feed_token = self.smart_api.getfeedToken()
         except Exception:
             self.feed_token = None
 
@@ -219,7 +223,8 @@ class TelemetryEngine:
             if not token:
                 return pd.DataFrame()
 
-            now = datetime.datetime.now()
+            now = datetime.datetime.now(IST) if 'IST' in globals() else datetime.datetime.now(datetime.timezone.utc).astimezone()
+            # FIX: Added IST awareness
 
             days = max(
                 int(days or 1),
@@ -245,6 +250,8 @@ class TelemetryEngine:
                 ),
             }
 
+            # FIX: Rate limit protection
+            time.sleep(0.35)
             response = (
                 self.smart_api.getCandleData(
                     params
