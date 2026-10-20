@@ -602,43 +602,11 @@ nse_client = get_nse_session()
 
 def secret(name: str) -> str:
     try:
-        # Try Streamlit secrets first
-        if hasattr(st, 'secrets') and name in st.secrets:
-            val = st.secrets.get(name)
-            if val:
-                return str(val).strip()
-    except Exception as e:
-        logger.debug(f"Secret {name} not found in st.secrets: {e}")
-    # Fallback to env
-    try:
-        import os
-        val = os.getenv(name, "")
+        val = st.secrets.get(name)
         return str(val).strip() if val else ""
-    except Exception:
-        return ""
-
-@st.cache_resource(ttl=82800, show_spinner=False)
-def get_cached_telemetry(api_key, client_code, pin, totp_secret):
-    from file5839641660682980609 import TelemetryEngine
-    # Import locally to avoid circular
-    import importlib.util, sys
-    # Use the fixed class if available
-    try:
-        # Try to use existing TelemetryEngine from global scope
-        return TelemetryEngine(api_key, client_code, pin, totp_secret)
     except Exception as e:
-        logger.error(f"TelemetryEngine init failed: {e}")
-        raise
-
-@st.cache_resource(ttl=86400, show_spinner=False)
-def get_cached_options_engine(jwt_token, api_key, client_code):
-    try:
-        from options_engine import create_options_engine
-        return create_options_engine(jwt_token, api_key, client_code)
-    except Exception:
-        from file5074849387051092380 import create_options_engine as _create
-        return _create(jwt_token, api_key, client_code)
-""
+        logger.debug(f"Secret {name} not found: {e}")
+        return ""
 
 ANGEL_API_KEY = secret("ANGEL_API_KEY")
 ANGEL_CLIENT_CODE = secret("ANGEL_CLIENT_CODE")
@@ -2723,54 +2691,119 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
 # =====================================================================
 # 20. STRUCTURED AI INTEGRATION (GEMINI CASCADE ENGINE)
 # =====================================================================
+"""
+FIXED Gemini Cascade - Replace entire call_gemini_cascade function in app.py
+"""
+
+# =====================================================================
+# 20. STRUCTURED AI INTEGRATION (GEMINI CASCADE ENGINE) - FIXED Oct 2026
+# Google deprecated gemini-2.0-flash, gemini-1.5-flash on Oct 2026
+# New stable models: gemini-2.5-flash, gemini-2.5-pro, gemini-3.8-flash
+# =====================================================================
 def call_gemini_cascade(prompt: str) -> str:
-    if not GEMINI_API_KEY: return "Gemini API Key missing in Streamlit Secrets."
-    models_to_attempt = [GEMINI_MODEL, "gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
-    models_to_attempt = list(dict.fromkeys([m for m in models_to_attempt if m]))
+    if not GEMINI_API_KEY: 
+        return "Gemini API Key missing in Streamlit Secrets. Add GEMINI_API_KEY in secrets."
+    
+    # FIXED Oct 2026: Updated model list - 2.0-flash deprecated
+    # Priority: User's custom model > 2.5-flash (stable) > 3.8-flash (new) > fallback
+    models_to_attempt = [
+        GEMINI_MODEL,  # User's secret if any
+        "gemini-2.5-flash",       # Current stable - recommended
+        "gemini-2.5-flash-lite",  # Faster, cheaper
+        "gemini-3.8-flash",       # Latest per Google error message
+        "gemini-2.5-pro",         # Most capable
+        "gemini-1.5-flash-8b",    # Fallback legacy
+    ]
+    # Remove duplicates and empty
+    models_to_attempt = list(dict.fromkeys([m.strip() for m in models_to_attempt if m and m.strip()]))
     last_error = None
 
+    # Attempt 1: New google-genai SDK (google.genai) - Recommended by Google
     try:
         from google import genai
         client = genai.Client(api_key=GEMINI_API_KEY)
         for m in models_to_attempt:
             try:
-                resp = client.models.generate_content(model=m, contents=prompt)
-                if hasattr(resp, "text") and resp.text: return resp.text
+                # New API uses model name without 'models/' prefix
+                clean_model = m.replace("models/", "").strip()
+                resp = client.models.generate_content(
+                    model=clean_model, 
+                    contents=prompt
+                )
+                if hasattr(resp, "text") and resp.text and len(resp.text) > 20:
+                    return resp.text
             except Exception as e:
                 last_error = e
+                # If 404 model not found, try next
+                if "404" in str(e) or "not found" in str(e).lower() or "no longer available" in str(e).lower():
+                    continue
+                # For other errors, also try next model
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        last_error = e
+        # genai SDK not available, try legacy
 
+    # Attempt 2: Legacy SDK (google-generativeai) - Still works with new models
     try:
         import google.generativeai as legacy_genai
         legacy_genai.configure(api_key=GEMINI_API_KEY)
         for m in models_to_attempt:
             try:
-                mod = legacy_genai.GenerativeModel(m)
+                clean_model = m.replace("models/", "").strip()
+                mod = legacy_genai.GenerativeModel(clean_model)
                 resp = mod.generate_content(prompt)
-                if hasattr(resp, "text") and resp.text: return resp.text
+                if hasattr(resp, "text") and resp.text and len(resp.text) > 20:
+                    return resp.text
+                # Try candidates
+                if hasattr(resp, "candidates") and resp.candidates:
+                    for cand in resp.candidates:
+                        if hasattr(cand, "content") and cand.content.parts:
+                            text = "".join([p.text for p in cand.content.parts if hasattr(p, "text")])
+                            if text:
+                                return text
             except Exception as e:
                 last_error = e
                 continue
     except Exception as e:
         last_error = e
 
-    return f"AI Generation error: {last_error}"
+    # If all failed, return user-friendly error with fix
+    return f"""AI Generation error: {last_error}
 
-def ask_gemini(ideas: List[Dict[str, Any]], market_data: Dict[str, Any]) -> str:
-    payload = {"market": market_data, "ideas": ideas, "fii_dii": fii_dii}
+FIX: 
+1. Go to https://aistudio.google.com/apikey
+2. Create new API key
+3. In Streamlit Secrets, set:
+   GEMINI_API_KEY = "your_new_key"
+   GEMINI_MODEL = "gemini-2.5-flash"
+
+Tried models: {', '.join(models_to_attempt)}
+"""
+
+def ask_gemini(ideas, market_data):
+    payload = {"market": market_data, "ideas": ideas}
+    try:
+        # Add FII/DII if available
+        payload["fii_dii"] = fii_dii
+    except:
+        pass
+    
     prompt = f"""
-    You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY).
-    Explain the generated trade setups in detail. Focus on:
-    1. Kis technical timeframe, GEX regime (Net Gamma), aur institutional aadhar par trade banaya gaya hai.
-    2. Analytical Greeks profile (Delta responsiveness, Theta bleed, Gamma acceleration, Vanna/Charm shifts).
-    3. Max Pain strike attraction, Straddle Expected Move boundaries, aur Quarter-Kelly position sizing execution.
+You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY) and equities.
+Explain the generated trade setups in detail in Hindi + English mix (Hinglish) for retail trader.
 
-    DATA PAYLOAD:
-    {json.dumps(payload, default=str)}
-    """
+Focus on:
+1. Kis technical timeframe, GEX regime (Net Gamma), aur institutional aadhar par trade banaya gaya hai.
+2. Analytical Greeks profile (Delta responsiveness, Theta bleed, Gamma acceleration, Vanna/Charm shifts).
+3. Max Pain strike attraction, Straddle Expected Move boundaries, aur Quarter-Kelly position sizing execution.
+
+Keep tone educational, paper-trading safe, no financial advice.
+
+DATA PAYLOAD:
+{__import__('json').dumps(payload, default=str)[:12000]}
+"""
     return call_gemini_cascade(prompt)
+
 
 # =====================================================================
 # 21. USER INTERFACE: SIDEBAR, HEALTH BARS & WORKFLOW
