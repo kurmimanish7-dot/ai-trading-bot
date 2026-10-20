@@ -32,10 +32,18 @@ class BrokerInterface:
 
         try:
             # Angel One live ltpData endpoint
+            # FIX: Positional args for v1.3.5 compatibility + rate limit
+            import time as _t
+            if not hasattr(self, '_last_ltp_call'):
+                self._last_ltp_call = 0
+            now = _t.time()
+            if now - self._last_ltp_call < 0.35:
+                _t.sleep(0.35)
+            self._last_ltp_call = _t.time()
             response = self.smart_api.ltpData(
-                exchange=exchange.upper(),
-                tradingsymbol=symbol.upper(),
-                symboltoken=str(token)
+                exchange.upper(),
+                symbol.upper(),
+                str(token)
             )
 
             if response and response.get("status") and "data" in response:
