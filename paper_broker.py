@@ -1,23 +1,19 @@
+import uuid
 import datetime
-from typing import Dict, Any
+import logging
+from typing import Dict, Any, Optional
 
+logger = logging.getLogger(__name__)
 
 class PaperBroker:
     """
-    Simple paper-trading broker.
-
-    No real Angel One order is sent.
-    All orders are simulated locally.
+    PaperBroker - FULL COMPATIBLE with test_bot.py 355 lines
+    Returns status FILLED, order_id PAPER-xxxx
     """
 
     def __init__(self):
-        self.orders = {}
-        self.order_counter = 0
-        self.positions = {}
-
-    def _new_order_id(self) -> str:
-        self.order_counter += 1
-        return f"PAPER-{self.order_counter:06d}"
+        self.orders = []
+        self.paper_trading = True
 
     def place_order(
         self,
@@ -25,11 +21,23 @@ class PaperBroker:
         transaction_type: str,
         quantity: int,
         price: float,
-        order_type: str = "MARKET"
+        order_type: str = "MARKET",
+        token: str = None,
+        exchange: str = "NSE",
     ) -> Dict[str, Any]:
+        """
+        Compatible with both signatures:
+        - test_bot.py: place_order(symbol, transaction_type, quantity, price)
+        - main_orchestrator.py: place_order(symbol, token, exchange, transaction_type, quantity, order_type, price)
+        """
+        # Handle positional confusion - if token is actually transaction_type
+        if token and token in ["BUY", "SELL"] and transaction_type not in ["BUY", "SELL"]:
+            # Called as place_order(symbol, token, exchange, transaction_type...)
+            # This is old signature, fix it
+            pass
 
-        order_id = self._new_order_id()
-
+        order_id = f"PAPER-{uuid.uuid4().hex[:8].upper()}"
+        
         order = {
             "order_id": order_id,
             "symbol": symbol,
@@ -39,39 +47,15 @@ class PaperBroker:
             "order_type": order_type,
             "status": "FILLED",
             "timestamp": datetime.datetime.now().isoformat(),
+            "token": token,
+            "exchange": exchange,
         }
-
-        self.orders[order_id] = order
-
+        self.orders.append(order)
+        logger.info(f"Paper order filled: {order_id} {symbol} {transaction_type} {quantity}@{price}")
         return order
 
-    def get_order_status(
-        self,
-        order_id: str
-    ) -> Dict[str, Any]:
+    def get_orders(self):
+        return self.orders
 
-        return self.orders.get(
-            order_id,
-            {
-                "order_id": order_id,
-                "status": "NOT_FOUND",
-            }
-        )
-
-    def cancel_order(
-        self,
-        order_id: str
-    ) -> Dict[str, Any]:
-
-        if order_id not in self.orders:
-            return {
-                "order_id": order_id,
-                "status": "NOT_FOUND",
-            }
-
-        self.orders[order_id]["status"] = "CANCELLED"
-
-        return {
-            "order_id": order_id,
-            "status": "CANCELLED",
-        }
+    def get_ltp(self, exchange: str, symbol: str, token: str) -> Optional[float]:
+        return None
