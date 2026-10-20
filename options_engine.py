@@ -46,8 +46,10 @@ class OptionsEngine:
         self.api_key = api_key
         self.client_code = client_code
 
+        _clean_jwt = str(jwt_token).replace('Bearer ', '').strip() if jwt_token else ''
+        self.jwt_token = _clean_jwt
         self.headers = {
-            "Authorization": f"Bearer {jwt_token}",
+            "Authorization": f"Bearer {_clean_jwt}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "X-UserType": "USER",
@@ -59,6 +61,7 @@ class OptionsEngine:
         }
 
         self._scrip_master = None
+        self._last_api_call = 0.0
 
     # ========================================================
     # SAFE NUMBER HELPERS
@@ -191,6 +194,21 @@ class OptionsEngine:
         if self._scrip_master is not None:
             return self._scrip_master
 
+        # FIX: Disk cache 24h to avoid 12MB download every time
+        import os, json, time as _t
+        CACHE_FILE = "/tmp/angel_scrip_master.json"
+        try:
+            if os.path.exists(CACHE_FILE):
+                mtime = os.path.getmtime(CACHE_FILE)
+                if _t.time() - mtime < 86400:
+                    with open(CACHE_FILE, 'r') as f:
+                        data = json.load(f)
+                        if isinstance(data, list) and len(data) > 1000:
+                            self._scrip_master = data
+                            return self._scrip_master
+        except Exception:
+            pass
+
         response = requests.get(
             SCRIP_MASTER_URL,
             timeout=30,
@@ -205,6 +223,12 @@ class OptionsEngine:
             list,
         ):
             return []
+
+        try:
+            with open(CACHE_FILE, 'w') as f:
+                json.dump(data, f)
+        except Exception:
+            pass
 
         self._scrip_master = data
 
@@ -1132,6 +1156,11 @@ class OptionsEngine:
 
     def get_pcr(self):
 
+        import time as _t
+        now = _t.time()
+        if now - self._last_api_call < 0.35:
+            _t.sleep(0.35)
+        self._last_api_call = _t.time()
         url = (
             BASE_URL
             + "/rest/secure/angelbroking/"
@@ -1211,6 +1240,11 @@ class OptionsEngine:
         data_type="Long Built Up",
     ):
 
+        import time as _t
+        now = _t.time()
+        if now - self._last_api_call < 0.35:
+            _t.sleep(0.35)
+        self._last_api_call = _t.time()
         url = (
             BASE_URL
             + "/rest/secure/angelbroking/"
