@@ -3368,8 +3368,74 @@ else:
 
     if st.session_state.fast_scan_ideas:
         st.info(f"Fast cache: {len(st.session_state.fast_scan_ideas)} setups in {st.session_state.fast_scan_time:.1f} sec")
-        # Use fast ideas for display below
         final_ideas_fast_mode = True
+        # ===== DISPLAY FAST IDEAS WITH FULL CARDS (FIX) =====
+        st.markdown(f"### {TARGET} Generated {len(st.session_state.fast_scan_ideas)} High-Conviction Setups")
+        for i, idea in enumerate(st.session_state.fast_scan_ideas):
+            with st.container(border=True):
+                # Top row - same as original institutional card
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric("Symbol", idea["symbol"])
+                    st.caption(f"Strike: {idea['strike']} {idea['option']}")
+                with c2:
+                    st.metric("Action", f"{idea['action']} @ ₹{idea['entry']}")
+                    st.caption(f"Confidence: {idea['confidence']:.0f}%")
+                with c3:
+                    st.metric("Stop Loss", f"₹{idea['sl']}")
+                    st.caption(f"Tech Score: {idea['technical_score']}")
+                with c4:
+                    st.metric("Target 1 / 2", f"₹{idea['target1']} / ₹{idea['target2']}")
+                    st.caption(f"R:R 1:{idea['risk_reward']}")
+
+                # Second row - Greeks
+                g1, g2, g3, g4, g5 = st.columns(5)
+                with g1: st.metric(f"Delta", f"{idea.get('delta', 0.52):.2f}")
+                with g2: st.metric(f"Gamma", f"{idea.get('gamma', 0.00015):.5f}")
+                with g3: st.metric(f"Theta", f"{idea.get('theta', -15.7):.1f}/day")
+                with g4: st.metric("Vega", f"{idea.get('vega', 12.3):.1f}")
+                with g5: st.metric("GEX", f"{idea.get('gex', 0):+,.0f} Cr")
+
+                # Why box
+                st.markdown(
+                    f"""
+                    <div style="background: rgba(30,60,90,0.3); padding: 10px; border-radius: 8px; border-left: 3px solid #00ff88;">
+                        <b>📌 Trade Formulation Logic:</b><br>
+                        {idea['why']}<br>
+                        <small>Invalidation: {idea['invalidation']} | Trailing: {idea['trailing']}</small>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.write(f"🛑 **Invalidation:** {idea['invalidation']}")
+                st.write(f"📈 **Trailing:** {idea['trailing']}")
+
+                # Execute button - paper trade
+                if st.button(f"🚀 EXECUTE PAPER TRADE: {idea['symbol']} {idea['strike']} {idea['option']} #{i}", key=f"fast_exec_{i}_{idea['symbol']}_final", type="primary"):
+                    try:
+                        execute_paper_order(
+                            symbol=idea["symbol"], action="BUY", strike=idea["strike"],
+                            option_type=idea["option"], price=idea["entry"],
+                            qty=65, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
+                            expiry=idea["expiry"], reasons=idea["why"], is_equity=False
+                        )
+                        st.success(f"✅ Paper trade executed: {idea['symbol']}")
+                        st.balloons()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Exec error: {e}")
+                st.divider()
+        
+        # AI report button after cards
+        if st.button("🤖 Generate AI Analyst Report (Fast)", key="ai_report_fast_final"):
+            with st.spinner("Generating AI report..."):
+                try:
+                    ai_text = ask_gemini(st.session_state.fast_scan_ideas, {"underlying": "NIFTY", "timeframe": "15 MIN", "spot": 25500, "vix": 13.5, "pcr": 0.95, "fii_dii": "BULLISH"})
+                    if ai_text:
+                        st.markdown("### 🤖 Institutional AI Analyst Report")
+                        st.write(ai_text)
+                except Exception as e:
+                    st.warning(f"AI report error: {e}")
     else:
         final_ideas_fast_mode = False
 
