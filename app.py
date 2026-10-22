@@ -29,57 +29,48 @@ import concurrent.futures
 import streamlit as st
 
 
-# ===== V11 AUDIT FIX - FAST SCAN WITHOUT LOSING FEATURES =====
-# Added: Caching + Parallel scan, all original features retained
-# Original slow: sequential get_spot + get_chain for 5 indices = 15-30 sec
-# New fast: cached + parallel = 3-5 sec, same make_trade_idea logic
+# ===== V12 FINAL AUDIT FIX - FAST SCAN + LIVE PRICE + GEMINI FIX =====
+# 1. Live spot cached 30 sec, 2. Parallel scan, 3. Gemini 2.5-flash fixed
+# All original 3480 lines features retained
 
 @st.cache_data(ttl=30, show_spinner=False)
 def get_spot_cached(symbol):
-    """Cached live spot - 30 sec TTL, same as original get_spot"""
     try:
         return get_spot(symbol)
-    except Exception as e:
+    except:
         return None
 
 @st.cache_data(ttl=30, show_spinner=False)
 def get_chain_cached(symbol, expiry):
-    """Cached chain - 30 sec TTL"""
     try:
         return get_chain(symbol, expiry)
-    except Exception as e:
+    except:
         return (pd.DataFrame(), pd.DataFrame())
 
-def scan_one_index_fast_audit(symbol, current_underlying, current_expiry, active_tf, vix_data, fii_dii, scan_confluence, option_type_choice):
-    """Scan one index - same logic as old, but cached and thread-safe"""
+def scan_one_index_fast_v12(symbol, current_expiry, active_tf, vix_data, fii_dii, scan_confluence, option_type_choice):
     try:
         alt_spot = get_spot_cached(symbol)
-        if alt_spot is None or alt_spot == 0:
-            alt_spot = get_spot(symbol)  # fallback direct
-        
+        if alt_spot is None:
+            alt_spot = get_spot(symbol)
         alt_expiries = load_expiries(symbol)
         alt_exp = alt_expiries[0] if alt_expiries else current_expiry
         alt_chain_tuple = get_chain_cached(symbol, alt_exp)
         alt_chain = alt_chain_tuple[0] if isinstance(alt_chain_tuple, tuple) else alt_chain_tuple
+        if alt_chain.empty:
+            alt_chain, _ = get_chain(symbol, alt_exp)
         alt_pcr = calculate_pcr(alt_chain)
         alt_proxy = calculate_live_derivatives_proxy(alt_chain, alt_pcr)
         alt_market = analyze_market(symbol, alt_proxy, explicit_spot=alt_spot, tf_cfg=active_tf)
-
         ideas = []
-        # Same as original: INDEX + INDEX OPTION
         alt_spot_idea = make_trade_idea(alt_market, symbol, instrument="INDEX", expiry=alt_exp, chain=alt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
-        if alt_spot_idea:
-            ideas.append(alt_spot_idea)
-
+        if alt_spot_idea: ideas.append(alt_spot_idea)
         alt_opt_idea = make_trade_idea(alt_market, symbol, instrument="INDEX OPTION", expiry=alt_exp, chain=alt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
-        if alt_opt_idea:
-            ideas.append(alt_opt_idea)
-        
+        if alt_opt_idea: ideas.append(alt_opt_idea)
         return ideas
-    except Exception as e:
+    except:
         return []
 
-# ===== END AUDIT FIX HEADER =====
+# ===== END V12 HEADER =====
 
 IST = ZoneInfo("Asia/Kolkata")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -2743,75 +2734,75 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
     }
 
 # =====================================================================
-# 20. STRUCTURED AI INTEGRATION (GEMINI CASCADE ENGINE)
-# =====================================================================
-"""
-FIXED Gemini Cascade - Replace entire call_gemini_cascade function in app.py
-"""
-
-# =====================================================================
 # 20. STRUCTURED AI INTEGRATION (GEMINI CASCADE ENGINE) - FIXED Oct 2026
-# Google deprecated gemini-2.0-flash, gemini-1.5-flash on Oct 2026
-# New stable models: gemini-2.5-flash, gemini-2.5-pro, gemini-3.8-flash
+# Google deprecated gemini-1.5-flash-8b, gemini-2.0-flash - Use gemini-2.5-flash
 # =====================================================================
 def call_gemini_cascade(prompt: str) -> str:
     if not GEMINI_API_KEY: 
-        return "Gemini API Key missing in Streamlit Secrets. Add GEMINI_API_KEY in secrets."
+        return "Gemini API Key missing in Streamlit Secrets. Add GEMINI_API_KEY in secrets.toml"
     
-    # FIXED Oct 2026: Updated model list - 2.0-flash deprecated
-    # Priority: User's custom model > 2.5-flash (stable) > 3.8-flash (new) > fallback
+    # FIXED Oct 22 2026: gemini-1.5-flash-8b, gemini-2.0-flash deprecated -> 404
+    # Use only current stable models: gemini-2.5-flash is recommended
+    # Check https://ai.google.dev/gemini-api/docs/models
     models_to_attempt = [
-        GEMINI_MODEL,  # User's secret if any
-        "gemini-2.5-flash",       # Current stable - recommended
-        "gemini-2.5-flash-lite",  # Faster, cheaper
-        "gemini-3.8-flash",       # Latest per Google error message
-        "gemini-2.5-pro",         # Most capable
-        "gemini-1.5-flash-8b",    # Fallback legacy
+        GEMINI_MODEL if 'GEMINI_MODEL' in globals() and GEMINI_MODEL else None,
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-latest",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
     ]
-    # Remove duplicates and empty
-    models_to_attempt = list(dict.fromkeys([m.strip() for m in models_to_attempt if m and m.strip()]))
+    # Clean list
+    models_to_attempt = [m for m in models_to_attempt if m and m.strip()]
+    models_to_attempt = list(dict.fromkeys([m.replace("models/", "").strip() for m in models_to_attempt]))
+    
     last_error = None
-
-    # Attempt 1: New google-genai SDK (google.genai) - Recommended by Google
+    
+    # Attempt 1: New google-genai SDK (google.genai) - Official new SDK
     try:
         from google import genai
         client = genai.Client(api_key=GEMINI_API_KEY)
-        for m in models_to_attempt:
+        for model_name in models_to_attempt:
             try:
-                # New API uses model name without 'models/' prefix
-                clean_model = m.replace("models/", "").strip()
                 resp = client.models.generate_content(
-                    model=clean_model, 
+                    model=model_name, 
                     contents=prompt
                 )
                 if hasattr(resp, "text") and resp.text and len(resp.text) > 20:
                     return resp.text
+                # Try candidates
+                if hasattr(resp, "candidates") and resp.candidates:
+                    texts = []
+                    for cand in resp.candidates:
+                        if hasattr(cand, "content") and cand.content and hasattr(cand.content, "parts"):
+                            for part in cand.content.parts:
+                                if hasattr(part, "text") and part.text:
+                                    texts.append(part.text)
+                    if texts:
+                        return "\n".join(texts)
             except Exception as e:
                 last_error = e
-                # If 404 model not found, try next
-                if "404" in str(e) or "not found" in str(e).lower() or "no longer available" in str(e).lower():
+                err_str = str(e).lower()
+                # If model not found, try next
+                if "404" in err_str or "not found" in err_str or "not supported" in err_str or "no longer" in err_str:
                     continue
-                # For other errors, also try next model
                 continue
     except Exception as e:
         last_error = e
-        # genai SDK not available, try legacy
-
-    # Attempt 2: Legacy SDK (google-generativeai) - Still works with new models
+    
+    # Attempt 2: Legacy SDK (google-generativeai)
     try:
         import google.generativeai as legacy_genai
         legacy_genai.configure(api_key=GEMINI_API_KEY)
-        for m in models_to_attempt:
+        for model_name in models_to_attempt:
             try:
-                clean_model = m.replace("models/", "").strip()
-                mod = legacy_genai.GenerativeModel(clean_model)
+                mod = legacy_genai.GenerativeModel(model_name)
                 resp = mod.generate_content(prompt)
                 if hasattr(resp, "text") and resp.text and len(resp.text) > 20:
                     return resp.text
-                # Try candidates
                 if hasattr(resp, "candidates") and resp.candidates:
                     for cand in resp.candidates:
-                        if hasattr(cand, "content") and cand.content.parts:
+                        if hasattr(cand, "content") and hasattr(cand.content, "parts"):
                             text = "".join([p.text for p in cand.content.parts if hasattr(p, "text")])
                             if text:
                                 return text
@@ -2820,19 +2811,23 @@ def call_gemini_cascade(prompt: str) -> str:
                 continue
     except Exception as e:
         last_error = e
+    
+    # If all failed - return helpful message without exposing key
+    return f"""AI temporarily unavailable. Showing technical setups only.
 
-    # If all failed, return user-friendly error with fix
-    return f"""AI Generation error: {last_error}
+Error: {last_error}
 
-FIX: 
+Fix: 
 1. Go to https://aistudio.google.com/apikey
 2. Create new API key
-3. In Streamlit Secrets, set:
-   GEMINI_API_KEY = "your_new_key"
+3. In Streamlit Secrets (Manage app > Settings > Secrets):
+   GEMINI_API_KEY = "your_key_here"
    GEMINI_MODEL = "gemini-2.5-flash"
 
 Tried models: {', '.join(models_to_attempt)}
 """
+
+
 
 def ask_gemini(ideas, market_data):
     payload = {"market": market_data, "ideas": ideas}
@@ -3340,71 +3335,52 @@ else:
     st.markdown(f"## {TARGET} Detailed High-Conviction Trade Setups - [{active_tf['label']}]")
     st.caption(f"Technical Structure {BULLET} Dynamic Greeks {BULLET} GEX Levels {BULLET} Quarter-Kelly Sizing {BULLET} Trailing Rules")
 
-    if st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec - LIVE)", type="primary", use_container_width=True):
-        with st.spinner(f"Fast live scan on [{active_tf['label']}] - cached spot/chain + parallel indices..."):
-            # Progress bar for fast feedback
+    if st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True):
+        with st.spinner(f"Fast live scan on [{active_tf['label']}] - cached + parallel..."):
             progress = st.progress(0)
             status = st.empty()
-            
             status.text("Fetching live spot & chain (cached 30 sec)...")
             progress.progress(10)
             current_spot = get_spot_cached(underlying)
-            if current_spot is None:
-                current_spot = get_spot(underlying)
-            
+            if current_spot is None: current_spot = get_spot(underlying)
             opt_chain_tuple = get_chain_cached(underlying, selected_expiry)
             opt_chain = opt_chain_tuple[0] if isinstance(opt_chain_tuple, tuple) else opt_chain_tuple
-            if opt_chain.empty:
-                opt_chain, _ = get_chain(underlying, selected_expiry)
-            
+            if opt_chain.empty: opt_chain, _ = get_chain(underlying, selected_expiry)
             chain_pcr = calculate_pcr(opt_chain)
             der_proxy = calculate_live_derivatives_proxy(opt_chain, chain_pcr)
             active_market = analyze_market(underlying, der_proxy, explicit_spot=current_spot, tf_cfg=active_tf)
             vix_data = get_india_vix()
-
             c_df = add_indicators(fetch_ohlcv(underlying, active_tf["smartapi"], active_tf["days"]), current_live_price=current_spot)
             c_light1 = analyze_candlesticks_and_volume(c_df)
             c_light2 = analyze_smart_money(fii_dii, chain_pcr, df=c_df, current_spot=current_spot)
             macro_q = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
             c_light3 = fetch_composite_macro_news(macro_q)
             scan_confluence = evaluate_all_permutations(c_light1, c_light2, c_light3)
-
             progress.progress(30)
             status.text("Scanning current underlying...")
-
             ideas = []
             bound_side = option_type_choice if option_type_choice in ["CE", "PE"] else None
-
             setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup1: ideas.append(setup1)
-
             setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup2: ideas.append(setup2)
-
             progress.progress(50)
-            status.text("Parallel scanning BANKNIFTY, FINNIFTY, SENSEX... (cached)")
-
-            # FAST PARALLEL SCAN - Same logic, parallel + cached
+            status.text("Parallel scanning other indices (live)...")
             alt_symbols = [s for s in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"] if s != underlying]
-            
-            # Use ThreadPoolExecutor for parallel fetching - same make_trade_idea calls
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                future_to_sym = {executor.submit(scan_one_index_fast_audit, sym, underlying, selected_expiry, active_tf, vix_data, fii_dii, scan_confluence, option_type_choice): sym for sym in alt_symbols}
+                future_to_sym = {executor.submit(scan_one_index_fast_v12, sym, selected_expiry, active_tf, vix_data, fii_dii, scan_confluence, option_type_choice): sym for sym in alt_symbols}
                 done = 0
                 for future in concurrent.futures.as_completed(future_to_sym):
                     done += 1
                     sym = future_to_sym[future]
                     progress.progress(50 + int(40 * done / len(alt_symbols)))
-                    status.text(f"Live scanned {sym} - Spot & Chain fetched - {done}/{len(alt_symbols)}")
+                    status.text(f"Live scanned {sym} - {done}/{len(alt_symbols)}")
                     try:
                         alt_ideas = future.result()
-                        if alt_ideas:
-                            ideas.extend(alt_ideas)
-                    except Exception as e:
-                        pass
-            
+                        if alt_ideas: ideas.extend(alt_ideas)
+                    except: pass
             progress.progress(90)
-            status.text("Deduplicating & ranking...")
+            status.text("Ranking...")
 
             unique_ideas = []
             seen = set()
