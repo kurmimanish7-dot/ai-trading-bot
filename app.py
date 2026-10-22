@@ -2741,23 +2741,15 @@ def call_gemini_cascade(prompt: str) -> str:
     if not GEMINI_API_KEY:
         return ""
 
-    # FINAL FIX Nov 2026 - No -latest suffix, only base stable names
-    # gemini-1.5-flash-latest, gemini-2.5-flash-latest DO NOT EXIST - they cause 404
-    # Correct names: gemini-1.5-flash, gemini-2.0-flash, gemini-2.5-flash, gemini-pro
-    
+    # V16 FINAL - V12 display + Gemini fix (no -latest, free key compatible)
     last_error = None
-    
-    # Priority for NEW API key (aistudio.google.com new key)
-    # For NEW key: gemini-2.5-flash works
-    # For OLD key: gemini-1.5-flash works
     models_to_try = []
     
-    # User's setting from secrets - clean it
     if 'GEMINI_MODEL' in globals() and GEMINI_MODEL and GEMINI_MODEL.strip():
         clean = GEMINI_MODEL.strip().replace("models/", "").replace("-latest", "").strip()
         models_to_try.append(clean)
     
-    # Auto-detect available models for this key via REST (most reliable)
+    # Auto-detect available models for this key
     try:
         import requests
         for ver in ["v1", "v1beta"]:
@@ -2768,7 +2760,6 @@ def call_gemini_cascade(prompt: str) -> str:
                     for m in r.json().get("models", []):
                         name = m.get("name", "").replace("models/", "")
                         if "generateContent" in m.get("supportedGenerationMethods", []):
-                            # Remove -latest variants to avoid 404
                             if "-latest" not in name and name not in models_to_try:
                                 models_to_try.append(name)
                     if models_to_try:
@@ -2778,17 +2769,14 @@ def call_gemini_cascade(prompt: str) -> str:
     except:
         pass
     
-    # Fallback list - ONLY stable base names, NO -latest
-    stable_fallback = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-pro", "gemini-1.5-pro"]
+    stable_fallback = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.0-flash", "gemini-pro", "gemini-1.5-pro"]
     for m in stable_fallback:
         if m not in models_to_try:
             models_to_try.append(m)
     
-    # Clean - remove any -latest that slipped in
     models_to_try = [m.replace("-latest", "") for m in models_to_try]
     models_to_try = list(dict.fromkeys([m for m in models_to_try if m]))
 
-    # Try 1: New SDK
     try:
         from google import genai
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -2797,13 +2785,11 @@ def call_gemini_cascade(prompt: str) -> str:
                 resp = client.models.generate_content(model=model_name, contents=prompt)
                 if hasattr(resp, "text") and resp.text and len(resp.text.strip()) > 20:
                     return resp.text
-            except Exception as e:
-                last_error = e
+            except:
                 continue
-    except Exception as e:
-        last_error = e
+    except:
+        pass
 
-    # Try 2: Legacy SDK
     try:
         import google.generativeai as legacy_genai
         legacy_genai.configure(api_key=GEMINI_API_KEY)
@@ -2813,13 +2799,11 @@ def call_gemini_cascade(prompt: str) -> str:
                 resp = mod.generate_content(prompt)
                 if hasattr(resp, "text") and resp.text and len(resp.text.strip()) > 20:
                     return resp.text
-            except Exception as e:
-                last_error = e
+            except:
                 continue
-    except Exception as e:
-        last_error = e
+    except:
+        pass
 
-    # Try 3: Direct REST - most reliable, bypasses SDK
     try:
         import requests
         for ver in ["v1", "v1beta"]:
@@ -2841,8 +2825,6 @@ def call_gemini_cascade(prompt: str) -> str:
     except:
         pass
 
-    # If still fails - return empty string to hide AI section (no error shown)
-    # This way app looks clean, trade setups still work
     return ""
 
 
@@ -2858,10 +2840,7 @@ def ask_gemini(ideas, market_data):
 You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY) and equities.
 Explain the generated trade setups in detail in Hindi + English mix (Hinglish) for retail trader.
 
-Focus on:
-1. Kis timeframe, GEX regime, aur institutional aadhar par trade banaya gaya.
-2. Greeks profile (Delta, Theta, Gamma, Vanna/Charm).
-3. Max Pain, Expected Move, Quarter-Kelly sizing.
+Focus on timeframe, GEX regime, Greeks, Max Pain, Expected Move, Kelly sizing.
 
 Keep tone educational, paper-trading safe, no financial advice.
 
@@ -2870,7 +2849,7 @@ DATA:
 """
     result = call_gemini_cascade(prompt)
     if not result or len(result.strip()) < 20:
-        return ""  # Hide if fails
+        return ""
     return result
 
 
@@ -2912,35 +2891,6 @@ with col_t4:
     st.metric("Risk Circuit Gate", circuit_state, delta=f"Cap: -₹{max_loss_input:,.0f}", delta_color="inverse" if circuit_state=="TRIGGERED (LOCKED)" else "off")
 
 st.divider()
-
-# ==============================================================================
-# V13 BUTTON NAVIGATION - 7-8 Segments as Buttons/Tabs
-# ==============================================================================
-# User request: Har segment ko button ki tarah banao, click pe open ho
-
-# Custom CSS for button-like tabs
-st.markdown("""
-<style>
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        flex-wrap: wrap;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 45px;
-        white-space: pre-wrap;
-        background-color: #1e293b;
-        border-radius: 8px;
-        padding: 8px 16px;
-        border: 1px solid #334155;
-        font-weight: 600;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #0ea5e9 !important;
-        border-color: #0ea5e9 !important;
-        color: white !important;
-    }
-</style>
-""", unsafe_allow_html=True)
 
 # ==============================================================================
 # SEGMENT 1: UNIVERSAL 5,000+ EQUITY STOCK INTELLIGENCE (MULTI-FACTOR ENGINE)
@@ -3204,19 +3154,6 @@ else:
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    # ===== V13: 8 BUTTONS/TABS FOR 7-8 SEGMENTS =====
-    st.markdown("### 📑 Quick Navigation - Click any segment button to open")
-    tab_overview, tab_prediction, tab_fii, tab_macro, tab_traffic, tab_exit, tab_setups, tab_portfolio = st.tabs([
-        "🏠 LIVE OVERVIEW",
-        "🇮🇳 Market Prediction", 
-        "🏛️ FII/DII Flow",
-        "🌐 Global Macro",
-        "🚦 Traffic Light + GEX",
-        "🛡️ Exit Monitor",
-        "🎯 Trade Setups",
-        "📒 Portfolio"
-    ])
-
     @live_fragment(run_every=2)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
@@ -3238,10 +3175,8 @@ else:
         with s3: st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "N/A", delta="Derivatives Bias", delta_color="off")
         with s4: st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
 
-    # TAB 1: LIVE OVERVIEW
-    with tab_overview:
-        render_index_live_ticker(underlying, selected_expiry, active_tf)
-        st.caption("Auto refreshes every 2 sec - Live Spot, VIX, PCR, Max Pain")
+    render_index_live_ticker(underlying, selected_expiry, active_tf)
+    st.divider()
 
     @live_fragment(run_every=30)
     def render_index_research_and_prediction(selected_underlying, current_expiry):
@@ -3311,44 +3246,8 @@ else:
         with m4:
             st.metric("Gift Nifty Spread Proxy", "Market Neutral", delta="+12 pts", delta_color="normal")
 
-    # TAB 2: Market Prediction + TAB 3: FII/DII + TAB 4: Global Macro
-    # These are inside render_index_research_and_prediction, so we split them via tabs using containers
-    with tab_prediction:
-        st.markdown("#### 🇮🇳 Indian Market Research & Tomorrow Opening")
-        render_index_research_and_prediction(underlying, selected_expiry)
-
-    with tab_fii:
-        st.markdown("#### 🏛️ Institutional FII/DII Flow - Live")
-        # Reuse same function but will show FII part - we call a lightweight version
-        try:
-            fii_info = fetch_fii_dii()
-            f1, f2, f3, f4 = st.columns(4)
-            with f1: st.metric("FII Net Cash", f"₹{fii_info.get('fii_net', 0):,.2f} Cr" if fii_info.get('available') else "Syncing...")
-            with f2: st.metric("DII Net Cash", f"₹{fii_info.get('dii_net', 0):,.2f} Cr" if fii_info.get('available') else "Syncing...")
-            with f3: st.metric("Combined", f"₹{fii_info.get('combined', 0):,.2f} Cr" if fii_info.get('available') else "Syncing...")
-            with f4: st.metric("Smart Money", fii_info.get('bias', 'NEUTRAL'))
-            st.caption(f"Phase: {fii_info.get('phase', 'Consensus')}")
-        except:
-            st.info("Fetching FII/DII live...")
-
-    with tab_macro:
-        st.markdown("#### 🌐 Global Macro Cues & Commodity Radar - Live")
-        try:
-            macro_data = global_macro_inst.fetch_macro_quotes() if global_macro_inst else {}
-            m1, m2, m3, m4 = st.columns(4)
-            with m1:
-                nq = macro_data.get("NASDAQ", {})
-                st.metric("Nasdaq 100", f"${nq.get('price', 'Active')}" if nq.get('price') else "Active")
-            with m2:
-                cr = macro_data.get("CRUDE_OIL", {})
-                st.metric("Brent Crude", f"${cr.get('price', 'Active')}" if cr.get('price') else "Active")
-            with m3:
-                gold = macro_data.get("GOLD", {})
-                st.metric("Gold", "Active")
-            with m4:
-                st.metric("Gift Nifty", "Market Neutral")
-        except:
-            st.info("Fetching global cues...")
+    render_index_research_and_prediction(underlying, selected_expiry)
+    st.divider()
 
     @live_fragment(run_every=10)
     def render_market_confluence_dashboard(selected_underlying, current_expiry, tf):
@@ -3429,25 +3328,10 @@ else:
                 else:
                     st.success(f"{CHECK} **HOLD PE:** Downside momentum intact.")
 
-    # TAB 5: Traffic Light + GEX Radar
-    with tab_traffic:
-        render_market_confluence_dashboard(underlying, selected_expiry, active_tf)
+    render_market_confluence_dashboard(underlying, selected_expiry, active_tf)
+    st.divider()
 
-    # TAB 6: Exit Monitor - SEPARATE BUTTON
-    with tab_exit:
-        st.markdown(f"## {SHIELD} Live Position Exit Monitor - [{active_tf['label']}] (Auto 10 sec)")
-        st.caption("Click this tab anytime to check exit signals for your active positions")
-        # Render exit monitor again inside this tab for dedicated view
-        try:
-            # Reuse same dashboard but focus on exit part - call function that includes exit
-            render_market_confluence_dashboard(underlying, selected_expiry, active_tf)
-        except:
-            pass
-        st.info("💡 This monitor auto-refreshes every 10 sec. If market reverses, EMERGENCY EXIT signal ayega.")
-
-    # TAB 7: Trade Setups
-    with tab_setups:
-        st.markdown(f"## {TARGET} Detailed High-Conviction Trade Setups - [{active_tf['label']}]")
+    st.markdown(f"## {TARGET} Detailed High-Conviction Trade Setups - [{active_tf['label']}]")
     st.caption(f"Technical Structure {BULLET} Dynamic Greeks {BULLET} GEX Levels {BULLET} Quarter-Kelly Sizing {BULLET} Trailing Rules")
 
     if st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True):
@@ -3613,14 +3497,11 @@ else:
                         st.write(ai_text)
                         st.divider()
 
-    # End of Trade Setups tab - close it before portfolio
-
 # ==============================================================================
 # GLOBAL PAPER TRADING PORTFOLIO & TRADE JOURNAL (OPTIONS + EQUITIES)
 # ==============================================================================
-# TAB 8: Portfolio - SEPARATE BUTTON
-with tab_portfolio:
-    st.markdown(f"## {SHIELD} Active Paper Positions & Risk Ledger (Options & Equities)")
+st.divider()
+st.markdown(f"## {SHIELD} Active Paper Positions & Risk Ledger (Options & Equities)")
 positions = st.session_state.paper_portfolio["positions"]
 if not positions:
     st.info("No active open paper positions in portfolio.")
