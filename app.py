@@ -419,7 +419,54 @@ if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
 
 st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
 
+
+# ================= V17.8 TELEGRAM EMERGENCY EXIT ALERT =================
+import requests as req_telegram
+
+def send_telegram_alert(bot_token, chat_id, message):
+    """Sends Telegram alert for EMERGENCY EXIT"""
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        r = req_telegram.post(url, json=payload, timeout=5)
+        return r.status_code == 200
+    except Exception as e:
+        logger.debug(f"Telegram failed: {e}")
+        return False
+
+# Telegram Config - User will fill
+TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "") if hasattr(st, 'secrets') else ""
+TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "") if hasattr(st, 'secrets') else ""
+
+
 PAPER_TRADING = True
+
+# Telegram Alert Settings
+with st.sidebar.expander("📱 Telegram EMERGENCY EXIT Alert", expanded=False):
+    st.caption("BotFather se bot banao, token + chat ID daalo")
+    tg_token = st.text_input("Bot Token", value=TELEGRAM_BOT_TOKEN, type="password", key="tg_token")
+    tg_chat = st.text_input("Chat ID", value=TELEGRAM_CHAT_ID, key="tg_chat")
+    tg_enabled = st.checkbox("Enable EMERGENCY EXIT Telegram Alert", value=False, key="tg_enabled")
+    
+    if st.button("Test Telegram Alert", key="tg_test"):
+        if tg_token and tg_chat:
+            ok = send_telegram_alert(tg_token, tg_chat, "✅ *Test Alert - AI Trading Bot*\n\nBot working! EMERGENCY EXIT alerts ON hai.")
+            if ok:
+                st.success("Telegram sent! Check your Telegram")
+            else:
+                st.error("Failed - Token/Chat ID check karo")
+        else:
+            st.warning("Token + Chat ID daalo pehle")
+    
+    st.markdown("""
+    **Kaise banaye:**
+    1. Telegram pe @BotFather search karo
+    2. /newbot → Name do → Token milega (123456:ABC...)
+    3. Apne bot ko /start karo
+    4. Chat ID: @userinfobot pe /start → ID milega
+    5. Yaha Token + Chat ID daalo + Enable karo
+    """)
+
 
 st.markdown(
     """
@@ -3364,7 +3411,7 @@ else:
         if st.button(f"🔄 REFRESH LIVE EXIT ({tf['smartapi']}) - Spot + LTP LIVE", key=f"refresh_exit_{tf['smartapi']}", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
-        st.caption(f"🔴 LIVE | Last: {datetime.now(IST).strftime('%H:%M:%S IST')} | Spot + Premium LTP live change hota rahega | Exit signal auto-update")
+        st.caption(f"🔴 LIVE | Last: {datetime.now(IST).strftime('%H:%M:%S IST')} | Spot + Premium LTP live | Telegram ON hai to EMERGENCY EXIT pe alert ayega")
         
         # Original header removed, now combined
         
