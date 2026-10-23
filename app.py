@@ -40,7 +40,7 @@ def get_spot_cached(symbol):
     except:
         return None
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_chain_cached(symbol, expiry):
     try:
         return get_chain(symbol, expiry)
@@ -412,14 +412,12 @@ st.set_page_config(
     layout="wide",
 )
 
-# V17.2 FAST REFRESH
-try:
-    from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=45000, key="live_exit_v172")
-except Exception:
-    pass
+# V17.3 STABLE - No auto-refresh to prevent buffering
+if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
 
-st.caption(f"LIVE Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Auto-refresh: 45 sec | Cache: 10 sec")
+st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
 
 PAPER_TRADING = True
 
@@ -1168,7 +1166,7 @@ def generate_calendar_expiries(symbol: str) -> List[str]:
                 if exp_str not in expiries: expiries.append(exp_str)
     return sorted(list(set(expiries)))
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def load_expiries(symbol: str) -> List[str]:
     opt_eng = get_options_engine()
     if opt_eng is not None:
@@ -1486,7 +1484,7 @@ def classify_oi_buildup(price_change: float, oi_change: float) -> str:
 # =====================================================================
 # 14. TECHNICAL INDICATORS PIPELINE & ANCHORED VWAP
 # =====================================================================
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_ohlcv(symbol: str, interval: str = "FIVE_MINUTE", days: int = 5) -> pd.DataFrame:
     if symbol not in INDEX_METADATA: return pd.DataFrame()
     meta = INDEX_METADATA[symbol]
@@ -2215,7 +2213,7 @@ def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: 
         "status": "LIVE" if price else "UNAVAILABLE"
     }
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Optional[str] = None, current_price: Optional[float] = None) -> Dict[str, Any]:
     """
     Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary.
@@ -2397,7 +2395,7 @@ def fetch_corporate_filings_and_future_plans(symbol: str, stock_name: str) -> Di
         "exchange_filings": exchange_filings[:4],
     }
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_equity_candles(symbol: str, token: Optional[str] = None, exchange: str = "NSE", yf_sym: Optional[str] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
     broker_interval = tf_cfg["smartapi"]
@@ -3344,10 +3342,10 @@ else:
     st.caption(f"Technical Structure {BULLET} Dynamic Greeks {BULLET} GEX Levels {BULLET} Quarter-Kelly Sizing {BULLET} Trailing Rules")
 
     if st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True):
-        with st.spinner(f"LIVE scan on [{active_tf['label']}] - 10 sec live..."):
+        with st.spinner(f"Fast live scan on [{active_tf['label']}] - cached + parallel..."):
             progress = st.progress(0)
             status = st.empty()
-            status.text("Fetching LIVE spot & chain (10 sec live)...")
+            status.text("Fetching LIVE spot & chain (10-15 sec live)...")
             progress.progress(10)
             current_spot = get_spot_cached(underlying)
             if current_spot is None: current_spot = get_spot(underlying)
@@ -3403,7 +3401,7 @@ else:
             if not final_ideas:
                 st.warning("Market conditions indicate neutral consolidation or conflict across indices. No safe trade setup found.")
             else:
-                st.success(f"LIVE: {len(final_ideas)} setups on [{active_tf['label']}] | Spot: {current_spot:.2f} | PCR: {chain_pcr:.2f} | Time: {datetime.now(IST).strftime('%H:%M:%S')}")
+                st.success(f"{len(final_ideas)} high-conviction trade setup(s) identified on [{active_tf['label']}].")
                 for i, idea in enumerate(final_ideas, start=1):
                     is_option = bool(idea.get("option") and idea.get("strike"))
                     card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}" if is_option else f"{idea['symbol']} (CASH SPOT)"
