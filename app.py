@@ -2150,7 +2150,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         opt_kelly = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=opt_rr)
 
         idea.update({
-            "option": side, "action": "BUY", "strike": resolved_strike, "option_ltp": opt_entry,
+            "option": side, "action": "BUY", "strike": resolved_strike, "option_ltp": opt_entry, "price_source": contract.get("price_source", "LIVE"),
             "entry": opt_entry, "sl": opt_sl, "target1": opt_t1, "target2": opt_t2,
             "risk_reward": opt_rr, "target2_rr": (opt_t2 - opt_entry) / opt_risk,
             "delta": contract.get("delta", 0.52 if side == "CE" else -0.52),
@@ -3425,7 +3425,8 @@ else:
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Selected Strike", f"{idea['strike']} {idea['option']}", delta=idea.get("buildup", f"{idea['action']} OPTION"))
-                        with c2: st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(idea['entry'])}")
+                        with c2: st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(idea['entry'])}", help=f"Source: {idea.get('price_source', 'LIVE')} | Live Chain: {idea.get('ltp', 0)}")
+                        st.caption(f"📊 LTP Source: {idea.get('price_source', 'LIVE')} | Chain LTP: ₹{idea.get('ltp', 0):.2f} | {datetime.now(IST).strftime('%H:%M:%S IST')}")
                         with c3: st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(idea['sl'])}")
                         with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}", delta=f"Kelly Size: {idea['kelly_pct']}%")
 
