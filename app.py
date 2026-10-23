@@ -439,6 +439,123 @@ TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "") if hasattr(st, 'se
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "") if hasattr(st, 'secrets') else ""
 
 
+
+# ================= V18 ENTRY/EXIT ALERT + 3 LIGHT SYSTEM =================
+
+def render_3light_system(setups, overall):
+    st.markdown(f"### {overall['light']} Trade Confidence: {overall['confidence']} ({overall['score']:.0f}%)")
+    st.info(f"**Action:** {overall['action']}")
+    
+    cols = st.columns(3)
+    i = 0
+    for name, s in setups.items():
+        with cols[i % 3]:
+            if s["status"] == "GREEN":
+                st.success(f"{s['light']} **{name}**\n{s['desc']}\nScore: {s['score']}")
+            elif s["status"] == "YELLOW":
+                st.warning(f"{s['light']} **{name}**\n{s['desc']}\nScore: {s['score']}")
+            else:
+                st.error(f"{s['light']} **{name}**\n{s['desc']}\nScore: {s['score']}")
+        i += 1
+    
+    # Progress bar for confidence
+    st.progress(overall["score"]/100)
+
+
+def evaluate_trade_setup(spot, entry_price, trend, rsi, volume_factor=1.0, near_sr=False):
+    """Returns dict of conventional setups with RYG lights and confidence"""
+    setups = {}
+    
+    # 1. TREND ALIGNMENT
+    if trend == "BULLISH":
+        setups["Trend Alignment"] = {"light": "🟢", "status": "GREEN", "score": 95, "desc": "Strong Uptrend - CE favorable"}
+    elif trend == "BEARISH":
+        setups["Trend Alignment"] = {"light": "🟢", "status": "GREEN", "score": 95, "desc": "Strong Downtrend - PE favorable"}
+    else:
+        setups["Trend Alignment"] = {"light": "🟡", "status": "YELLOW", "score": 50, "desc": "Sideways - Wait for breakout"}
+
+    # 2. MOMENTUM (RSI based)
+    if 55 <= rsi <= 75:
+        setups["Momentum"] = {"light": "🟢", "status": "GREEN", "score": 90, "desc": f"RSI {rsi:.0f} - Strong momentum"}
+    elif 45 <= rsi < 55:
+        setups["Momentum"] = {"light": "🟡", "status": "YELLOW", "score": 60, "desc": f"RSI {rsi:.0f} - Neutral, wait"}
+    else:
+        setups["Momentum"] = {"light": "🔴", "status": "RED", "score": 20, "desc": f"RSI {rsi:.0f} - Weak/Overbought"}
+
+    # 3. BREAKOUT STRENGTH
+    if abs(spot % 50) < 5:  # Near round number = breakout zone
+        setups["Breakout"] = {"light": "🟢", "status": "GREEN", "score": 85, "desc": "Near breakout level - High probability"}
+    elif abs(spot % 50) < 15:
+        setups["Breakout"] = {"light": "🟡", "status": "YELLOW", "score": 55, "desc": "Approaching breakout"}
+    else:
+        setups["Breakout"] = {"light": "🔴", "status": "RED", "score": 30, "desc": "Mid-range - Low breakout chance"}
+
+    # 4. SUPPORT/RESISTANCE
+    if near_sr:
+        setups["S/R Confirmation"] = {"light": "🟢", "status": "GREEN", "score": 88, "desc": "At S/R - Reversal/Bounce high"}
+    else:
+        setups["S/R Confirmation"] = {"light": "🟡", "status": "YELLOW", "score": 50, "desc": "Away from S/R"}
+
+    # 5. VOLUME / PREMIUM ACTION
+    if volume_factor > 1.5:
+        setups["Volume/Price Action"] = {"light": "🟢", "status": "GREEN", "score": 92, "desc": "High volume - Institutional buying"}
+    elif volume_factor > 1.0:
+        setups["Volume/Price Action"] = {"light": "🟡", "status": "YELLOW", "score": 60, "desc": "Average volume"}
+    else:
+        setups["Volume/Price Action"] = {"light": "🔴", "status": "RED", "score": 25, "desc": "Low volume - Avoid"}
+
+    # 6. RISK REWARD
+    rr = 1.8  # Mock - can calculate from SL/Target
+    if rr >= 2.0:
+        setups["Risk Reward"] = {"light": "🟢", "status": "GREEN", "score": 90, "desc": f"RR 1:{rr:.1f} - Excellent"}
+    elif rr >= 1.5:
+        setups["Risk Reward"] = {"light": "🟡", "status": "YELLOW", "score": 65, "desc": f"RR 1:{rr:.1f} - Good"}
+    else:
+        setups["Risk Reward"] = {"light": "🔴", "status": "RED", "score": 30, "desc": f"RR 1:{rr:.1f} - Poor"}
+
+    # Calculate overall confidence
+    avg_score = sum([s["score"] for s in setups.values()]) / len(setups)
+    green_count = sum(1 for s in setups.values() if s["status"]=="GREEN")
+    
+    if avg_score >= 80 and green_count >= 4:
+        overall = {"light": "🟢", "confidence": "HIGH", "score": avg_score, "action": "STRONG BUY - Take Entry"}
+    elif avg_score >= 60 and green_count >= 3:
+        overall = {"light": "🟡", "confidence": "MEDIUM", "score": avg_score, "action": "BUY with Caution - Half qty"}
+    else:
+        overall = {"light": "🔴", "confidence": "LOW", "score": avg_score, "action": "AVOID - No Trade"}
+    
+    return setups, overall
+
+def send_entry_exit_alert(bot_token, chat_id, alert_type, symbol, entry, setups, overall, exit_reason=""):
+    """Send entry/exit Telegram alert with 3 light system"""
+    try:
+        if alert_type == "ENTRY":
+            msg = f"🟢 *ENTRY ALERT* 🟢\n\n"
+            msg += f"Symbol: {symbol}\n"
+            msg += f"Entry: ₹{entry:.2f}\n"
+            msg += f"Confidence: {overall['light']} {overall['confidence']} ({overall['score']:.0f}%)\n"
+            msg += f"Action: {overall['action']}\n\n"
+            msg += f"*3 Light Setup:*\n"
+            for name, s in setups.items():
+                msg += f"{s['light']} {name}: {s['status']} - {s['desc'][:40]}\n"
+            msg += f"\n⏰ {datetime.now(IST).strftime('%H:%M:%S IST')}"
+        else:
+            msg = f"🔴 *EXIT ALERT* 🔴\n\n"
+            msg += f"Symbol: {symbol}\n"
+            msg += f"Entry: ₹{entry:.2f}\n"
+            msg += f"Reason: {exit_reason}\n"
+            msg += f"Action: EXIT NOW!\n\n"
+            msg += f"⏰ {datetime.now(IST).strftime('%H:%M:%S IST')}"
+        
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+        import requests as req_telegram2
+        r = req_telegram2.post(url, json=payload, timeout=5)
+        return r.status_code == 200
+    except Exception as e:
+        return False
+
+
 PAPER_TRADING = True
 
 # Telegram Alert Settings
@@ -447,6 +564,8 @@ with st.sidebar.expander("📱 Telegram EMERGENCY EXIT Alert", expanded=False):
     tg_token = st.text_input("Bot Token", value=TELEGRAM_BOT_TOKEN, type="password", key="tg_token")
     tg_chat = st.text_input("Chat ID", value=TELEGRAM_CHAT_ID, key="tg_chat")
     tg_enabled = st.checkbox("Enable EMERGENCY EXIT Telegram Alert", value=False, key="tg_enabled")
+    tg_entry_enabled = st.checkbox("Enable ENTRY Alert (3 Light + Confidence)", value=True, key="tg_entry_enabled")
+    tg_exit_enabled = st.checkbox("Enable EXIT Alert (All Exits)", value=True, key="tg_exit_enabled")
     
     if st.button("Test Telegram Alert", key="tg_test"):
         if tg_token and tg_chat:
