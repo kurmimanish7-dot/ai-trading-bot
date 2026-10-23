@@ -3347,11 +3347,15 @@ else:
             status = st.empty()
             status.text("Fetching LIVE spot & chain (10-15 sec live)...")
             progress.progress(10)
-            current_spot = get_spot_cached(underlying)
-            if current_spot is None: current_spot = get_spot(underlying)
-            opt_chain_tuple = get_chain_cached(underlying, selected_expiry)
-            opt_chain = opt_chain_tuple[0] if isinstance(opt_chain_tuple, tuple) else opt_chain_tuple
-            if opt_chain.empty: opt_chain, _ = get_chain(underlying, selected_expiry)
+            # V17.4 FIX: Force LIVE spot for conviction trade (no cache)
+            st.cache_data.clear()
+            current_spot = get_spot(underlying)
+            if current_spot is None: current_spot = get_spot_cached(underlying)
+            # V17.4 FIX: Force LIVE chain for conviction trade
+            opt_chain, _ = get_chain(underlying, selected_expiry)
+            if opt_chain.empty:
+                opt_chain_tuple = get_chain_cached(underlying, selected_expiry)
+                opt_chain = opt_chain_tuple[0] if isinstance(opt_chain_tuple, tuple) else opt_chain_tuple
             chain_pcr = calculate_pcr(opt_chain)
             der_proxy = calculate_live_derivatives_proxy(opt_chain, chain_pcr)
             active_market = analyze_market(underlying, der_proxy, explicit_spot=current_spot, tf_cfg=active_tf)
@@ -3409,7 +3413,8 @@ else:
 
                     st.markdown(
                         f"""
-                        <div class="trade-card">
+                        <div class="trade-card" style="border-left: 4px solid #00FF00;">
+                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>
                             <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
                             <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
                         </div>
