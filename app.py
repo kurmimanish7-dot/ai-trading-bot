@@ -178,7 +178,7 @@ def add_trading_days(start_date: date, trading_days: int) -> date:
 
 def market_open() -> bool:
     """Evaluates whether Indian financial markets are currently in continuous trading."""
-    now = dt_live_temp.now(IST)
+    now = datetime.now(IST)
     if is_trading_holiday(now.date()):
         return False
     # Compare using IST-aware time
@@ -406,28 +406,20 @@ TIMEFRAME_CONFIG = {
 # =====================================================================
 # 6. CONFIGURATION, THEME & STYLES
 # =====================================================================
-try:
-    import pytz
-    IST = pytz.timezone('Asia/Kolkata')
-except:
-    from datetime import timezone, timedelta
-    IST = timezone(timedelta(hours=5, minutes=30))
 st.set_page_config(
     page_title="AI Institutional Live Trading Advisor (Quantitative GEX & Equity Engine)",
     page_icon=BOLT,
     layout="wide",
 )
 
-# V17 FAST REFRESH - Auto-refresh every 45 sec for live exit monitor
+# V17.2 FAST REFRESH
 try:
     from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=45000, key="live_exit_autorefresh_v17")
+    st_autorefresh(interval=45000, key="live_exit_v172")
 except Exception:
     pass
 
-from datetime import datetime as _dt1
-_last_update = dt_now.now().strftime("%H:%M:%S IST")
-st.caption(f"🔴 LIVE | Last Update: {_last_update} | Auto-refresh: 45 sec | Cache: 10 sec | Fast Scan")
+st.caption(f"LIVE Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Auto-refresh: 45 sec | Cache: 10 sec")
 
 PAPER_TRADING = True
 
@@ -575,13 +567,13 @@ if "paper_portfolio" not in st.session_state:
         "daily_realized_pnl": 0.0,
         "positions": {},       # Active open simulated orders (Options & Equities)
         "trade_history": [],   # Completed paper trades journal
-        "session_date": dt_live_temp.now(IST).date().isoformat(),
+        "session_date": datetime.now(IST).date().isoformat(),
         "daily_loss_limit": 10000.0,
         "circuit_broken": False,
     }
 
 def check_daily_reset():
-    today_str = dt_live_temp.now(IST).date().isoformat()
+    today_str = datetime.now(IST).date().isoformat()
     if st.session_state.paper_portfolio.get("session_date") != today_str:
         st.session_state.paper_portfolio["session_date"] = today_str
         st.session_state.paper_portfolio["daily_realized_pnl"] = 0.0
@@ -989,7 +981,7 @@ def resample_5m_to_10m(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
-    now_str = dt_live_temp.now(IST).strftime("%H:%M:%S IST")
+    now_str = datetime.now(IST).strftime("%H:%M:%S IST")
     try:
         url = "https://www.nseindia.com/api/allIndices"
         raw = nse_client.get_json(url)
@@ -1045,7 +1037,7 @@ def get_spot(symbol: str) -> Optional[float]:
 def get_india_vix() -> Dict[str, Any]:
     vix_quote = fetch_verified_spot("INDIA_VIX")
     vix = vix_quote.get("price")
-    now_str = dt_live_temp.now(IST).strftime("%H:%M:%S IST")
+    now_str = datetime.now(IST).strftime("%H:%M:%S IST")
 
     if vix is None or vix <= 0:
         return {"vix": None, "regime": "DATA UNAVAILABLE", "sl_multiplier": 1.0, "status": "UNAVAILABLE", "timestamp": now_str}
@@ -1058,7 +1050,7 @@ def get_india_vix() -> Dict[str, Any]:
     return {"vix": vix, "regime": regime, "sl_multiplier": sl_mult, "status": vix_quote["status"], "timestamp": now_str}
 
 def determine_settlement_phase() -> str:
-    now = dt_live_temp.now(IST)
+    now = datetime.now(IST)
     if is_trading_holiday(now.date()): return "MARKET HOLIDAY / SETTLED PREVIOUS CLOSE"
     current_time = now.time()
     if current_time < dtime(17, 30): return "LIVE SESSION (PREVIOUS CLOSE)"
@@ -1070,7 +1062,7 @@ def fetch_fii_dii() -> Dict[str, Any]:
     url = "https://www.nseindia.com/api/fiidiiTradeReact"
     raw_response = nse_client.get_json(url)
     settlement_status = determine_settlement_phase()
-    now_str = dt_live_temp.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
+    now_str = datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
 
     data = raw_response[0] if isinstance(raw_response, tuple) else raw_response
 
@@ -1144,7 +1136,7 @@ def expiry_label(x: Any) -> str:
     except Exception: return str(x)
 
 def generate_calendar_expiries(symbol: str) -> List[str]:
-    now = dt_live_temp.now(IST)
+    now = datetime.now(IST)
     meta = INDEX_METADATA.get(symbol, INDEX_METADATA["NIFTY"])
     target_weekday = meta["weekly_day"]
     has_weekly = meta["has_weekly"]
@@ -1214,7 +1206,7 @@ def load_expiries(symbol: str) -> List[str]:
 @st.cache_data(ttl=2, show_spinner=False)
 def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Live-first chain fetcher - returns 2 values for backward compat. Source stored in df.attrs['source_tag']"""
-    sync_tag = dt_live_temp.now(IST).strftime("%H:%M:%S")
+    sync_tag = datetime.now(IST).strftime("%H:%M:%S")
     source_tag = f"NO_DATA_{sync_tag}"
     chain_df = pd.DataFrame()
     raw_df = pd.DataFrame()
@@ -1951,7 +1943,7 @@ def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str,
         "trade_id": trade_id, "symbol": symbol, "action": action, "strike": strike,
         "option_type": option_type, "entry_price": fill_price, "qty": qty,
         "sl": sl, "t1": t1, "t2": t2, "expiry": expiry, "reasons": reasons,
-        "is_equity": is_equity, "entry_time": dt_live_temp.now(IST).strftime("%H:%M:%S"), "status": "OPEN"
+        "is_equity": is_equity, "entry_time": datetime.now(IST).strftime("%H:%M:%S"), "status": "OPEN"
     }
 
     st.session_state.paper_portfolio["positions"][trade_id] = position_entry
@@ -1974,7 +1966,7 @@ def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
         costs = calculate_trade_friction(fill_exit, pos["entry_price"], pos["qty"], is_option=not is_eq, is_delivery_equity=is_eq)
 
     pos["exit_price"] = fill_exit
-    pos["exit_time"] = dt_live_temp.now(IST).strftime("%H:%M:%S")
+    pos["exit_time"] = datetime.now(IST).strftime("%H:%M:%S")
     pos["exit_reason"] = exit_reason
     pos.update(costs)
 
@@ -1998,7 +1990,7 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
         try:
             exp_date = datetime.strptime(expiry_norm(expiry), "%Y-%m-%d").date()
             expiry_close = datetime.combine(exp_date, dtime(15, 30), tzinfo=IST)
-            now_dt = dt_live_temp.now(IST)
+            now_dt = datetime.now(IST)
             diff = (expiry_close - now_dt).total_seconds() / 86400.0
             dte_days = max(diff, 0.05)
         except Exception:
@@ -2526,7 +2518,7 @@ def compute_equity_math_and_eta(df: pd.DataFrame, last_price: float, target1: fl
     bars_to_t2 = max(4, min(120, int(math.ceil(abs(target2 - last_price) / effective_step_per_bar))))
 
     tf_mins = int(tf_cfg.get("minutes", 5))
-    now_ist = dt_live_temp.now(IST)
+    now_ist = datetime.now(IST)
 
     def _format_eta(bars: int) -> str:
         total_mins = bars * tf_mins
@@ -3352,7 +3344,7 @@ else:
     st.caption(f"Technical Structure {BULLET} Dynamic Greeks {BULLET} GEX Levels {BULLET} Quarter-Kelly Sizing {BULLET} Trailing Rules")
 
     if st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True):
-        with st.spinner(f"LIVE scan on [{active_tf['label']}] - 10 sec live + parallel..."):
+        with st.spinner(f"LIVE scan on [{active_tf['label']}] - 10 sec live..."):
             progress = st.progress(0)
             status = st.empty()
             status.text("Fetching LIVE spot & chain (10 sec live)...")
@@ -3411,7 +3403,7 @@ else:
             if not final_ideas:
                 st.warning("Market conditions indicate neutral consolidation or conflict across indices. No safe trade setup found.")
             else:
-                st.success(f"✅ LIVE: {len(final_ideas)} high-conviction trade setup(s) on [{active_tf['label']}] | Spot: {current_spot:.2f} | PCR: {chain_pcr:.2f} | Updated: {_last_update}")
+                st.success(f"LIVE: {len(final_ideas)} setups on [{active_tf['label']}] | Spot: {current_spot:.2f} | PCR: {chain_pcr:.2f} | Time: {datetime.now(IST).strftime('%H:%M:%S')}")
                 for i, idea in enumerate(final_ideas, start=1):
                     is_option = bool(idea.get("option") and idea.get("strike"))
                     card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}" if is_option else f"{idea['symbol']} (CASH SPOT)"
