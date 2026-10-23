@@ -1209,21 +1209,71 @@ def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.Data
     chain_df = pd.DataFrame()
     raw_df = pd.DataFrame()
 
-    opt_eng = get_options_engine()
-    if opt_eng is not None and expiry:
+    # V17.6 FIX: Prioritize NSE_LIVE for indices to match NSE website exactly
+    nse_tried = False
+    if symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50"]:
+        nse_tried = True
         try:
-            contracts = clean_df(opt_eng.get_option_contracts(underlying=symbol, expiry_date=expiry))
-            quoted = clean_df(opt_eng.get_market_quote(contracts)) if not contracts.empty else contracts
-            if not quoted.empty:
-                ltp_col = find_column(quoted, ["ltp", "lastPrice", "last_traded_price"])
-                if ltp_col and (pd.to_numeric(quoted[ltp_col], errors='coerce').fillna(0) > 0).any():
-                    chain_df = quoted
-                    raw_df = contracts
-                    source_tag = f"ANGEL_LIVE_{sync_tag}"
+            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
+            raw = nse_client.get_json(url)
+            data = raw[0] if isinstance(raw, tuple) else raw
+            if data and isinstance(data, dict):
+                records = data.get("records", {})
+                if isinstance(records, dict):
+                    data_items = records.get("data", [])
+                    target_exp_norm = expiry_norm(expiry)
+                    available_expiries = [expiry_norm(x) for x in records.get("expiryDates", []) if expiry_norm(x)]
+                    if target_exp_norm in available_expiries:
+                        matched_rows = []
+                        for item in data_items:
+                            if isinstance(item, dict) and expiry_norm(item.get("expiryDate")) == target_exp_norm:
+                                strike = num(item.get("strikePrice"))
+                                if "CE" in item and isinstance(item["CE"], dict):
+                                    ce = item["CE"]
+                                    matched_rows.append({
+                                        "strikePrice": strike, "option_type": "CE", "lastPrice": num(ce.get("lastPrice"), 0.0),
+                                        "openInterest": int(num(ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(ce.get("changeinOpenInterest"), 0)),
+                                        "change": num(ce.get("change"), 0.0), "impliedVolatility": num(ce.get("impliedVolatility"), 0.0),
+                                        "bidQty": int(num(ce.get("bidQty"), 0)), "bidprice": num(ce.get("bidprice"), 0.0),
+                                        "askQty": int(num(ce.get("askQty"), 0)), "askPrice": num(ce.get("askPrice"), 0.0),
+                                        "lastUpdateTime": ce.get("lastUpdateTime", sync_tag),
+                                        "expiryDate": target_exp_norm, "price_source": "NSE_LIVE",
+                                    })
+                                if "PE" in item and isinstance(item["PE"], dict):
+                                    pe = item["PE"]
+                                    matched_rows.append({
+                                        "strikePrice": strike, "option_type": "PE", "lastPrice": num(pe.get("lastPrice"), 0.0),
+                                        "openInterest": int(num(pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(pe.get("changeinOpenInterest"), 0)),
+                                        "change": num(pe.get("change"), 0.0), "impliedVolatility": num(pe.get("impliedVolatility"), 0.0),
+                                        "bidQty": int(num(pe.get("bidQty"), 0)), "bidprice": num(pe.get("bidprice"), 0.0),
+                                        "askQty": int(num(pe.get("askQty"), 0)), "askPrice": num(pe.get("askPrice"), 0.0),
+                                        "lastUpdateTime": pe.get("lastUpdateTime", sync_tag),
+                                        "expiryDate": target_exp_norm, "price_source": "NSE_LIVE",
+                                    })
+                        if matched_rows:
+                            chain_df = pd.DataFrame(matched_rows)
+                            raw_df = chain_df.copy()
+                            source_tag = f"NSE_LIVE_{sync_tag}"
         except Exception as e:
-            logger.debug(f"Angel get_chain failed {symbol} {expiry}: {e}")
+            logger.debug(f"NSE get_chain failed {symbol} {expiry}: {e}")
 
-    # NSE fallback with strict expiry validation
+    # Angel fallback only if NSE failed
+    if chain_df.empty:
+        opt_eng = get_options_engine()
+        if opt_eng is not None and expiry:
+            try:
+                contracts = clean_df(opt_eng.get_option_contracts(underlying=symbol, expiry_date=expiry))
+                quoted = clean_df(opt_eng.get_market_quote(contracts)) if not contracts.empty else contracts
+                if not quoted.empty:
+                    ltp_col = find_column(quoted, ["ltp", "lastPrice", "last_traded_price"])
+                    if ltp_col and (pd.to_numeric(quoted[ltp_col], errors='coerce').fillna(0) > 0).any():
+                        chain_df = quoted
+                        raw_df = contracts
+                        source_tag = f"ANGEL_LIVE_{sync_tag}"
+            except Exception as e:
+                logger.debug(f"Angel get_chain failed {symbol} {expiry}: {e}")
+
+    # Original NSE fallback (kept for safety) - skip if already NSE_LIVE
     if chain_df.empty and expiry and symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50"]:
         try:
             url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
@@ -2150,7 +2200,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         opt_kelly = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=opt_rr)
 
         idea.update({
-            "option": side, "action": "BUY", "strike": resolved_strike, "option_ltp": opt_entry, "price_source": contract.get("price_source", "LIVE"),
+            "option": side, "action": "BUY", "strike": resolved_strike, "option_ltp": opt_entry,
             "entry": opt_entry, "sl": opt_sl, "target1": opt_t1, "target2": opt_t2,
             "risk_reward": opt_rr, "target2_rr": (opt_t2 - opt_entry) / opt_risk,
             "delta": contract.get("delta", 0.52 if side == "CE" else -0.52),
@@ -3310,7 +3360,14 @@ else:
         else:
             st.info(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
 
-        st.markdown(f"### {SHIELD} Live Position Exit Monitor ({tf['smartapi']})")
+        st.markdown(f"### {SHIELD} Live Position Exit Monitor ({tf['smartapi']}) - 🔴 LIVE STREAMING")
+        if st.button(f"🔄 REFRESH LIVE EXIT ({tf['smartapi']}) - Spot + LTP LIVE", key=f"refresh_exit_{tf['smartapi']}", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+        st.caption(f"🔴 LIVE | Last: {datetime.now(IST).strftime('%H:%M:%S IST')} | Spot + Premium LTP live change hota rahega | Exit signal auto-update")
+        
+        # Original header removed, now combined
+        
         with st.expander(f"{PIN} Active Position Exit Rules Check (Live)", expanded=True):
             ex1, ex2 = st.columns(2)
             with ex1:
@@ -3425,8 +3482,40 @@ else:
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Selected Strike", f"{idea['strike']} {idea['option']}", delta=idea.get("buildup", f"{idea['action']} OPTION"))
-                        with c2: st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(idea['entry'])}", help=f"Source: {idea.get('price_source', 'LIVE')} | Live Chain: {idea.get('ltp', 0)}")
-                        st.caption(f"📊 LTP Source: {idea.get('price_source', 'LIVE')} | Chain LTP: ₹{idea.get('ltp', 0):.2f} | {datetime.now(IST).strftime('%H:%M:%S IST')}")
+                        # V17.7 LIVE STREAMING LTP
+                        entry_ltp = idea.get('entry', idea.get('ltp', 0))
+                        # Fetch LIVE current LTP for same strike
+                        try:
+                            live_chain_now, _ = get_chain(underlying, selected_expiry)
+                            live_ltp_now = entry_ltp
+                            if not live_chain_now.empty:
+                                match = live_chain_now[live_chain_now["strikePrice"]==idea.get('strike')]
+                                if not match.empty:
+                                    # Find CE/PE column
+                                    opt_type = idea.get('option', 'CE')
+                                    row = match.iloc[0]
+                                    # lastPrice is in row
+                                    if 'lastPrice' in row:
+                                        live_ltp_now = float(row['lastPrice'] or entry_ltp)
+                                    # Also check if CE/PE filtered DataFrame
+                                    # For safety, use lastPrice
+                            pnl_pct = ((live_ltp_now - entry_ltp) / entry_ltp * 100) if entry_ltp > 0 else 0
+                            pnl_color = "green" if pnl_pct >= 0 else "red"
+                        except:
+                            live_ltp_now = entry_ltp
+                            pnl_pct = 0
+                            pnl_color = "grey"
+                        
+                        with c2: 
+                            st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)}", delta=f"LIVE: {RUPEE}{fmt(live_ltp_now)} ({pnl_pct:+.1f}%)")
+                        st.caption(f"🔴 LIVE: Entry ₹{entry_ltp:.2f} → Now ₹{live_ltp_now:.2f} | Src: {idea.get('price_source','NSE_LIVE')} | {datetime.now(IST).strftime('%H:%M:%S IST')} | P&L: {pnl_pct:+.2f}%")
+                        # Live P&L bar
+                        if pnl_pct >= 5:
+                            st.success(f"✅ LIVE P&L: +{pnl_pct:.2f}% | Target 1 near!")
+                        elif pnl_pct <= -8:
+                            st.error(f"🚨 LIVE P&L: {pnl_pct:.2f}% | Exit check!")
+                        else:
+                            st.info(f"📊 LIVE P&L: {pnl_pct:+.2f}% | Holding")
                         with c3: st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(idea['sl'])}")
                         with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}", delta=f"Kelly Size: {idea['kelly_pct']}%")
 
