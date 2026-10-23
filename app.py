@@ -33,14 +33,14 @@ import streamlit as st
 # 1. Live spot cached 30 sec, 2. Parallel scan, 3. Gemini 2.5-flash fixed
 # All original 3480 lines features retained
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def get_spot_cached(symbol):
     try:
         return get_spot(symbol)
     except:
         return None
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def get_chain_cached(symbol, expiry):
     try:
         return get_chain(symbol, expiry)
@@ -411,6 +411,17 @@ st.set_page_config(
     page_icon=BOLT,
     layout="wide",
 )
+
+# V17 FAST REFRESH - Auto-refresh every 45 sec for live exit monitor
+try:
+    from streamlit_autorefresh import st_autorefresh
+    st_autorefresh(interval=45000, key="live_exit_autorefresh_v17")
+except Exception:
+    pass
+
+import datetime
+_last_update = datetime.datetime.now().strftime("%H:%M:%S IST")
+st.caption(f"🔴 LIVE | Last Update: {_last_update} | Auto-refresh: 45 sec | Cache: 10 sec | Fast Scan")
 
 PAPER_TRADING = True
 
@@ -1048,7 +1059,7 @@ def determine_settlement_phase() -> str:
     elif dtime(17, 30) <= current_time <= dtime(19, 0): return "RECONCILIATION IN PROGRESS"
     else: return "TODAY'S PROVISIONAL FIGURES"
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_fii_dii() -> Dict[str, Any]:
     url = "https://www.nseindia.com/api/fiidiiTradeReact"
     raw_response = nse_client.get_json(url)
@@ -1159,7 +1170,7 @@ def generate_calendar_expiries(symbol: str) -> List[str]:
                 if exp_str not in expiries: expiries.append(exp_str)
     return sorted(list(set(expiries)))
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=20, show_spinner=False)
 def load_expiries(symbol: str) -> List[str]:
     opt_eng = get_options_engine()
     if opt_eng is not None:
@@ -1477,7 +1488,7 @@ def classify_oi_buildup(price_change: float, oi_change: float) -> str:
 # =====================================================================
 # 14. TECHNICAL INDICATORS PIPELINE & ANCHORED VWAP
 # =====================================================================
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=20, show_spinner=False)
 def fetch_ohlcv(symbol: str, interval: str = "FIVE_MINUTE", days: int = 5) -> pd.DataFrame:
     if symbol not in INDEX_METADATA: return pd.DataFrame()
     meta = INDEX_METADATA[symbol]
@@ -1757,7 +1768,7 @@ def analyze_smart_money(fii_dii_data: Dict[str, Any], pcr_val: Optional[float], 
     final_reason = " | ".join(notes) if notes else "Smart Money neutral."
     return {"status": status, "score": score, "reason": final_reason}
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_composite_macro_news(macro_quotes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     rss_url = "https://news.google.com/rss/search?q=Indian+stock+market+Nifty&hl=en-IN&gl=IN&ceid=IN:en"
     headlines = []
@@ -2206,7 +2217,7 @@ def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: 
         "status": "LIVE" if price else "UNAVAILABLE"
     }
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Optional[str] = None, current_price: Optional[float] = None) -> Dict[str, Any]:
     """
     Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary.
@@ -2305,7 +2316,7 @@ def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Option
         "fund_notes": fund_notes,
     }
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def fetch_corporate_filings_and_future_plans(symbol: str, stock_name: str) -> Dict[str, Any]:
     """
     Ingests official exchange corporate disclosures (NSE corporate-announcements API),
@@ -2388,7 +2399,7 @@ def fetch_corporate_filings_and_future_plans(symbol: str, stock_name: str) -> Di
         "exchange_filings": exchange_filings[:4],
     }
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=20, show_spinner=False)
 def fetch_equity_candles(symbol: str, token: Optional[str] = None, exchange: str = "NSE", yf_sym: Optional[str] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
     broker_interval = tf_cfg["smartapi"]
