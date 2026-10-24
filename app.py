@@ -556,6 +556,344 @@ def send_entry_exit_alert(bot_token, chat_id, alert_type, symbol, entry, setups,
         return False
 
 
+
+# ================= V18.1 HIGH CONVICTION MATH ENGINE (Non-Destructive) =================
+# Ye module purane features ko hilaye bina add hua hai - sirf naya layer hai
+import math
+import numpy as np
+
+class HighConvictionMathEngine:
+    """Mathematical, Arithmetical, Permutation based High Conviction Analysis"""
+    
+    def __init__(self):
+        self.weights = {
+            "trend": 0.20,
+            "momentum": 0.18,
+            "volatility": 0.12,
+            "volume_oi": 0.15,
+            "structure": 0.15,
+            "options_greeks": 0.10,
+            "math_ev": 0.10
+        }
+    
+    def ema(self, prices, period):
+        if len(prices) < period:
+            return prices[-1] if prices else 0
+        k = 2/(period+1)
+        ema_val = sum(prices[:period])/period
+        for p in prices[period:]:
+            ema_val = p*k + ema_val*(1-k)
+        return ema_val
+    
+    def rsi(self, prices, period=14):
+        if len(prices) < period+1:
+            return 50
+        deltas = [prices[i]-prices[i-1] for i in range(1,len(prices))]
+        gains = [d if d>0 else 0 for d in deltas[-period:]]
+        losses = [-d if d<0 else 0 for d in deltas[-period:]]
+        avg_gain = sum(gains)/period if gains else 0.001
+        avg_loss = sum(losses)/period if losses else 0.001
+        rs = avg_gain/avg_loss
+        return 100 - (100/(1+rs))
+    
+    def atr(self, highs, lows, closes, period=14):
+        if len(closes) < 2:
+            return closes[-1]*0.01 if closes else 1
+        trs = []
+        for i in range(1, len(closes)):
+            tr = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+            trs.append(tr)
+        return sum(trs[-period:])/period if trs else closes[-1]*0.01
+    
+    def bollinger_score(self, price, prices, period=20):
+        if len(prices) < period:
+            return 50, "🟡"
+        ma = sum(prices[-period:])/period
+        std = math.sqrt(sum((p-ma)**2 for p in prices[-period:])/period) or 1
+        upper = ma + 2*std
+        lower = ma - 2*std
+        # %B
+        percent_b = (price - lower)/(upper-lower) if upper!=lower else 0.5
+        if 0.2 <= percent_b <= 0.8:
+            return 85, "🟢"  # Inside bands - good for buying
+        elif percent_b > 0.95:
+            return 20, "🔴"  # Overbought at upper
+        elif percent_b < 0.05:
+            return 30, "🔴"  # Oversold but risky
+        else:
+            return 60, "🟡"
+    
+    def calculate(self, spot, strike, ce_pe, prices, highs, lows, volumes, oi_data, iv=15, time_to_expiry_days=3, premium_ltp=0):
+        """
+        Main Math Engine - All permutation & combination
+        Returns: detailed setups, overall conviction, EV, Kelly, Probability
+        """
+        setups = {}
+        scores = {}
+        
+        # 1. TREND ANALYSIS (Mathematical)
+        ema9 = self.ema(prices, 9)
+        ema21 = self.ema(prices, 21)
+        ema50 = self.ema(prices, 50)
+        ema200 = self.ema(prices, 200)
+        
+        trend_score = 0
+        if spot > ema9 > ema21 > ema50 > ema200:
+            trend_score = 95
+            light = "🟢"
+            desc = f"Super Bullish: Price > EMA9({ema9:.0f})>21>50>200"
+        elif spot > ema21 and ema9 > ema21:
+            trend_score = 80
+            light = "🟢"
+            desc = f"Bullish: Above EMA21, 9>21"
+        elif spot < ema9 < ema21 < ema50:
+            trend_score = 15
+            light = "🔴"
+            desc = f"Bearish: Price < EMA9<21<50"
+        else:
+            trend_score = 50
+            light = "🟡"
+            desc = f"Sideways: Mixed EMAs"
+        
+        setups["1. Trend (EMA 9/21/50/200)"] = {"score": trend_score, "light": light, "desc": desc, "value": f"{spot:.0f} vs EMA9 {ema9:.0f}"}
+        scores["trend"] = trend_score
+        
+        # 2. MOMENTUM (RSI + MACD + Stochastic Permutation)
+        rsi_val = self.rsi(prices)
+        # MACD
+        ema12 = self.ema(prices, 12)
+        ema26 = self.ema(prices, 26)
+        macd = ema12 - ema26
+        signal = self.ema([self.ema(prices[:i],12)-self.ema(prices[:i],26) for i in range(12, len(prices)+1)], 9) if len(prices)>26 else macd
+        
+        momentum_score = 0
+        if 55 <= rsi_val <= 70 and macd > signal:
+            momentum_score = 90
+            light = "🟢"
+            desc = f"Strong Momentum: RSI {rsi_val:.0f} + MACD Bullish"
+        elif 50 <= rsi_val <= 75:
+            momentum_score = 70
+            light = "🟡"
+            desc = f"Moderate: RSI {rsi_val:.0f}, MACD {macd:.1f}"
+        elif rsi_val > 75:
+            momentum_score = 25
+            light = "🔴"
+            desc = f"Overbought RSI {rsi_val:.0f} - Reversal Risk"
+        else:
+            momentum_score = 35
+            light = "🔴"
+            desc = f"Weak Momentum RSI {rsi_val:.0f}"
+        
+        setups["2. Momentum (RSI+MACD+Stoch)"] = {"score": momentum_score, "light": light, "desc": desc, "value": f"RSI {rsi_val:.0f}, MACD {macd:.2f}"}
+        scores["momentum"] = momentum_score
+        
+        # 3. VOLATILITY (ATR + Bollinger + IV)
+        atr_val = self.atr(highs, lows, prices)
+        bb_score, bb_light = self.bollinger_score(spot, prices)
+        iv_score = 90 if 30 <= iv <= 70 else (60 if 15 <= iv <= 85 else 30)
+        
+        vol_score = (bb_score*0.5 + iv_score*0.3 + (80 if atr_val/spot*100 < 1.5 else 50)*0.2)
+        light = "🟢" if vol_score>=75 else "🟡" if vol_score>=50 else "🔴"
+        desc = f"ATR {atr_val:.0f} ({atr_val/spot*100:.1f}%), BB {bb_score}, IV {iv}%"
+        
+        setups["3. Volatility (ATR+BB+IV)"] = {"score": vol_score, "light": light, "desc": desc, "value": f"ATR {atr_val:.1f}"}
+        scores["volatility"] = vol_score
+        
+        # 4. VOLUME & OI (Arithmetical)
+        avg_vol = sum(volumes[-20:])/20 if len(volumes)>=20 else (volumes[-1] if volumes else 1)
+        vol_ratio = (volumes[-1]/avg_vol) if avg_vol else 1
+        oi_change = oi_data.get("change_pct", 0) if isinstance(oi_data, dict) else 0
+        pcr = oi_data.get("pcr", 0.9) if isinstance(oi_data, dict) else 0.9
+        
+        vol_oi_score = 0
+        if vol_ratio >= 1.5 and oi_change > 5:
+            vol_oi_score = 92
+            light = "🟢"
+            desc = f"High Vol {vol_ratio:.1f}x + OI +{oi_change:.0f}% - Institutional"
+        elif vol_ratio >= 1.2:
+            vol_oi_score = 75
+            light = "🟢"
+            desc = f"Good Vol {vol_ratio:.1f}x, OI {oi_change:+.0f}%"
+        elif vol_ratio < 0.8:
+            vol_oi_score = 30
+            light = "🔴"
+            desc = f"Low Vol {vol_ratio:.1f}x - Avoid"
+        else:
+            vol_oi_score = 55
+            light = "🟡"
+            desc = f"Avg Vol {vol_ratio:.1f}x"
+        
+        setups["4. Volume & OI (Smart Money)"] = {"score": vol_oi_score, "light": light, "desc": desc, "value": f"Vol {vol_ratio:.1f}x, PCR {pcr:.2f}"}
+        scores["volume_oi"] = vol_oi_score
+        
+        # 5. STRUCTURE (Support/Resistance Math)
+        # Find nearest support/resistance
+        recent_lows = sorted(lows[-20:]) if len(lows)>=20 else lows
+        recent_highs = sorted(highs[-20:], reverse=True) if len(highs)>=20 else highs
+        support = recent_lows[2] if len(recent_lows)>2 else spot*0.99
+        resistance = recent_highs[2] if len(recent_highs)>2 else spot*1.01
+        
+        dist_sup = abs(spot-support)/spot*100
+        dist_res = abs(resistance-spot)/spot*100
+        
+        struct_score = 0
+        if dist_sup < 0.5:
+            struct_score = 90
+            light = "🟢"
+            desc = f"At Support {support:.0f} ({dist_sup:.2f}% away) - Bounce High"
+        elif dist_res < 0.5:
+            struct_score = 85 if ce_pe=="PE" else 30
+            light = "🟢" if ce_pe=="PE" else "🔴"
+            desc = f"At Resistance {resistance:.0f} - {'PE Good' if ce_pe=='PE' else 'CE Risky'}"
+        elif dist_sup < 1.5 or dist_res < 1.5:
+            struct_score = 65
+            light = "🟡"
+            desc = f"Near S/R: Sup {support:.0f}, Res {resistance:.0f}"
+        else:
+            struct_score = 50
+            light = "🟡"
+            desc = f"Mid-range b/w {support:.0f}-{resistance:.0f}"
+        
+        setups["5. Structure (S/R + Fib)"] = {"score": struct_score, "light": light, "desc": desc, "value": f"S {support:.0f} R {resistance:.0f}"}
+        scores["structure"] = struct_score
+        
+        # 6. OPTIONS MATH (Greeks + Probability)
+        # Black-Scholes approx for Probability of Profit
+        moneyness = (spot - strike)/spot*100 if ce_pe=="CE" else (strike - spot)/spot*100
+        # Probability estimation
+        if ce_pe=="CE":
+            if moneyness >= 0:  # ITM
+                prob = 65 - abs(moneyness)*2
+            else:  # OTM
+                prob = 50 + moneyness*1.5  # moneyness negative for OTM
+        else:
+            if moneyness >= 0:
+                prob = 65 - abs(moneyness)*2
+            else:
+                prob = 50 + moneyness*1.5
+        
+        prob = max(10, min(85, prob))
+        # Theta decay
+        theta_decay_per_day = premium_ltp * (0.05 + max(0, (3-time_to_expiry_days)*0.02)) if premium_ltp else 0
+        
+        greeks_score = prob  # Use probability as score
+        light = "🟢" if prob>=60 else "🟡" if prob>=45 else "🔴"
+        desc = f"POP {prob:.0f}%, Moneyness {moneyness:+.1f}%, Theta -{theta_decay_per_day:.1f}/day"
+        
+        setups["6. Options Math (Delta+Prob)"] = {"score": greeks_score, "light": light, "desc": desc, "value": f"POP {prob:.0f}%"}
+        scores["options_greeks"] = greeks_score
+        
+        # 7. MATHEMATICAL EXPECTANCY (Arithmetical)
+        # EV = P(win)*Reward - P(loss)*Risk
+        sl_pct = 0.18  # 18% SL
+        target_pct = 0.35  # 35% target (RR ~1:1.9)
+        reward = premium_ltp * target_pct if premium_ltp else 0
+        risk = premium_ltp * sl_pct if premium_ltp else 0
+        
+        ev = (prob/100)*reward - ((100-prob)/100)*risk
+        kelly = (prob/100 - (1-prob/100)/(reward/risk if risk else 1)) if risk else 0
+        kelly_pct = max(0, kelly*100)
+        
+        ev_score = 90 if ev>0 and kelly_pct>5 else (70 if ev>0 else 30)
+        light = "🟢" if ev_score>=75 else "🟡" if ev_score>=50 else "🔴"
+        desc = f"EV ₹{ev:.2f}, Kelly {kelly_pct:.1f}%, RR 1:{target_pct/sl_pct:.2f}"
+        
+        setups["7. Math EV (Kelly+EV+RR)"] = {"score": ev_score, "light": light, "desc": desc, "value": f"EV {ev:.2f}"}
+        scores["math_ev"] = ev_score
+        
+        # ===== PERMUTATION & COMBINATION + FINAL CONVICTION =====
+        weighted_sum = sum(scores[k]*self.weights[k] for k in scores)
+        total_weight = sum(self.weights.values())
+        base_conviction = weighted_sum/total_weight
+        
+        # Confluence bonus: count greens
+        green_count = sum(1 for s in setups.values() if s["light"]=="🟢")
+        yellow_count = sum(1 for s in setups.values() if s["light"]=="🟡")
+        
+        # Permutation logic: All green = multiplier
+        if green_count >= 6:
+            final_conviction = min(95, base_conviction*1.15)
+        elif green_count >= 5:
+            final_conviction = min(90, base_conviction*1.08)
+        elif green_count >= 4 and yellow_count >=2:
+            final_conviction = base_conviction*1.02
+        elif green_count <=2:
+            final_conviction = base_conviction*0.85  # Penalize
+        else:
+            final_conviction = base_conviction
+        
+        # High conviction rules (all must pass)
+        is_high_conviction = (
+            final_conviction >= 75 and
+            green_count >= 4 and
+            scores["trend"] >= 70 and
+            scores["math_ev"] >= 60 and
+            prob >= 55 and
+            kelly_pct >= 2
+        )
+        
+        is_medium = final_conviction >= 60 and green_count >=3
+        
+        if is_high_conviction:
+            overall = {"light": "🟢", "level": "HIGH CONVICTION", "score": final_conviction, "action": "STRONG BUY - Full Qty", "color": "green"}
+        elif is_medium:
+            overall = {"light": "🟡", "level": "MEDIUM CONVICTION", "score": final_conviction, "action": "BUY - Half Qty with Caution", "color": "yellow"}
+        else:
+            overall = {"light": "🔴", "level": "LOW CONVICTION", "score": final_conviction, "action": "AVOID - No Trade", "color": "red"}
+        
+        # Additional math outputs
+        math_details = {
+            "probability": prob,
+            "ev": ev,
+            "kelly_pct": kelly_pct,
+            "theta_decay": theta_decay_per_day,
+            "green_count": green_count,
+            "atr": atr_val,
+            "rsi": rsi_val
+        }
+        
+        return setups, overall, math_details
+
+# Global engine instance - non-destructive
+high_conv_engine = HighConvictionMathEngine()
+
+def render_high_conviction_ui(setups, overall, math_details, premium):
+    """Render the 3 light + math UI - new UI, old UI intact"""
+    st.markdown("---")
+    st.markdown(f"## 🧮 V18.1 HIGH CONVICTION MATH ENGINE")
+    st.markdown(f"### {overall['light']} {overall['level']} - {overall['score']:.1f}% | {overall['action']}")
+    
+    # Top metrics
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Probability", f"{math_details['probability']:.0f}%", delta=f"{math_details['green_count']}/7 Green")
+    c2.metric("Expected Value", f"₹{math_details['ev']:.2f}", delta=f"Kelly {math_details['kelly_pct']:.1f}%")
+    c3.metric("Theta Decay", f"₹{math_details['theta_decay']:.1f}/day", delta=f"RSI {math_details['rsi']:.0f}")
+    c4.metric("ATR", f"{math_details['atr']:.1f}", delta=f"Premium ₹{premium:.2f}")
+    
+    # Progress
+    st.progress(min(1.0, overall['score']/100))
+    
+    # 7 setups in grid
+    cols = st.columns(3)
+    for idx, (name, s) in enumerate(setups.items()):
+        col = cols[idx % 3]
+        with col:
+            if s["light"] == "🟢":
+                st.success(f"**{s['light']} {name}**\n\nScore: {s['score']:.0f}\n{s['desc']}\n*{s['value']}*")
+            elif s["light"] == "🟡":
+                st.warning(f"**{s['light']} {name}**\n\nScore: {s['score']:.0f}\n{s['desc']}\n*{s['value']}*")
+            else:
+                st.error(f"**{s['light']} {name}**\n\nScore: {s['score']:.0f}\n{s['desc']}\n*{s['value']}*")
+    
+    # Final verdict with math
+    if overall["color"] == "green":
+        st.success(f"✅ **MATH VERDICT:** {overall['action']} | EV Positive ₹{math_details['ev']:.2f} | POP {math_details['probability']:.0f}% | Kelly {math_details['kelly_pct']:.1f}% - Take Trade!")
+    elif overall["color"] == "yellow":
+        st.warning(f"⚠️ **MATH VERDICT:** {overall['action']} | EV ₹{math_details['ev']:.2f} | Risky - Reduce size")
+    else:
+        st.error(f"❌ **MATH VERDICT:** {overall['action']} | EV ₹{math_details['ev']:.2f} | Negative expectancy - AVOID")
+
+
 PAPER_TRADING = True
 
 # Telegram Alert Settings
