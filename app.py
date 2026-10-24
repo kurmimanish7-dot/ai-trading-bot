@@ -27,7 +27,17 @@ import pandas as pd
 import requests
 import concurrent.futures
 import streamlit as st
-import pytz
+
+# IST Definition - No external dependency (stdlib only)
+try:
+    from zoneinfo import ZoneInfo
+    IST = ZoneInfo("Asia/Kolkata")
+except Exception:
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))  # IST = UTC+5:30 fallback
+
+
+from zoneinfo import ZoneInfo
 
 
 # ===== V12 FINAL AUDIT FIX - FAST SCAN + LIVE PRICE + GEMINI FIX =====
@@ -73,7 +83,6 @@ def scan_one_index_fast_v12(symbol, current_expiry, active_tf, vix_data, fii_dii
 
 # ===== END V12 HEADER =====
 
-IST = ZoneInfo("Asia/Kolkata")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
