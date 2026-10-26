@@ -453,6 +453,205 @@ TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "") if hasattr(st, 'secret
 
 
 
+
+# ===== V29 AUTO TELEGRAM ALERT SYSTEM - Entry + Exit without click =====
+
+def send_telegram_message(bot_token, chat_id, message):
+    """Send Telegram message - works for both Entry and Exit"""
+    try:
+        import requests
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {
+            "chat_id": chat_id, 
+            "text": message, 
+            "parse_mode": "Markdown"
+        }
+        r = requests.post(url, json=payload, timeout=8)
+        return r.status_code == 200, r.text[:100] if r.status_code != 200 else "OK"
+    except Exception as e:
+        return False, str(e)[:100]
+
+def format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str):
+    """Format Entry alert for Telegram"""
+    symbol = idea.get('symbol','NIFTY')
+    strike = idea.get('strike','')
+    opt = idea.get('option','')
+    entry = live_ltp if live_ltp > 0 else idea.get('entry',0)
+    sl = idea.get('sl',0)
+    t1 = idea.get('target1',0)
+    t2 = idea.get('target2',0)
+    rr = idea.get('risk_reward',0)
+    conf = idea.get('confidence',0)
+    
+    msg = f"""🚀 *NEW TRADE SETUP - {symbol}*
+
+📊 *{symbol} {strike} {opt}*
+Type: INDEX OPTION (CE BUYING)
+Timeframe: 15 Min (Institutional Breakout)
+Holding: NEXT SESSION
+Conviction: {conf}% | Expiry: {expiry_label_str}
+
+💰 *Entry:* ₹{entry:.2f} (LIVE Broker: ₹{live_ltp:.2f})
+🛑 *SL:* ₹{sl:.2f}
+🎯 *T1:* ₹{t1:.2f}
+🎯 *T2:* ₹{t2:.2f}
+📈 *R/R:* 1:{rr:.2f}
+📍 *Spot:* {spot:.2f}
+
+⚡ *Buildup:* {idea.get('buildup','')}
+📝 *Why:* {idea.get('why','')[:200]}...
+
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+🤖 Auto Alert from AI Trading Bot"""
+    return msg
+
+def format_telegram_exit_alert(position, exit_price, pnl, reason):
+    """Format Exit alert for Telegram"""
+    symbol = position.get('symbol','')
+    strike = position.get('strike','')
+    opt = position.get('option_type','')
+    entry = position.get('entry_price',0)
+    
+    pnl_emoji = "✅" if pnl > 0 else "❌"
+    
+    msg = f"""{pnl_emoji} *TRADE EXIT - {symbol}*
+
+📊 *{symbol} {strike} {opt}*
+Entry: ₹{entry:.2f} → Exit: ₹{exit_price:.2f}
+💰 *P&L:* ₹{pnl:+.2f}
+📝 *Reason:* {reason}
+
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+🤖 Auto Exit Alert"""
+    return msg
+
+def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
+    """Auto send Telegram Entry alert - only once per signal"""
+    try:
+        bot_token = secret("TELEGRAM_BOT_TOKEN") or secret("BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN","") if hasattr(st.secrets, '__getitem__') else ""
+        chat_id = secret("TELEGRAM_CHAT_ID") or secret("CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID","") if hasattr(st.secrets, '__getitem__') else ""
+        
+        # Also try direct access
+        try:
+            if not bot_token and "TELEGRAM_BOT_TOKEN" in st.secrets:
+                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
+            if not chat_id and "TELEGRAM_CHAT_ID" in st.secrets:
+                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+        except:
+            pass
+        
+        if not bot_token or not chat_id:
+            return False, "Telegram keys missing"
+        
+        # Create unique key for this signal to avoid duplicate alerts
+        signal_key = f"{idea.get('symbol')}_{idea.get('strike')}_{idea.get('option')}_{idea.get('expiry')}_{int(idea.get('entry',0))}"
+        
+        # Check if already sent
+        if 'sent_telegram_signals' not in st.session_state:
+            st.session_state['sent_telegram_signals'] = set()
+        
+        if signal_key in st.session_state['sent_telegram_signals']:
+            return False, "Already sent"
+        
+        # Send
+        msg = format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str)
+        ok, resp = send_telegram_message(bot_token, chat_id, msg)
+        
+        if ok:
+            st.session_state['sent_telegram_signals'].add(signal_key)
+            # Keep only last 50 to avoid memory bloat
+            if len(st.session_state['sent_telegram_signals']) > 50:
+                st.session_state['sent_telegram_signals'] = set(list(st.session_state['sent_telegram_signals'])[-30:])
+        
+        return ok, resp
+    except Exception as e:
+        return False, str(e)[:80]
+
+def auto_check_and_exit_positions():
+    """Auto check SL/Target hit and send Telegram Exit alert"""
+    try:
+        if 'paper_portfolio' not in st.session_state:
+            return
+        
+        positions = st.session_state.paper_portfolio.get("positions", {})
+        if not positions:
+            return
+        
+        # For each position, check live LTP
+        for trade_id, pos in list(positions.items()):
+            try:
+                symbol = pos.get('symbol','NIFTY')
+                strike = pos.get('strike',0)
+                opt_type = pos.get('option_type','CE')
+                expiry = pos.get('expiry','')
+                
+                # Get live LTP
+                live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
+                
+                if not is_ok or live_ltp <= 0:
+                    continue
+                
+                entry = pos.get('entry_price',0)
+                sl = pos.get('sl',0)
+                t1 = pos.get('t1',0)
+                t2 = pos.get('t2',0)
+                
+                # Check SL hit
+                if live_ltp <= sl:
+                    # SL hit - exit
+                    close_paper_position(trade_id, live_ltp, f"SL Hit @ ₹{live_ltp:.2f}")
+                    # Send Telegram
+                    try:
+                        bot_token = secret("TELEGRAM_BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN","")
+                        chat_id = secret("TELEGRAM_CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID","")
+                        try:
+                            if not bot_token and "TELEGRAM_BOT_TOKEN" in st.secrets:
+                                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
+                            if not chat_id and "TELEGRAM_CHAT_ID" in st.secrets:
+                                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+                        except:
+                            pass
+                        if bot_token and chat_id:
+                            pnl = (live_ltp - entry) * pos.get('qty',0)
+                            msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"SL Hit @ ₹{live_ltp:.2f}")
+                            send_telegram_message(bot_token, chat_id, msg)
+                    except:
+                        pass
+                    continue
+                
+                # Check T2 hit
+                if live_ltp >= t2:
+                    close_paper_position(trade_id, live_ltp, f"Target 2 Hit @ ₹{live_ltp:.2f}")
+                    try:
+                        bot_token = secret("TELEGRAM_BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN","")
+                        chat_id = secret("TELEGRAM_CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID","")
+                        try:
+                            if not bot_token and "TELEGRAM_BOT_TOKEN" in st.secrets:
+                                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
+                            if not chat_id and "TELEGRAM_CHAT_ID" in st.secrets:
+                                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+                        except:
+                            pass
+                        if bot_token and chat_id:
+                            pnl = (live_ltp - entry) * pos.get('qty',0)
+                            msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯")
+                            send_telegram_message(bot_token, chat_id, msg)
+                    except:
+                        pass
+                    continue
+                    
+            except Exception as e:
+                continue
+    except Exception as e:
+        pass
+
+# Add auto check at app start - runs every refresh
+try:
+    auto_check_and_exit_positions()
+except:
+    pass
+
+
 # ================= V18 ENTRY/EXIT ALERT + 3 LIGHT SYSTEM =================
 
 def render_3light_system(setups, overall):
@@ -5028,6 +5227,20 @@ else:
                     )
                     st.write(f"{STOP} **Structural Invalidation Level:** {idea['invalidation']}")
                     st.write(f"{CHART_UP} **Position Trailing Guidance:** {idea['trailing']}")
+                    
+                    # V29 AUTO TELEGRAM ENTRY ALERT - No click needed
+                    try:
+                        # Try to auto send entry alert
+                        if 'live_ltp_now' in locals() and live_ltp_now > 0:
+                            ok, resp = auto_send_entry_alert_if_new(idea, live_ltp_now, current_spot, expiry_label(selected_expiry))
+                            if ok:
+                                st.success(f"📱 Telegram Entry Alert Sent: {idea['symbol']} {idea['strike']} {idea['option']} @ ₹{live_ltp_now:.2f}")
+                            elif "Already sent" not in str(resp):
+                                # Show debug only if not already sent
+                                pass
+                    except Exception as e:
+                        pass
+                    
                     st.divider()
 
             if GEMINI_API_KEY and final_ideas:
