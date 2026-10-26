@@ -4918,10 +4918,15 @@ else:
                             actual_exp_used = selected_expiry
                         
                         with c2: 
-                            # V23 FINAL: Always show real LTP or detailed Angel error
+                            # V28 FINAL: Show LIVE as Entry when Angel available - no confusion
                             if is_live_ok and live_ltp_now > 0:
-                                st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"🔴 LIVE NOW: {RUPEE}{fmt(live_ltp_now)} ({pnl_pct:+.1f}%) [{live_src}]", delta_color="normal")
+                                # Use LIVE price as Entry for target calculation
+                                display_entry = live_ltp_now
+                                st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(live_ltp_now)} (LIVE)", delta=f"✅ BROKER LIVE: ₹{fmt(live_ltp_now)} [{live_src[:30]}] | Signal was ₹{fmt(entry_ltp)}", delta_color="normal")
+                                # Update idea entry to live for SL/Target display consistency
+                                idea['entry'] = live_ltp_now
                             else:
+                                display_entry = entry_ltp
                                 # Show actual Angel/NSE error, not generic NSE BLOCKED
                                 if "ANGEL" in live_src:
                                     st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"⚠️ ANGEL: {live_src[:40]}", delta_color="inverse")
@@ -4932,7 +4937,7 @@ else:
                                 else:
                                     st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"⚠️ {live_src}", delta_color="inverse")
                                     st.error(f"🚨 LTP Fetch Failed: {live_src}. Entry ₹{entry_ltp:.2f}")
-                        st.caption(f"🔴 MARKET: Signal ₹{entry_ltp:.2f} → NOW ₹{live_ltp_now:.2f} [{live_src}] | {datetime.now(IST).strftime('%H:%M:%S IST')} | Strike: {idea.get('strike')} {idea.get('option')} | P&L: {pnl_pct:+.2f}%")
+                        st.caption(f"🔴 BROKER LTP: ₹{live_ltp_now:.2f} [{live_src}] | Signal: ₹{entry_ltp:.2f} | {datetime.now(IST).strftime('%H:%M:%S IST')} | Strike: {idea.get('strike')} {idea.get('option')} | LIVE Entry Updated")
                         # Live P&L bar
                         if pnl_pct >= 5:
                             st.success(f"✅ LIVE P&L: +{pnl_pct:.2f}% | Target 1 near!")
@@ -4940,12 +4945,32 @@ else:
                             st.error(f"🚨 LIVE P&L: {pnl_pct:.2f}% | Exit check!")
                         else:
                             st.info(f"📊 LIVE P&L: {pnl_pct:+.2f}% | Holding")
-                        with c3: st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(idea['sl'])}")
+                        # V28: Recalculate SL/Targets based on LIVE 108.20 when available
+                        if is_live_ok and live_ltp_now > 0 and entry_ltp > 0:
+                            # Calculate % from old entry
+                            try:
+                                sl_pct = (entry_ltp - idea['sl']) / entry_ltp if entry_ltp > 0 else 0.18
+                                t1_pct = (idea['target1'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.25
+                                t2_pct = (idea['target2'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.40
+                                # New SL/Targets based on LIVE
+                                new_sl = live_ltp_now * (1 - sl_pct)
+                                new_t1 = live_ltp_now * (1 + t1_pct)
+                                new_t2 = live_ltp_now * (1 + t2_pct)
+                            except:
+                                new_sl = idea['sl']
+                                new_t1 = idea['target1']
+                                new_t2 = idea['target2']
+                        else:
+                            new_sl = idea['sl']
+                            new_t1 = idea['target1']
+                            new_t2 = idea['target2']
+                        
+                        with c3: st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(new_sl)}", delta=f"LIVE SL (was ₹{fmt(idea['sl'])} from ₹{fmt(entry_ltp)})" if is_live_ok and live_ltp_now > 0 else "")
                         with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}", delta=f"Kelly Size: {idea['kelly_pct']}%")
 
                         c5, c6, c7, c8 = st.columns(4)
-                        with c5: st.metric("Target 1", f"{RUPEE}{fmt(idea['target1'])}")
-                        with c6: st.metric("Target 2", f"{RUPEE}{fmt(idea['target2'])}")
+                        with c5: st.metric("Target 1", f"{RUPEE}{fmt(new_t1)}", delta=f"LIVE T1 from ₹{fmt(live_ltp_now)}" if is_live_ok and live_ltp_now > 0 else "")
+                        with c6: st.metric("Target 2", f"{RUPEE}{fmt(new_t2)}", delta=f"LIVE T2 from ₹{fmt(live_ltp_now)}" if is_live_ok and live_ltp_now > 0 else "")
                         with c7: st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
                         with c8: st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
 
@@ -4977,12 +5002,32 @@ else:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Action", f"{idea['action']} SPOT")
                         with c2: st.metric("Spot Entry", f"{RUPEE}{fmt(idea['entry'])}")
-                        with c3: st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(idea['sl'])}")
+                        # V28: Recalculate SL/Targets based on LIVE 108.20 when available
+                        if is_live_ok and live_ltp_now > 0 and entry_ltp > 0:
+                            # Calculate % from old entry
+                            try:
+                                sl_pct = (entry_ltp - idea['sl']) / entry_ltp if entry_ltp > 0 else 0.18
+                                t1_pct = (idea['target1'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.25
+                                t2_pct = (idea['target2'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.40
+                                # New SL/Targets based on LIVE
+                                new_sl = live_ltp_now * (1 - sl_pct)
+                                new_t1 = live_ltp_now * (1 + t1_pct)
+                                new_t2 = live_ltp_now * (1 + t2_pct)
+                            except:
+                                new_sl = idea['sl']
+                                new_t1 = idea['target1']
+                                new_t2 = idea['target2']
+                        else:
+                            new_sl = idea['sl']
+                            new_t1 = idea['target1']
+                            new_t2 = idea['target2']
+                        
+                        with c3: st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(new_sl)}", delta=f"LIVE SL (was ₹{fmt(idea['sl'])} from ₹{fmt(entry_ltp)})" if is_live_ok and live_ltp_now > 0 else "")
                         with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}", delta=f"Kelly Size: {idea['kelly_pct']}%")
 
                         c5, c6, c7, c8 = st.columns(4)
-                        with c5: st.metric("Target 1", f"{RUPEE}{fmt(idea['target1'])}")
-                        with c6: st.metric("Target 2", f"{RUPEE}{fmt(idea['target2'])}")
+                        with c5: st.metric("Target 1", f"{RUPEE}{fmt(new_t1)}", delta=f"LIVE T1 from ₹{fmt(live_ltp_now)}" if is_live_ok and live_ltp_now > 0 else "")
+                        with c6: st.metric("Target 2", f"{RUPEE}{fmt(new_t2)}", delta=f"LIVE T2 from ₹{fmt(live_ltp_now)}" if is_live_ok and live_ltp_now > 0 else "")
                         with c7: st.metric("Technical Score", f"{idea.get('technical_score', 0):+d}")
                         with c8: st.metric("Smart Money Score", f"{idea.get('institutional_score', 0):+d}")
 
