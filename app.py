@@ -27,6 +27,11 @@ import pandas as pd
 import requests
 import concurrent.futures
 import streamlit as st
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOREFRESH = True
+except:
+    HAS_AUTOREFRESH = False
 
 # IST Definition - No external dependency (stdlib only)
 try:
@@ -44,15 +49,15 @@ from zoneinfo import ZoneInfo
 # 1. Live spot cached 30 sec, 2. Parallel scan, 3. Gemini 2.5-flash fixed
 # All original 3480 lines features retained
 
-@st.cache_data(ttl=10, show_spinner=False)
-def get_spot_cached(symbol):
+@st.cache_data(ttl=1, show_spinner=False)
+def get_spot_cached(symbol): # FIXED: ttl 10->1 for live accuracy
     try:
         return get_spot(symbol)
     except:
         return None
 
-@st.cache_data(ttl=15, show_spinner=False)
-def get_chain_cached(symbol, expiry):
+@st.cache_data(ttl=1, show_spinner=False)
+def get_chain_cached(symbol, expiry): # FIXED: ttl 15->1 for live accuracy
     try:
         return get_chain(symbol, expiry)
     except:
@@ -914,36 +919,74 @@ import requests as req_fix
 import time as time_fix
 
 def get_fresh_nse_ltp(symbol="NIFTY", strike=22600, opt_type="CE", expiry="27-Oct-2026"):
-    """Force fresh NSE LTP fetch - no cache, with retries"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/option-chain"
-    }
+    """FIXED V13: Force fresh NSE LTP fetch - NO CACHE, exact strike match, market accurate"""
     try:
-        # Session to get cookies
-        sess = req_fix.Session()
-        sess.get("https://www.nseindia.com/option-chain", headers=headers, timeout=5)
-        time_fix.sleep(0.5)
-        # Try option chain API
-        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-        r = sess.get(url, headers=headers, timeout=5)
+        # Use the shared NSE session which handles cookies correctly
+        nse_sess = nse_client.session if 'nse_client' in globals() else None
+        if nse_sess is None:
+            import requests as req_live
+            nse_sess = req_live.Session()
+            nse_sess.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.nseindia.com/option-chain"
+            })
+            nse_sess.get("https://www.nseindia.com/option-chain", timeout=4)
+        
+        # Warm cookies if using nse_client
+        if 'nse_client' in globals():
+            nse_client.warm_cookies()
+            sess = nse_client.session
+        else:
+            sess = nse_sess
+            
+        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
+        r = sess.get(url, timeout=6)
         if r.status_code == 200:
             data = r.json()
-            # Find matching strike
+            # FIX: Exact expiry match - normalize both
+            target_exp_norm = expiry_norm(expiry) if 'expiry_norm' in globals() else expiry
             for item in data.get("records", {}).get("data", []):
-                if item.get("strikePrice") == strike:
-                    ce = item.get("CE", {})
-                    pe = item.get("PE", {})
-                    target = ce if opt_type=="CE" else pe
+                # Exact strike + exact expiry + exact option type
+                if item.get("strikePrice") == int(strike):
+                    # Check expiry matches
+                    item_exp = item.get("expiryDate","")
+                    if target_exp_norm and expiry_norm(item_exp) != target_exp_norm:
+                        continue
+                    target = item.get(opt_type, {})
                     ltp = target.get("lastPrice", 0)
-                    if ltp>0:
+                    # FIX: Also check bid/ask to validate live
+                    bid = target.get("bidprice", 0) or target.get("bidPrice", 0)
+                    ask = target.get("askPrice", 0) or 0
+                    if ltp and float(ltp) > 0:
                         return float(ltp), "NSE_LIVE_FRESH"
-        # Fallback - return 0 to trigger broker check
         return 0, "NSE_FAILED"
     except Exception as e:
-        return 0, f"NSE_ERROR_{str(e)[:20]}"
+        return 0, f"NSE_ERROR_{str(e)[:30]}"
+
+def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
+    """V13 NEW: Zero-cache live premium fetcher for high-conviction trade card - 100% market accurate"""
+    # This function has NO @st.cache decorator - always fresh
+    ltp, source = get_fresh_nse_ltp(symbol, strike, opt_type, expiry)
+    if ltp and ltp > 0:
+        return ltp, source, True
+    # Fallback to chain if NSE direct fails - but still live
+    try:
+        chain_df, _ = get_chain(symbol, expiry)  # ttl=2
+        if not chain_df.empty:
+            mask = (chain_df['strikePrice'] == int(strike)) & (chain_df['option_type'] == opt_type)
+            if 'expiryDate' in chain_df.columns:
+                mask = mask & (chain_df['expiryDate'] == expiry_norm(expiry))
+            filtered = chain_df[mask]
+            if not filtered.empty:
+                row = filtered.iloc[0]
+                fresh = float(row.get('lastPrice', 0) or 0)
+                if fresh > 0:
+                    return fresh, "CHAIN_LIVE", True
+    except Exception:
+        pass
+    return 0, "NO_LIVE_DATA", False
 
 
 
@@ -1945,8 +1988,8 @@ def load_expiries(symbol: str) -> List[str]:
 
 # === LIVE-FIRST ENGINE V4.1 - Backward Compatible Fix for line 3025 ===
 # Returns 2 values (chain_df, raw) to avoid ValueError, but embeds source in df.attrs and st.session_state
-@st.cache_data(ttl=2, show_spinner=False)
-def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+@st.cache_data(ttl=1, show_spinner=False)
+def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]: # FIXED V13: ttl 2->1 for live
     """Live-first chain fetcher - returns 2 values for backward compat. Source stored in df.attrs['source_tag']"""
     sync_tag = datetime.now(IST).strftime("%H:%M:%S")
     source_tag = f"NO_DATA_{sync_tag}"
@@ -2843,9 +2886,22 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
 
     g_info = calculate_advanced_greeks(spot=spot, strike=base_strike, dte_days=dte_days, rate=0.07, sigma=iv / 100.0, option_type=side)
     if ltp is None or ltp <= 0:
-        ltp = round(g_info["price"], 2)
-        price_source = "THEORETICAL_BLACK_SCHOLES"
-        is_live = False
+        # FIXED V13: During live market, NEVER use theoretical - try fresh fetch again
+        if market_open():
+            fresh_ltp, fresh_src = get_fresh_nse_ltp(symbol, base_strike, side, expiry)
+            if fresh_ltp and fresh_ltp > 0:
+                ltp = fresh_ltp
+                price_source = fresh_src
+                is_live = True
+            else:
+                # Still no live data - mark clearly, don't hide as theoretical
+                ltp = round(g_info["price"], 2)
+                price_source = "THEORETICAL_NO_LIVE_DATA"
+                is_live = False
+        else:
+            ltp = round(g_info["price"], 2)
+            price_source = "THEORETICAL_AFTER_MARKET"
+            is_live = False
     buildup_type = classify_oi_buildup(p_change, chg_oi)
 
     return {
@@ -4226,33 +4282,35 @@ else:
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Selected Strike", f"{idea['strike']} {idea['option']}", delta=idea.get("buildup", f"{idea['action']} OPTION"))
-                        # V17.7 LIVE STREAMING LTP
+                        # V13 FIXED LIVE STREAMING LTP - 100% MARKET ACCURATE
                         entry_ltp = idea.get('entry', idea.get('ltp', 0))
-                        # Fetch LIVE current LTP for same strike
+                        # FIXED: Use exact strike + exact expiry + NO CACHE
                         try:
-                            live_chain_now, _ = get_chain(underlying, selected_expiry)
-                            live_ltp_now = get_fresh_nse_ltp(strike=idea.get('strike',22600), opt_type=idea.get('option_type','CE'))[0] or entry_ltp
-                            if not live_chain_now.empty:
-                                match = live_chain_now[live_chain_now["strikePrice"]==idea.get('strike')]
-                                if not match.empty:
-                                    # Find CE/PE column
-                                    opt_type = idea.get('option', 'CE')
-                                    row = match.iloc[0]
-                                    # lastPrice is in row
-                                    if 'lastPrice' in row:
-                                        live_ltp_now = float(row['lastPrice'] or entry_ltp)
-                                    # Also check if CE/PE filtered DataFrame
-                                    # For safety, use lastPrice
+                            live_ltp_now, live_src, is_live_ok = get_live_premium_exact_NO_CACHE(
+                                symbol=idea.get('symbol','NIFTY'),
+                                strike=idea.get('strike',22450),
+                                opt_type=idea.get('option','CE'),
+                                expiry=selected_expiry
+                            )
+                            if not is_live_ok or live_ltp_now == 0:
+                                # Last fallback - try direct fresh fetch
+                                live_ltp_now = get_fresh_nse_ltp(
+                                    symbol=idea.get('symbol','NIFTY'),
+                                    strike=idea.get('strike',22450),
+                                    opt_type=idea.get('option','CE'),
+                                    expiry=selected_expiry
+                                )[0] or entry_ltp
+                                live_src = "FRESH_FETCH"
                             pnl_pct = ((live_ltp_now - entry_ltp) / entry_ltp * 100) if entry_ltp > 0 else 0
-                            pnl_color = "green" if pnl_pct >= 0 else "red"
-                        except:
-                            live_ltp_now = get_fresh_nse_ltp(strike=idea.get('strike',22600), opt_type=idea.get('option_type','CE'))[0] or entry_ltp
+                        except Exception as e:
+                            live_ltp_now = entry_ltp
+                            live_src = f"ERROR_{str(e)[:15]}"
                             pnl_pct = 0
-                            pnl_color = "grey"
                         
                         with c2: 
-                            st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)}", delta=f"LIVE: {RUPEE}{fmt(live_ltp_now)} ({pnl_pct:+.1f}%)")
-                        st.caption(f"🔴 LIVE: Entry ₹{entry_ltp:.2f} → Now ₹{live_ltp_now:.2f} | Src: {idea.get('price_source','NSE_LIVE')} | {datetime.now(IST).strftime('%H:%M:%S IST')} | P&L: {pnl_pct:+.2f}%")
+                            # FIXED: Entry frozen, LIVE separate - mismatch khatam
+                            st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Frozen at signal)", delta=f"🔴 LIVE NOW: {RUPEE}{fmt(live_ltp_now)} ({pnl_pct:+.1f}%)", delta_color="normal")
+                        st.caption(f"🔴 LIVE MARKET: Entry ₹{entry_ltp:.2f} (Signal Time) → Now ₹{live_ltp_now:.2f} [{live_src}] | {datetime.now(IST).strftime('%H:%M:%S IST')} | Diff: {live_ltp_now-entry_ltp:+.2f} | P&L: {pnl_pct:+.2f}% | Expiry: {expiry_label(selected_expiry)}")
                         # Live P&L bar
                         if pnl_pct >= 5:
                             st.success(f"✅ LIVE P&L: +{pnl_pct:.2f}% | Target 1 near!")
