@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-AI Institutional Live Trading Advisor (Quantitative GEX & Multi-Factor Equity Engine)
-=====================================================================================
-Production Institutional Release:
-- Universal 5,000+ Equity Universe (NSE & BSE)
-- Multi-Factor Equity Setup Engine: Technicals, Fundamentals, Official Corporate/Insider
-  Disclosures, Future Plans/Capex, Arithmetic/Mathematical Models, Volume/Investment Flow
-- Dual Entry Call & Active Exit Call Engine with Target Price & Mathematical Target Time (ETA)
-- 12-Tier Multi-Timeframe Matrix, SEBI Regulatory Metadata, Analytical Greeks, Dealer GEX Radar
-- Stateful Paper-Trading Risk Engine (Supports both Index Options & Equity Shares)
-"""
+""" AI Institutional Live Trading Advisor (Quantitative GEX & Multi-Factor Equity Engine) ===================================================================================== Production Institutional Release: - Universal 5,000+ Equity Universe (NSE & BSE) - Multi-Factor Equity Setup Engine: Technicals, Fundamentals, Official Corporate/Insider Disclosures, Future Plans/Capex, Arithmetic/Mathematical Models, Volume/Investment Flow - Dual Entry Call & Active Exit Call Engine with Target Price & Mathematical Target Time (ETA) - 12-Tier Multi-Timeframe Matrix, SEBI Regulatory Metadata, Analytical Greeks, Dealer GEX Radar - Stateful Paper-Trading Risk Engine (Supports both Index Options & Equity Shares) """
 
 import datetime
 from datetime import datetime, date, time as dtime, timedelta
@@ -634,10 +624,7 @@ class HighConvictionMathEngine:
             return 60, "🟡"
     
     def calculate(self, spot, strike, ce_pe, prices, highs, lows, volumes, oi_data, iv=15, time_to_expiry_days=3, premium_ltp=0):
-        """
-        Main Math Engine - All permutation & combination
-        Returns: detailed setups, overall conviction, EV, Kelly, Probability
-        """
+        """ Main Math Engine - All permutation & combination Returns: detailed setups, overall conviction, EV, Kelly, Probability """
         setups = {}
         scores = {}
         
@@ -913,38 +900,57 @@ def render_high_conviction_ui(setups, overall, math_details, premium):
 import requests as req_fix
 import time as time_fix
 
-def get_fresh_nse_ltp(symbol="NIFTY", strike=22600, opt_type="CE", expiry="27-Oct-2026"):
-    """Force fresh NSE LTP fetch - no cache, with retries"""
+def get_fresh_nse_ltp(symbol="NIFTY", strike=22600, opt_type="CE", expiry=None):
+    """Fetch a fresh NSE option LTP for the exact underlying, strike, side and expiry. Returns (ltp, source). A zero LTP means no validated live quote was found; theoretical prices are deliberately never returned from this function. """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/option-chain"
+        "Referer": "https://www.nseindia.com/option-chain",
     }
+    symbol = str(symbol or "NIFTY").strip().upper()
+    side = normalize_option_type(opt_type) if "normalize_option_type" in globals() else str(opt_type).upper()
     try:
-        # Session to get cookies
-        sess = req_fix.Session()
-        sess.get("https://www.nseindia.com/option-chain", headers=headers, timeout=5)
-        time_fix.sleep(0.5)
-        # Try option chain API
-        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-        r = sess.get(url, headers=headers, timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            # Find matching strike
-            for item in data.get("records", {}).get("data", []):
-                if item.get("strikePrice") == strike:
-                    ce = item.get("CE", {})
-                    pe = item.get("PE", {})
-                    target = ce if opt_type=="CE" else pe
-                    ltp = target.get("lastPrice", 0)
-                    if ltp>0:
-                        return float(ltp), "NSE_LIVE_FRESH"
-        # Fallback - return 0 to trigger broker check
-        return 0, "NSE_FAILED"
-    except Exception as e:
-        return 0, f"NSE_ERROR_{str(e)[:20]}"
-
+        strike_num = float(strike)
+    except (TypeError, ValueError):
+        return 0.0, "INVALID_STRIKE"
+    if side not in ("CE", "PE") or strike_num <= 0:
+        return 0.0, "INVALID_CONTRACT"
+    target_exp = expiry_norm(expiry) if expiry and "expiry_norm" in globals() else None
+    try:
+        with req_fix.Session() as sess:
+            sess.get("https://www.nseindia.com/option-chain", headers=headers, timeout=5)
+            time_fix.sleep(0.25)
+            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
+            response = sess.get(url, headers=headers, timeout=5)
+            response.raise_for_status()
+            payload = response.json()
+        records = payload.get("records", {}) if isinstance(payload, dict) else {}
+        for item in records.get("data", []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                row_strike = float(item.get("strikePrice", 0))
+            except (TypeError, ValueError):
+                continue
+            if row_strike != strike_num:
+                continue
+            row_exp = expiry_norm(item.get("expiryDate")) if item.get("expiryDate") and "expiry_norm" in globals() else None
+            if target_exp and row_exp != target_exp:
+                continue
+            contract = item.get(side)
+            if not isinstance(contract, dict):
+                continue
+            try:
+                ltp = float(contract.get("lastPrice") or 0)
+            except (TypeError, ValueError):
+                ltp = 0.0
+            if ltp > 0:
+                return ltp, "NSE_LIVE_FRESH"
+        return 0.0, "NSE_NO_MATCHING_LIVE_QUOTE"
+    except Exception as exc:
+        logger.debug("Fresh NSE LTP failed for %s %s %s %s: %s", symbol, strike, side, expiry, exc)
+        return 0.0, "NSE_FETCH_FAILED"
 
 
 
@@ -1155,138 +1161,11 @@ with st.sidebar.expander("📱 Telegram EMERGENCY EXIT Alert", expanded=False):
         else:
             st.warning("Token + Chat ID daalo pehle")
     
-    st.markdown("""
-    **Kaise banaye:**
-    1. Telegram pe @BotFather search karo
-    2. /newbot → Name do → Token milega (123456:ABC...)
-    3. Apne bot ko /start karo
-    4. Chat ID: @userinfobot pe /start → ID milega
-    5. Yaha Token + Chat ID daalo + Enable karo
-    """)
+    st.markdown(""" **Kaise banaye:** 1. Telegram pe @BotFather search karo 2. /newbot → Name do → Token milega (123456:ABC...) 3. Apne bot ko /start karo 4. Chat ID: @userinfobot pe /start → ID milega 5. Yaha Token + Chat ID daalo + Enable karo """)
 
 
 st.markdown(
-    """
-    <style>
-    .block-container {
-        padding-top: 0.8rem !important;
-        padding-left: 0.5rem !important;
-        padding-right: 0.5rem !important;
-        max-width: 100% !important;
-    }
-    
-    @media(max-width: 768px) {
-        [data-testid="stHorizontalBlock"] {
-            flex-wrap: wrap !important;
-            gap: 0.35rem !important;
-            width: 100% !important;
-        }
-        [data-testid="column"] {
-            min-width: 48% !important;
-            max-width: 48% !important;
-            flex: 1 1 48% !important;
-            width: 48% !important;
-        }
-        [data-testid="stMetricValue"], [data-testid="stMetricValue"] * {
-            font-size: 1.05rem !important;
-            line-height: 1.15 !important;
-        }
-        [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * {
-            font-size: 0.72rem !important;
-            line-height: 1.1 !important;
-        }
-        [data-testid="stMetricDelta"], [data-testid="stMetricDelta"] * {
-            font-size: 0.68rem !important;
-            line-height: 1.0 !important;
-        }
-    }
-    
-    .trade-card {
-        width: 100%;
-        box-sizing: border-box;
-        border: 1px solid rgba(128, 128, 128, 0.30);
-        border-radius: 12px;
-        padding: 1rem;
-        margin: 0.7rem 0;
-        background-color: rgba(255, 255, 255, 0.02);
-    }
-    .light-box {
-        border: 1px solid rgba(128, 128, 128, 0.25);
-        border-radius: 12px;
-        padding: 0.8rem;
-        text-align: center;
-        background-color: rgba(255, 255, 255, 0.02);
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    .reason-box {
-        background-color: rgba(128, 128, 128, 0.08);
-        border-left: 4px solid #4CAF50;
-        padding: 0.75rem;
-        border-radius: 4px;
-        margin: 0.5rem 0;
-        line-height: 1.45;
-    }
-    .exit-box {
-        background-color: rgba(244, 67, 54, 0.08);
-        border-left: 4px solid #F44336;
-        padding: 0.75rem;
-        border-radius: 4px;
-        margin: 0.5rem 0;
-        line-height: 1.45;
-    }
-    .prediction-card-green {
-        background: linear-gradient(135deg, rgba(76, 175, 80, 0.15), rgba(76, 175, 80, 0.05));
-        border: 1.5px solid #4CAF50;
-        border-radius: 12px;
-        padding: 1rem 1.1rem;
-        margin: 0.5rem 0 0.8rem 0;
-    }
-    .prediction-card-red {
-        background: linear-gradient(135deg, rgba(244, 67, 54, 0.15), rgba(244, 67, 54, 0.05));
-        border: 1.5px solid #F44336;
-        border-radius: 12px;
-        padding: 1rem 1.1rem;
-        margin: 0.5rem 0 0.8rem 0;
-    }
-    .prediction-card-gold {
-        background: linear-gradient(135deg, rgba(255, 193, 7, 0.15), rgba(255, 193, 7, 0.05));
-        border: 1.5px solid #FFC107;
-        border-radius: 12px;
-        padding: 1rem 1.1rem;
-        margin: 0.5rem 0 0.8rem 0;
-    }
-
-    div[data-stale="true"], div[data-stale="true"] *, .stale-element, .stale-element *, .element-container, .element-container * {
-        opacity: 1 !important;
-        filter: none !important;
-        transition: none !important;
-        animation: none !important;
-    }
-
-    [data-testid="stMetric"], [data-testid="stMetric"] * {
-        opacity: 1 !important;
-        transition: none !important;
-        animation: none !important;
-    }
-
-    [data-testid="stMetric"] {
-        background-color: rgba(255, 255, 255, 0.02) !important;
-        border: 1px solid rgba(128, 128, 128, 0.25) !important;
-        border-radius: 10px !important;
-        padding: 0.5rem 0.55rem !important;
-        min-height: 82px !important;
-        display: flex !important;
-        flex-direction: column !important;
-        justify-content: center !important;
-        overflow: hidden !important;
-    }
-
-    [data-testid="stStatusWidget"] {
-        visibility: hidden !important;
-        display: none !important;
-    }
-    </style>
-    """,
+    """ <style> .block-container { padding-top: 0.8rem !important; padding-left: 0.5rem !important; padding-right: 0.5rem !important; max-width: 100% !important; } @media(max-width: 768px) { [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; gap: 0.35rem !important; width: 100% !important; } [data-testid="column"] { min-width: 48% !important; max-width: 48% !important; flex: 1 1 48% !important; width: 48% !important; } [data-testid="stMetricValue"], [data-testid="stMetricValue"] * { font-size: 1.05rem !important; line-height: 1.15 !important; } [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * { font-size: 0.72rem !important; line-height: 1.1 !important; } [data-testid="stMetricDelta"], [data-testid="stMetricDelta"] * { font-size: 0.68rem !important; line-height: 1.0 !important; } } .trade-card { width: 100%; box-sizing: border-box; border: 1px solid rgba(128, 128, 128, 0.30); border-radius: 12px; padding: 1rem; margin: 0.7rem 0; background-color: rgba(255, 255, 255, 0.02); } .light-box { border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 12px; padding: 0.8rem; text-align: center; background-color: rgba(255, 255, 255, 0.02); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); } .reason-box { background-color: rgba(128, 128, 128, 0.08); border-left: 4px solid #4CAF50; padding: 0.75rem; border-radius: 4px; margin: 0.5rem 0; line-height: 1.45; } .exit-box { background-color: rgba(244, 67, 54, 0.08); border-left: 4px solid #F44336; padding: 0.75rem; border-radius: 4px; margin: 0.5rem 0; line-height: 1.45; } .prediction-card-green { background: linear-gradient(135deg, rgba(76, 175, 80, 0.15), rgba(76, 175, 80, 0.05)); border: 1.5px solid #4CAF50; border-radius: 12px; padding: 1rem 1.1rem; margin: 0.5rem 0 0.8rem 0; } .prediction-card-red { background: linear-gradient(135deg, rgba(244, 67, 54, 0.15), rgba(244, 67, 54, 0.05)); border: 1.5px solid #F44336; border-radius: 12px; padding: 1rem 1.1rem; margin: 0.5rem 0 0.8rem 0; } .prediction-card-gold { background: linear-gradient(135deg, rgba(255, 193, 7, 0.15), rgba(255, 193, 7, 0.05)); border: 1.5px solid #FFC107; border-radius: 12px; padding: 1rem 1.1rem; margin: 0.5rem 0 0.8rem 0; } div[data-stale="true"], div[data-stale="true"] *, .stale-element, .stale-element *, .element-container, .element-container * { opacity: 1 !important; filter: none !important; transition: none !important; animation: none !important; } [data-testid="stMetric"], [data-testid="stMetric"] * { opacity: 1 !important; transition: none !important; animation: none !important; } [data-testid="stMetric"] { background-color: rgba(255, 255, 255, 0.02) !important; border: 1px solid rgba(128, 128, 128, 0.25) !important; border-radius: 10px !important; padding: 0.5rem 0.55rem !important; min-height: 82px !important; display: flex !important; flex-direction: column !important; justify-content: center !important; overflow: hidden !important; } [data-testid="stStatusWidget"] { visibility: hidden !important; display: none !important; } </style> """,
     unsafe_allow_html=True,
 )
 
@@ -2652,12 +2531,7 @@ def calculate_indian_market_prediction(macro_data: Dict[str, Any], domestic_pcr:
 # 16. REGULATORY TRANSACTION FRICTION ENGINE (OPTIONS & EQUITIES)
 # =====================================================================
 def calculate_trade_friction(buy_price: float, sell_price: float, qty: int, is_option: bool = True, is_delivery_equity: bool = False) -> Dict[str, float]:
-    """
-    Computes exact Indian regulatory charges:
-    - Options: STT on sell turnover, Exchange 0.05%, GST 18%, Stamp 0.003%
-    - Equity Intraday: STT 0.025% on sell, Exchange 0.00345%, Stamp 0.003%
-    - Equity Delivery: STT 0.1% on BOTH buy and sell, Stamp 0.015% on buy
-    """
+    """ Computes exact Indian regulatory charges: - Options: STT on sell turnover, Exchange 0.05%, GST 18%, Stamp 0.003% - Equity Intraday: STT 0.025% on sell, Exchange 0.00345%, Stamp 0.003% - Equity Delivery: STT 0.1% on BOTH buy and sell, Stamp 0.015% on buy """
     buy_turnover = buy_price * qty
     sell_turnover = sell_price * qty
     total_turnover = buy_turnover + sell_turnover
@@ -2834,17 +2708,13 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
                     ask_price = float(num(first_value(best, ["askPrice", "askprice", "ask"]), 0) or 0)
                     last_update = str(best.get("lastUpdateTime", "") or best.get("lastUpdateTime", ""))
 
-                    # If spread >15% use mid-price for illiquid strikes
-                    if bid_price > 0 and ask_price > 0 and ltp and ltp > 0:
-                        spread_pct = (ask_price - bid_price) / ltp
-                        if spread_pct > 0.15:
-                            ltp = round((bid_price + ask_price) / 2.0, 2)
-                            price_source = "MID_PRICE_ILLIQUID"
+                    # Preserve exchange last-traded price exactly. Mid-price is not LTP.
+                    # Bid/ask are retained separately for liquidity checks and execution modelling.
 
     g_info = calculate_advanced_greeks(spot=spot, strike=base_strike, dte_days=dte_days, rate=0.07, sigma=iv / 100.0, option_type=side)
     if ltp is None or ltp <= 0:
-        ltp = round(g_info["price"], 2)
-        price_source = "THEORETICAL_BLACK_SCHOLES"
+        ltp = 0.0
+        price_source = "NO_LIVE_QUOTE"
         is_live = False
     buildup_type = classify_oi_buildup(p_change, chg_oi)
 
@@ -2935,7 +2805,10 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         step = meta["step"]
         resolved_strike = int(contract.get("strike") or (round(entry_spot / step) * step))
 
-        opt_entry = float(contract.get("ltp", 0.0))
+        opt_entry = float(contract.get("ltp", 0.0) or 0.0)
+        if not contract.get("is_live") or opt_entry <= 0:
+            logger.info("Skipping option idea without validated live LTP: %s %s %s %s", symbol, contract.get("strike"), side, target_exp)
+            return None
         opt_risk = max(round(opt_entry * 0.18, 2), 5.0)
         opt_sl = round(opt_entry - opt_risk, 2)
         opt_t1 = round(opt_entry + (opt_risk * 1.39), 2)
@@ -2944,8 +2817,10 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         opt_kelly = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=opt_rr)
 
         idea.update({
-            "option": side, "action": "BUY", "strike": resolved_strike, "option_ltp": opt_entry,
+            "option": side, "option_type": side, "action": "BUY", "strike": resolved_strike, "option_ltp": opt_entry,
             "entry": opt_entry, "sl": opt_sl, "target1": opt_t1, "target2": opt_t2,
+            "price_source": contract.get("price_source", "NSE_LIVE"), "is_live_quote": True,
+            "quote_expiry": target_exp, "quote_timestamp": contract.get("last_update", ""),
             "risk_reward": opt_rr, "target2_rr": (opt_t2 - opt_entry) / opt_risk,
             "delta": contract.get("delta", 0.52 if side == "CE" else -0.52),
             "gamma": contract.get("gamma", 0.00015), "theta": contract.get("theta", -15.7),
@@ -2965,7 +2840,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
 
 # =====================================================================
 # 19. MULTI-FACTOR EQUITY INTELLIGENCE ENGINE (TECHNICAL, FUNDAMENTAL,
-#     CORPORATE/INSIDER FILINGS, FUTURE PLANS, MATH & TARGET TIME ETA)
+# CORPORATE/INSIDER FILINGS, FUTURE PLANS, MATH & TARGET TIME ETA)
 # =====================================================================
 @st.cache_data(ttl=20, show_spinner=False)
 def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: str = "NSE", yf_sym: Optional[str] = None) -> Dict[str, Any]:
@@ -3009,9 +2884,7 @@ def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Optional[str] = None, current_price: Optional[float] = None) -> Dict[str, Any]:
-    """
-    Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary.
-    """
+    """ Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary. """
     clean_sym = symbol.replace("-EQ", "").strip().upper()
     target_yf = yf_sym or f"{clean_sym}.{'NS' if exchange=='NSE' else 'BO'}"
     
@@ -3108,10 +2981,7 @@ def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Option
 
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_corporate_filings_and_future_plans(symbol: str, stock_name: str) -> Dict[str, Any]:
-    """
-    Ingests official exchange corporate disclosures (NSE corporate-announcements API),
-    promoter/institutional bulk & insider disclosures, and company future plans (Capex/Orders).
-    """
+    """ Ingests official exchange corporate disclosures (NSE corporate-announcements API), promoter/institutional bulk & insider disclosures, and company future plans (Capex/Orders). """
     clean_sym = symbol.replace("-EQ", "").strip().upper()
     exchange_filings = []
     future_plans_news = []
@@ -3236,15 +3106,7 @@ def fetch_equity_candles(symbol: str, token: Optional[str] = None, exchange: str
     return pd.DataFrame()
 
 def compute_equity_math_and_eta(df: pd.DataFrame, last_price: float, target1: float, target2: float, atr: float, adx: float, tf_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Computes Arithmetic & Mathematical metrics:
-    - Linear Regression Slope & R-Squared over 20 periods
-    - Statistical Z-Score (Mean Reversion distance)
-    - Annualized Volatility (%)
-    - Fibonacci Retracement & Extension Levels
-    - Relative Volume (RVOL) & Money Flow Accumulation Score
-    - Mathematical Target Time Estimation (ETA in candles and exact Date/Time window)
-    """
+    """ Computes Arithmetic & Mathematical metrics: - Linear Regression Slope & R-Squared over 20 periods - Statistical Z-Score (Mean Reversion distance) - Annualized Volatility (%) - Fibonacci Retracement & Extension Levels - Relative Volume (RVOL) & Money Flow Accumulation Score - Mathematical Target Time Estimation (ETA in candles and exact Date/Time window) """
     closes = df["close"].tail(20).values
     n = len(closes)
     if n >= 5:
@@ -3352,15 +3214,7 @@ def compute_equity_math_and_eta(df: pd.DataFrame, last_price: float, target1: fl
     }
 
 def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: pd.DataFrame, tf_cfg: Optional[Dict[str, Any]] = None, fundamentals: Optional[Dict[str, Any]] = None, corp_intel: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """
-    Comprehensive Multi-Factor Equity Setup & Exit Engine combining:
-    1. Technicals (EMA20/50/200, Wilder RSI/ADX, Anchored VWAP, Candlesticks)
-    2. Fundamentals (P/E, ROE, Debt/Equity, Market Cap)
-    3. Corporate Filings, Legal Insider Disclosures & Future Plans
-    4. Arithmetic & Mathematical Models (Z-Score, Linear Regression, Fibonacci, Quarter-Kelly)
-    5. Volume & Institutional Investment Flow (RVOL, CMF)
-    6. Explicit Entry Call AND Active Exit Call with Target Price & Mathematical Target Time (ETA)
-    """
+    """ Comprehensive Multi-Factor Equity Setup & Exit Engine combining: 1. Technicals (EMA20/50/200, Wilder RSI/ADX, Anchored VWAP, Candlesticks) 2. Fundamentals (P/E, ROE, Debt/Equity, Market Cap) 3. Corporate Filings, Legal Insider Disclosures & Future Plans 4. Arithmetic & Mathematical Models (Z-Score, Linear Regression, Fibonacci, Quarter-Kelly) 5. Volume & Institutional Investment Flow (RVOL, CMF) 6. Explicit Entry Call AND Active Exit Call with Target Price & Mathematical Target Time (ETA) """
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
     last = quote.get("price")
     if last is None or df.empty or len(df) < 5: return None
@@ -3637,17 +3491,7 @@ def ask_gemini(ideas, market_data):
     except:
         pass
     
-    prompt = f"""
-You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY) and equities.
-Explain the generated trade setups in detail in Hindi + English mix (Hinglish) for retail trader.
-
-Focus on timeframe, GEX regime, Greeks, Max Pain, Expected Move, Kelly sizing.
-
-Keep tone educational, paper-trading safe, no financial advice.
-
-DATA:
-{__import__('json').dumps(payload, default=str)[:10000]}
-"""
+    prompt = f""" You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY) and equities. Explain the generated trade setups in detail in Hindi + English mix (Hinglish) for retail trader. Focus on timeframe, GEX regime, Greeks, Max Pain, Expected Move, Kelly sizing. Keep tone educational, paper-trading safe, no financial advice. DATA: {__import__('json').dumps(payload, default=str)[:10000]} """
     result = call_gemini_cascade(prompt)
     if not result or len(result.strip()) < 20:
         return ""
@@ -3759,7 +3603,7 @@ if "Universal 5,000+" in segment_mode:
     if selected_stock:
         st.divider()
 
-        @live_fragment(run_every=10)
+@live_fragment(run_every=10)
         def render_live_equity_view(stock, tf):
             quote = fetch_equity_live_quote(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"))
             df = add_indicators(fetch_equity_candles(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"), tf_cfg=tf), current_live_price=quote.get("price"))
@@ -3781,32 +3625,13 @@ if "Universal 5,000+" in segment_mode:
 
                 # 1. ENTRY CALL & TARGET TIME (ETA) BANNER
                 st.markdown(
-                    f"""
-                    <div class="{analysis['badge']}">
-                        <h3 style="margin: 0; padding: 0;">{icon} Institutional Entry Call: <b>{analysis['stance']}</b> ({tf['label']})</h3>
-                        <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;">
-                            <b>Ideal Entry Zone:</b> {RUPEE}{fmt(analysis['entry_zone_low'])} – {RUPEE}{fmt(analysis['entry_zone_high'])} | 
-                            <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])} | 
-                            <b>Recommended Size:</b> {analysis['recommended_qty']} Shares ({RUPEE}{analysis['alloc_capital']:,.0f} | Kelly: {analysis['kelly_pct']}%)
-                        </p>
-                        <p style="margin: 0.25rem 0; font-size: 14.5px;">
-                            <b>🎯 Target 1:</b> {RUPEE}{fmt(analysis['t1'])} (<b>ETA:</b> <code>{math_m['t1_eta']}</code>) | 
-                            <b>🎯 Target 2:</b> {RUPEE}{fmt(analysis['t2'])} (<b>ETA:</b> <code>{math_m['t2_eta']}</code>)
-                        </p>
-                        <span style="font-size: 13.5px;"><b>Regime Status:</b> {analysis['sideways_notes']}</span>
-                    </div>
-                    """,
+                    f""" <div class="{analysis['badge']}"> <h3 style="margin: 0; padding: 0;">{icon} Institutional Entry Call: <b>{analysis['stance']}</b> ({tf['label']})</h3> <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;"> <b>Ideal Entry Zone:</b> {RUPEE}{fmt(analysis['entry_zone_low'])} – {RUPEE}{fmt(analysis['entry_zone_high'])} | <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])} | <b>Recommended Size:</b> {analysis['recommended_qty']} Shares ({RUPEE}{analysis['alloc_capital']:,.0f} | Kelly: {analysis['kelly_pct']}%) </p> <p style="margin: 0.25rem 0; font-size: 14.5px;"> <b>🎯 Target 1:</b> {RUPEE}{fmt(analysis['t1'])} (<b>ETA:</b> <code>{math_m['t1_eta']}</code>) | <b>🎯 Target 2:</b> {RUPEE}{fmt(analysis['t2'])} (<b>ETA:</b> <code>{math_m['t2_eta']}</code>) </p> <span style="font-size: 13.5px;"><b>Regime Status:</b> {analysis['sideways_notes']}</span> </div> """,
                     unsafe_allow_html=True,
                 )
 
                 # 2. DEDICATED EXIT CALL & TRAILING SCHEDULE BOX
                 st.markdown(
-                    f"""
-                    <div class="exit-box">
-                        <b>{STOPWATCH} Active Exit Call & Profit-Booking Schedule ({analysis['exit_call_status']}):</b><br>
-                        {analysis['exit_call_action']}
-                    </div>
-                    """,
+                    f""" <div class="exit-box"> <b>{STOPWATCH} Active Exit Call & Profit-Booking Schedule ({analysis['exit_call_status']}):</b><br> {analysis['exit_call_action']} </div> """,
                     unsafe_allow_html=True,
                 )
 
@@ -3829,7 +3654,7 @@ if "Universal 5,000+" in segment_mode:
                 st.info(
                     f"📐 **Fibonacci Mathematical Structure:** "
                     f"Retracement Support: **38.2%:** `{RUPEE}{math_m['fib_382']:,.2f}` | **50.0%:** `{RUPEE}{math_m['fib_500']:,.2f}` | **61.8% (Golden Pocket):** `{RUPEE}{math_m['fib_618']:,.2f}` "
-                    f"• Upside Breakout Extensions: **127.2%:** `{RUPEE}{math_m['fib_ext_1272']:,.2f}` | **161.8%:** `{RUPEE}{math_m['fib_ext_1618']:,.2f}`  \n"
+                    f"• Upside Breakout Extensions: **127.2%:** `{RUPEE}{math_m['fib_ext_1272']:,.2f}` | **161.8%:** `{RUPEE}{math_m['fib_ext_1618']:,.2f}` \n"
                     f"🏦 **Institutional Volume & Investment Footprint:** `{math_m['investment_flow_status']}` (Candle Pattern: `{analysis['candle_eval']['pattern']}`)"
                 )
 
@@ -3871,12 +3696,7 @@ if "Universal 5,000+" in segment_mode:
                             st.caption(f"{BULLET} {ef}")
 
                 st.markdown(
-                    f"""
-                    <div class="reason-box">
-                        <b>{PIN} Multi-Factor Trade Formulation Summary ({tf['label']}):</b><br>
-                        {' | '.join(analysis['reasons'])}
-                    </div>
-                    """,
+                    f""" <div class="reason-box"> <b>{PIN} Multi-Factor Trade Formulation Summary ({tf['label']}):</b><br> {' | '.join(analysis['reasons'])} </div> """,
                     unsafe_allow_html=True,
                 )
 
@@ -3909,39 +3729,7 @@ if "Universal 5,000+" in segment_mode:
         if GEMINI_API_KEY and analysis_result:
             if st.button(f"{ROBOT} GENERATE FULL AI MULTI-FACTOR ENTRY & EXIT REPORT FOR {selected_stock['symbol']}", use_container_width=True):
                 with st.spinner("Gemini Institutional AI synthesizing Technicals, Fundamentals, Corporate Filings, Future Plans, Math & Exit ETA..."):
-                    prompt = f"""
-                    You are a Senior Institutional Equity Strategist & Quantitative Analyst for Indian Markets (NSE/BSE).
-                    Synthesize a complete, grounded Entry & Exit Trade Advisory for {analysis_result['name']} ({analysis_result['symbol']}) on timeframe [{active_tf['label']}].
-                    CRITICAL: Use ONLY the verified numbers provided below. Do not invent prices.
-
-                    1. ENTRY & EXIT CALLS WITH TARGET TIME (ETA):
-                       - Stance: {analysis_result['stance']} | Current Price: ₹{analysis_result['price']}
-                       - Ideal Entry Zone: ₹{analysis_result['entry_zone_low']} to ₹{analysis_result['entry_zone_high']}
-                       - Target 1: ₹{analysis_result['t1']} (Expected Time ETA: {analysis_result['math']['t1_eta']})
-                       - Target 2: ₹{analysis_result['t2']} (Expected Time ETA: {analysis_result['math']['t2_eta']})
-                       - Strict Stop-Loss: ₹{analysis_result['sl']} | Max Time-Stop Hold: {analysis_result['math']['max_hold_bars']} bars
-                       - Active Exit Call Status: {analysis_result['exit_call_status']} -> {analysis_result['exit_call_action']}
-
-                    2. ARITHMETIC, MATHEMATICAL & VOLUME METRICS:
-                       - Linear Regression Slope: {analysis_result['math']['reg_slope']}/bar (R² = {analysis_result['math']['r_squared']})
-                       - Z-Score: {analysis_result['math']['z_score']} sigma | Annualized Vol: {analysis_result['math']['ann_vol_pct']}%
-                       - Fibonacci: 38.2% (₹{analysis_result['math']['fib_382']}), 61.8% (₹{analysis_result['math']['fib_618']}), Ext 161.8% (₹{analysis_result['math']['fib_ext_1618']})
-                       - Relative Volume (RVOL): {analysis_result['math']['rvol']}x | CMF Money Flow: {analysis_result['math']['cmf_20']} ({analysis_result['math']['investment_flow_status']})
-                       - Quarter-Kelly Capital Allocation: {analysis_result['kelly_pct']}% ({analysis_result['recommended_qty']} shares)
-
-                    3. FUNDAMENTALS, CORPORATE DISCLOSURES & FUTURE PLANS:
-                       - Fundamental Verdict: {fund_result.get('fund_verdict')} | Notes: {fund_result.get('fund_notes')}
-                       - Corporate Catalyst: {corp_result.get('catalyst_verdict')}
-                       - Future Plans / Capex / Orders: {corp_result.get('future_plans')}
-                       - Promoter / Institutional Disclosures: {corp_result.get('insider_signals')}
-
-                    Structure your response into 5 crisp institutional sections:
-                    1. Executive Entry Call & Position Sizing
-                    2. Technical, Arithmetic & Volume/Investment Thesis
-                    3. Fundamental Valuation, Corporate Filings & Future Plans Impact
-                    4. Mathematical Target Price & Target Time (ETA) Roadmap
-                    5. Complete Exit Call Protocol (Partial Booking, Trailing SL, Time-Stop & Invalidation)
-                    """
+                    prompt = f""" You are a Senior Institutional Equity Strategist & Quantitative Analyst for Indian Markets (NSE/BSE). Synthesize a complete, grounded Entry & Exit Trade Advisory for {analysis_result['name']} ({analysis_result['symbol']}) on timeframe [{active_tf['label']}]. CRITICAL: Use ONLY the verified numbers provided below. Do not invent prices. 1. ENTRY & EXIT CALLS WITH TARGET TIME (ETA): - Stance: {analysis_result['stance']} | Current Price: ₹{analysis_result['price']} - Ideal Entry Zone: ₹{analysis_result['entry_zone_low']} to ₹{analysis_result['entry_zone_high']} - Target 1: ₹{analysis_result['t1']} (Expected Time ETA: {analysis_result['math']['t1_eta']}) - Target 2: ₹{analysis_result['t2']} (Expected Time ETA: {analysis_result['math']['t2_eta']}) - Strict Stop-Loss: ₹{analysis_result['sl']} | Max Time-Stop Hold: {analysis_result['math']['max_hold_bars']} bars - Active Exit Call Status: {analysis_result['exit_call_status']} -> {analysis_result['exit_call_action']} 2. ARITHMETIC, MATHEMATICAL & VOLUME METRICS: - Linear Regression Slope: {analysis_result['math']['reg_slope']}/bar (R² = {analysis_result['math']['r_squared']}) - Z-Score: {analysis_result['math']['z_score']} sigma | Annualized Vol: {analysis_result['math']['ann_vol_pct']}% - Fibonacci: 38.2% (₹{analysis_result['math']['fib_382']}), 61.8% (₹{analysis_result['math']['fib_618']}), Ext 161.8% (₹{analysis_result['math']['fib_ext_1618']}) - Relative Volume (RVOL): {analysis_result['math']['rvol']}x | CMF Money Flow: {analysis_result['math']['cmf_20']} ({analysis_result['math']['investment_flow_status']}) - Quarter-Kelly Capital Allocation: {analysis_result['kelly_pct']}% ({analysis_result['recommended_qty']} shares) 3. FUNDAMENTALS, CORPORATE DISCLOSURES & FUTURE PLANS: - Fundamental Verdict: {fund_result.get('fund_verdict')} | Notes: {fund_result.get('fund_notes')} - Corporate Catalyst: {corp_result.get('catalyst_verdict')} - Future Plans / Capex / Orders: {corp_result.get('future_plans')} - Promoter / Institutional Disclosures: {corp_result.get('insider_signals')} Structure your response into 5 crisp institutional sections: 1. Executive Entry Call & Position Sizing 2. Technical, Arithmetic & Volume/Investment Thesis 3. Fundamental Valuation, Corporate Filings & Future Plans Impact 4. Mathematical Target Price & Target Time (ETA) Roadmap 5. Complete Exit Call Protocol (Partial Booking, Trailing SL, Time-Stop & Invalidation) """
                     ai_response = call_gemini_cascade(prompt)
                     st.markdown(f"### {ROBOT} Institutional Multi-Factor AI Equity Advisory")
                     st.write(ai_response)
@@ -3955,7 +3743,7 @@ else:
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @live_fragment(run_every=2)
+@live_fragment(run_every=2)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
@@ -3979,7 +3767,7 @@ else:
     render_index_live_ticker(underlying, selected_expiry, active_tf)
     st.divider()
 
-    @live_fragment(run_every=30)
+@live_fragment(run_every=30)
     def render_index_research_and_prediction(selected_underlying, current_expiry):
         st.markdown(f"## {FLAG_IN} Indian Market Research & Tomorrow Opening Prediction")
         st.caption(f"Cross-Asset Synthesis: Nifty 50 Gap Model {BULLET} FII/DII Institutional Flow {BULLET} Global Radar")
@@ -3995,17 +3783,7 @@ else:
         icon = ROCKET if "GAP-UP" in pred["verdict"] else (DOWN_ARROW if "GAP-DOWN" in pred["verdict"] else SCALE)
 
         st.markdown(
-            f"""
-            <div class="{pred['badge']}">
-                <h3 style="margin: 0; padding: 0;">{icon} Next Session Opening Expectation: <b>{pred['verdict']}</b></h3>
-                <p style="margin: 0.4rem 0 0.2rem 0; font-size: 14.5px;">
-                    <b>Estimated Opening Gap:</b> <code>{pred['points_range']}</code> | 
-                    <b>Model Conviction:</b> {pred['confidence']}% | 
-                    <b>PCR Floor:</b> {pcr_val:.2f}
-                </p>
-                <span style="font-size: 13.5px;"><b>Recommended Execution Strategy:</b> {pred['action']}</span>
-            </div>
-            """,
+            f""" <div class="{pred['badge']}"> <h3 style="margin: 0; padding: 0;">{icon} Next Session Opening Expectation: <b>{pred['verdict']}</b></h3> <p style="margin: 0.4rem 0 0.2rem 0; font-size: 14.5px;"> <b>Estimated Opening Gap:</b> <code>{pred['points_range']}</code> | <b>Model Conviction:</b> {pred['confidence']}% | <b>PCR Floor:</b> {pcr_val:.2f} </p> <span style="font-size: 13.5px;"><b>Recommended Execution Strategy:</b> {pred['action']}</span> </div> """,
             unsafe_allow_html=True,
         )
 
@@ -4050,7 +3828,7 @@ else:
     render_index_research_and_prediction(underlying, selected_expiry)
     st.divider()
 
-    @live_fragment(run_every=10)
+@live_fragment(run_every=10)
     def render_market_confluence_dashboard(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
@@ -4090,12 +3868,7 @@ else:
 
         st.write("")
 
-        st.info(f"""
-        ⚖️ **Institutional Market Maker Radar:**
-        * **Dealer GEX Regime:** `{gex_info['gex_regime']}` (Net GEX: `{gex_info['net_gex_cr']:+,.0f} Cr / 1% move`)
-        * **Zero-Gamma Flip Level:** `{gex_info['gamma_flip']:,.0f}` | **Max Pain Target:** `{gex_info['max_pain']:,.0f}`
-        * **Institutional Barriers:** Call Wall `{gex_info['call_wall']:,.0f}` | Put Wall `{gex_info['put_wall']:,.0f}` | 1-Sigma Expected Move: `\u00B1{gex_info['expected_move']:,.1f} Pts`
-        """)
+        st.info(f""" ⚖️ **Institutional Market Maker Radar:** * **Dealer GEX Regime:** `{gex_info['gex_regime']}` (Net GEX: `{gex_info['net_gex_cr']:+,.0f} Cr / 1% move`) * **Zero-Gamma Flip Level:** `{gex_info['gamma_flip']:,.0f}` | **Max Pain Target:** `{gex_info['max_pain']:,.0f}` * **Institutional Barriers:** Call Wall `{gex_info['call_wall']:,.0f}` | Put Wall `{gex_info['put_wall']:,.0f}` | 1-Sigma Expected Move: `\u00B1{gex_info['expected_move']:,.1f} Pts` """)
 
         if confluence["badge"] == "success":
             st.success(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
@@ -4213,53 +3986,94 @@ else:
                     sub_badge = f"INDEX OPTION ({idea['option']} BUYING)" if is_option else "INDEX SPOT / CASH"
 
                     st.markdown(
-                        f"""
-                        <div class="trade-card" style="border-left: 4px solid #00FF00;">
-                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>
-                            <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
-                            <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
-                        </div>
-                        """,
+                        f""" <div class="trade-card" style="border-left: 4px solid #00FF00;"> <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div> <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3> <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'} </div> """,
                         unsafe_allow_html=True,
                     )
 
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Selected Strike", f"{idea['strike']} {idea['option']}", delta=idea.get("buildup", f"{idea['action']} OPTION"))
-                        # V17.7 LIVE STREAMING LTP
-                        entry_ltp = idea.get('entry', idea.get('ltp', 0))
-                        # Fetch LIVE current LTP for same strike
+                        # Use one validated quote snapshot for live premium and option levels.
+                        scan_reference_ltp = float(idea.get("entry", idea.get("ltp", 0)) or 0)
+                        entry_ltp = scan_reference_ltp
+                        live_ltp_now = 0.0
+                        live_quote_source = "UNAVAILABLE"
+                        quote_expiry = idea.get("quote_expiry") or selected_expiry
                         try:
-                            live_chain_now, _ = get_chain(underlying, selected_expiry)
-                            live_ltp_now = get_fresh_nse_ltp(strike=idea.get('strike',22600), opt_type=idea.get('option_type','CE'))[0] or entry_ltp
-                            if not live_chain_now.empty:
-                                match = live_chain_now[live_chain_now["strikePrice"]==idea.get('strike')]
-                                if not match.empty:
-                                    # Find CE/PE column
-                                    opt_type = idea.get('option', 'CE')
-                                    row = match.iloc[0]
-                                    # lastPrice is in row
-                                    if 'lastPrice' in row:
-                                        live_ltp_now = float(row['lastPrice'] or entry_ltp)
-                                    # Also check if CE/PE filtered DataFrame
-                                    # For safety, use lastPrice
-                            pnl_pct = ((live_ltp_now - entry_ltp) / entry_ltp * 100) if entry_ltp > 0 else 0
-                            pnl_color = "green" if pnl_pct >= 0 else "red"
-                        except:
-                            live_ltp_now = get_fresh_nse_ltp(strike=idea.get('strike',22600), opt_type=idea.get('option_type','CE'))[0] or entry_ltp
-                            pnl_pct = 0
-                            pnl_color = "grey"
-                        
-                        with c2: 
-                            st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)}", delta=f"LIVE: {RUPEE}{fmt(live_ltp_now)} ({pnl_pct:+.1f}%)")
-                        st.caption(f"🔴 LIVE: Entry ₹{entry_ltp:.2f} → Now ₹{live_ltp_now:.2f} | Src: {idea.get('price_source','NSE_LIVE')} | {datetime.now(IST).strftime('%H:%M:%S IST')} | P&L: {pnl_pct:+.2f}%")
-                        # Live P&L bar
-                        if pnl_pct >= 5:
-                            st.success(f"✅ LIVE P&L: +{pnl_pct:.2f}% | Target 1 near!")
-                        elif pnl_pct <= -8:
-                            st.error(f"🚨 LIVE P&L: {pnl_pct:.2f}% | Exit check!")
+                            live_ltp_now, live_quote_source = get_fresh_nse_ltp(
+                                symbol=idea.get("symbol", underlying),
+                                strike=idea.get("strike"),
+                                opt_type=idea.get("option_type") or idea.get("option") or "CE",
+                                expiry=quote_expiry,
+                            )
+                        except Exception as quote_exc:
+                            logger.debug("Detailed setup live quote failed: %s", quote_exc)
+
+                        # If direct NSE request fails, inspect the same underlying/expiry chain and filter exact contract.
+                        if live_ltp_now <= 0:
+                            try:
+                                fallback_chain, _ = get_chain(idea.get("symbol", underlying), quote_expiry)
+                                if fallback_chain is not None and not fallback_chain.empty:
+                                    chain_work = fallback_chain.copy()
+                                    strike_col = find_column(chain_work, ["strikePrice", "strike"])
+                                    side_col = find_column(chain_work, ["option_type", "optionType", "type"])
+                                    ltp_col = find_column(chain_work, ["lastPrice", "ltp", "last_traded_price"])
+                                    exp_col = find_column(chain_work, ["expiryDate", "expiry", "expiry_date"])
+                                    if strike_col and side_col and ltp_col:
+                                        chain_work["_strike_match"] = pd.to_numeric(chain_work[strike_col], errors="coerce")
+                                        chain_work["_side_match"] = chain_work[side_col].map(normalize_option_type)
+                                        exact = chain_work[
+                                            (chain_work["_strike_match"] == float(idea.get("strike"))) &
+                                            (chain_work["_side_match"] == normalize_option_type(idea.get("option_type") or idea.get("option")))
+                                        ]
+                                        if exp_col and quote_expiry:
+                                            wanted_exp = expiry_norm(quote_expiry)
+                                            exact = exact[exact[exp_col].map(expiry_norm) == wanted_exp]
+                                        if not exact.empty:
+                                            candidate_ltp = num(exact.iloc[0].get(ltp_col), 0.0)
+                                            if candidate_ltp > 0:
+                                                live_ltp_now = float(candidate_ltp)
+                                                live_quote_source = str(exact.iloc[0].get("price_source", "CHAIN_LIVE_VALIDATED"))
+                            except Exception as fallback_exc:
+                                logger.debug("Exact option-chain fallback failed: %s", fallback_exc)
+
+                        # Only recompute SL/targets from a real quote; never label a theoretical value as live.
+                        if live_ltp_now > 0:
+                            entry_ltp = float(live_ltp_now)
+                            idea["entry"] = round(entry_ltp, 2)
+                            idea["option_ltp"] = round(entry_ltp, 2)
+                            opt_risk = max(round(entry_ltp * 0.18, 2), 5.0)
+                            idea["sl"] = round(max(entry_ltp - opt_risk, 0.05), 2)
+                            idea["target1"] = round(entry_ltp + opt_risk * 1.39, 2)
+                            idea["target2"] = round(entry_ltp + opt_risk * 2.50, 2)
+                            idea["risk_reward"] = round((idea["target1"] - entry_ltp) / opt_risk, 2)
+                            idea["target2_rr"] = round((idea["target2"] - entry_ltp) / opt_risk, 2)
+                            idea["price_source"] = live_quote_source
+                            idea["is_live_quote"] = True
                         else:
-                            st.info(f"📊 LIVE P&L: {pnl_pct:+.2f}% | Holding")
+                            # Preserve the scan-time reference only; clearly indicate quote could not be refreshed.
+                            live_ltp_now = 0.0
+
+                        pnl_pct = ((live_ltp_now - scan_reference_ltp) / scan_reference_ltp * 100) if live_ltp_now > 0 and scan_reference_ltp > 0 else 0.0
+                        pnl_color = "green" if pnl_pct >= 0 else "red"
+
+                        with c2:
+                            st.metric("Current Premium LTP", f"{RUPEE}{fmt(live_ltp_now)}" if live_ltp_now > 0 else "Unavailable",
+                                     delta=(f"Since scan: {pnl_pct:+.2f}%" if live_ltp_now > 0 and scan_reference_ltp > 0 else "Live quote unavailable"))
+                        st.caption(
+                            f"Quote source: {live_quote_source} | Contract: {idea.get('symbol')} {idea.get('strike')} "
+                            f"{idea.get('option_type') or idea.get('option')} | Expiry: {quote_expiry or 'unknown'} | "
+                            f"Checked: {datetime.now(IST).strftime('%H:%M:%S IST')}"
+                        )
+                        # Live P&L bar
+                        if live_ltp_now <= 0:
+                            st.warning("Live option quote unavailable. Displayed SL/targets remain based on the last validated scan quote; do not treat them as a fresh live signal.")
+                        elif pnl_pct >= 5:
+                            st.success(f"✅ Premium change since scan: {pnl_pct:+.2f}% | Target 1 near!")
+                        elif pnl_pct <= -8:
+                            st.error(f"🚨 Premium change since scan: {pnl_pct:.2f}% | Exit check!")
+                        else:
+                            st.info(f"📊 Premium change since scan: {pnl_pct:+.2f}%")
                         with c3: st.metric("Stop Loss (SL)", f"{RUPEE}{fmt(idea['sl'])}")
                         with c4: st.metric("Risk / Reward", f"1:{idea['risk_reward']:.2f}", delta=f"Kelly Size: {idea['kelly_pct']}%")
 
@@ -4313,12 +4127,7 @@ else:
                         with x4: st.metric("Expected Move", f"\u00B1{idea.get('expected_move', 0):,.1f} Pts")
 
                     st.markdown(
-                        f"""
-                        <div class="reason-box">
-                            <b>{PIN} Trade Formulation Logic:</b><br>
-                            {idea['why']}
-                        </div>
-                        """,
+                        f""" <div class="reason-box"> <b>{PIN} Trade Formulation Logic:</b><br> {idea['why']} </div> """,
                         unsafe_allow_html=True,
                     )
                     st.write(f"{STOP} **Structural Invalidation Level:** {idea['invalidation']}")
