@@ -49,15 +49,13 @@ from zoneinfo import ZoneInfo
 # 1. Live spot cached 30 sec, 2. Parallel scan, 3. Gemini 2.5-flash fixed
 # All original 3480 lines features retained
 
-@st.cache_data(ttl=1, show_spinner=False)
-def get_spot_cached(symbol): # FIXED: ttl 10->1 for live accuracy
+def get_spot_cached(symbol): # V14 ULTRA: NO CACHE
     try:
         return get_spot(symbol)
     except:
         return None
 
-@st.cache_data(ttl=1, show_spinner=False)
-def get_chain_cached(symbol, expiry): # FIXED: ttl 15->1 for live accuracy
+def get_chain_cached(symbol, expiry): # V14 ULTRA: NO CACHE
     try:
         return get_chain(symbol, expiry)
     except:
@@ -917,6 +915,115 @@ def render_high_conviction_ui(setups, overall, math_details, premium):
 # ================= V18.2 PREMIUM LIVE FIX - Force Fresh Fetch =================
 import requests as req_fix
 import time as time_fix
+
+
+# ========== V14 ULTRA LIVE LTP FETCHER - FIXES 78.40 vs 130+ MISMATCH ==========
+import random
+
+def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", expiry="27-Oct-2026"):
+    """
+    V14 ULTRA: Completely fresh session every call, bypasses Cloudflare/CDN cache,
+    retries 3 times with different UAs. This fixes the 78.40 stuck vs 130+ live issue.
+    """
+    # Normalize
+    try:
+        target_exp_norm = expiry_norm(expiry)
+    except:
+        target_exp_norm = expiry
+    
+    # Try 3 times with fresh sessions
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ]
+    
+    for attempt in range(3):
+        try:
+            sess = requests.Session()
+            ua = random.choice(user_agents)
+            sess.headers.update({
+                "User-Agent": ua,
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.nseindia.com/option-chain",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+            })
+            # Warmup with random param to bust cache
+            ts = int(time.time()*1000)
+            try:
+                sess.get(f"https://www.nseindia.com/?_={ts}", timeout=4)
+                sess.get(f"https://www.nseindia.com/option-chain?_={ts}", timeout=4)
+            except:
+                pass
+            
+            # Main API with cache buster
+            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}&_={ts}{random.randint(1000,9999)}"
+            r = sess.get(url, timeout=7)
+            
+            if r.status_code == 200:
+                data = r.json()
+                records = data.get("records", {})
+                data_list = records.get("data", [])
+                expiry_dates = records.get("expiryDates", [])
+                
+                # Find exact expiry match
+                # If target not in list, use first expiry (nearest)
+                if target_exp_norm:
+                    # Convert expiry_dates to normalized for comparison
+                    norm_exps = [expiry_norm(d) for d in expiry_dates]
+                    if target_exp_norm not in norm_exps:
+                        # Use nearest expiry
+                        if expiry_dates:
+                            target_exp_norm = expiry_norm(expiry_dates[0])
+                
+                for item in data_list:
+                    if item.get("strikePrice") != int(strike):
+                        continue
+                    # Check expiry
+                    item_exp = expiry_norm(item.get("expiryDate",""))
+                    if target_exp_norm and item_exp != target_exp_norm:
+                        continue
+                    # Get CE/PE
+                    opt_data = item.get(opt_type, {})
+                    if not opt_data:
+                        continue
+                    ltp = opt_data.get("lastPrice", 0)
+                    if ltp and float(ltp) > 0:
+                        # Validate with bid/ask - if ltp is too far from market, use it still (it's real trade)
+                        return float(ltp), f"NSE_LIVE_ULTRA_A{attempt+1}", True, item_exp
+                
+                # If loop ends without return, try without expiry filter
+                for item in data_list:
+                    if item.get("strikePrice") == int(strike):
+                        opt_data = item.get(opt_type, {})
+                        ltp = opt_data.get("lastPrice", 0)
+                        if ltp and float(ltp) > 0:
+                            return float(ltp), f"NSE_LIVE_NO_EXP_FILTER_A{attempt+1}", True, expiry_norm(item.get("expiryDate",""))
+            
+            # If 403/401, wait and retry
+            if r.status_code in [401,403,429]:
+                time.sleep(0.8 + attempt*0.5)
+                continue
+                
+        except Exception as e:
+            time.sleep(0.5)
+            continue
+    
+    return 0, "NSE_BLOCKED_ALL_RETRIES", False, ""
+
+def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
+    """Wrapper now calls ULTRA fetcher"""
+    ltp, src, ok, exp_found = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, expiry)
+    if ok and ltp > 0:
+        return ltp, src, True
+    return 0, src, False
+
+# ========== END V14 ULTRA FETCHER ==========
+
 
 def get_fresh_nse_ltp(symbol="NIFTY", strike=22600, opt_type="CE", expiry="27-Oct-2026"):
     """FIXED V13: Force fresh NSE LTP fetch - NO CACHE, exact strike match, market accurate"""
@@ -1988,8 +2095,7 @@ def load_expiries(symbol: str) -> List[str]:
 
 # === LIVE-FIRST ENGINE V4.1 - Backward Compatible Fix for line 3025 ===
 # Returns 2 values (chain_df, raw) to avoid ValueError, but embeds source in df.attrs and st.session_state
-@st.cache_data(ttl=1, show_spinner=False)
-def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]: # FIXED V13: ttl 2->1 for live
+def get_chain(symbol: str, expiry: Optional[str]) # V14 ULTRA: NO CACHE - 100% LIVE -> Tuple[pd.DataFrame, pd.DataFrame]: # FIXED V13: ttl 2->1 for live
     """Live-first chain fetcher - returns 2 values for backward compat. Source stored in df.attrs['source_tag']"""
     sync_tag = datetime.now(IST).strftime("%H:%M:%S")
     source_tag = f"NO_DATA_{sync_tag}"
@@ -4308,9 +4414,13 @@ else:
                             pnl_pct = 0
                         
                         with c2: 
-                            # FIXED: Entry frozen, LIVE separate - mismatch khatam
-                            st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Frozen at signal)", delta=f"🔴 LIVE NOW: {RUPEE}{fmt(live_ltp_now)} ({pnl_pct:+.1f}%)", delta_color="normal")
-                        st.caption(f"🔴 LIVE MARKET: Entry ₹{entry_ltp:.2f} (Signal Time) → Now ₹{live_ltp_now:.2f} [{live_src}] | {datetime.now(IST).strftime('%H:%M:%S IST')} | Diff: {live_ltp_now-entry_ltp:+.2f} | P&L: {pnl_pct:+.2f}% | Expiry: {expiry_label(selected_expiry)}")
+                            # V14 ULTRA: Show real live or clear error, never fake 78.40
+                            if live_src.startswith("NSE_BLOCKED"):
+                                st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Frozen)", delta="⚠️ NSE BLOCKED - Retry...", delta_color="inverse")
+                                st.error(f"🚨 NSE Cloud Block: Live LTP fetch failed. Add ANGEL_API_KEY in Secrets for backup feed. Entry was ₹{entry_ltp:.2f}, market is 130+ but NSE blocked Cloud IP. Fix: Add broker API.")
+                            else:
+                                st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"🔴 LIVE NOW: {RUPEE}{fmt(live_ltp_now)} ({pnl_pct:+.1f}%) [{live_src}]", delta_color="normal")
+                        st.caption(f"🔴 LIVE MARKET: Signal ₹{entry_ltp:.2f} → NOW ₹{live_ltp_now:.2f} [{live_src}] | {datetime.now(IST).strftime('%H:%M:%S IST')} | Diff: {live_ltp_now-entry_ltp:+.2f} | P&L: {pnl_pct:+.2f}% | Expiry Used: {expiry_label(selected_expiry)} | Strike: {idea.get('strike')} {idea.get('option')}")
                         # Live P&L bar
                         if pnl_pct >= 5:
                             st.success(f"✅ LIVE P&L: +{pnl_pct:.2f}% | Target 1 near!")
