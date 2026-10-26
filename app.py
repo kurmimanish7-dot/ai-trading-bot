@@ -4873,27 +4873,47 @@ else:
                             idea['original_entry'] = entry_ltp
                         
                         try:
-                            # Use FINAL broker-matched fetcher - tries selected expiry + next 3 expiries
-                            live_ltp_now, live_src, is_live_ok, actual_exp_used = get_broker_matched_ltp_FINAL(
+                            # V27 FINAL: Angel first - 100% broker matched like debug app
+                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match(
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
-                                selected_expiry=selected_expiry
+                                expiry=selected_expiry
                             )
+                            actual_exp_used = selected_expiry
+                            
+                            # If Angel failed, try proxy/broker matched as fallback
                             if not is_live_ok or live_ltp_now == 0:
-                                # V20: Don't show fake 55.39 as live - show 0 and error
+                                try:
+                                    live_ltp_now2, live_src2, is_live_ok2, actual_exp_used2 = get_broker_matched_ltp_FINAL(
+                                        symbol=idea.get('symbol','NIFTY'),
+                                        strike=idea.get('strike',22750),
+                                        opt_type=idea.get('option','CE'),
+                                        selected_expiry=selected_expiry
+                                    )
+                                    if is_live_ok2 and live_ltp_now2 > 0:
+                                        live_ltp_now = live_ltp_now2
+                                        live_src = live_src2
+                                        is_live_ok = is_live_ok2
+                                        actual_exp_used = actual_exp_used2
+                                except:
+                                    pass
+                            
+                            if not is_live_ok or live_ltp_now == 0:
+                                # Keep Angel error as is, don't overwrite with generic NSE_BLOCKED
                                 live_ltp_now = 0
-                                if "ANGEL_KEYS_MISSING" in live_src or "ADD_ANGEL" in live_src:
-                                    live_src = "ADD_ANGEL_API_KEYS_IN_SECRETS_FOR_LIVE_108.20"
-                                else:
-                                    live_src = "NSE_BLOCKED_ON_CLOUD_ADD_ANGEL_KEYS"
+                                # If Angel error, keep it - don't replace with NSE_BLOCKED
+                                if "ANGEL" not in live_src:
+                                    if "ANGEL_KEYS_MISSING" in live_src or "ADD_ANGEL" in live_src:
+                                        live_src = "ADD_ANGEL_API_KEYS_IN_SECRETS_FOR_LIVE_108.20"
+                                    else:
+                                        live_src = f"{live_src}_NSE_BLOCKED_ADD_ANGEL"
                                 pnl_pct = 0
-                                # Keep entry_ltp as frozen signal, but live is 0/failed
                             else:
                                 pnl_pct = ((live_ltp_now - entry_ltp) / entry_ltp * 100) if entry_ltp > 0 else 0
                         except Exception as e:
-                            live_ltp_now = entry_ltp
-                            live_src = f"ERROR_{str(e)[:15]}"
+                            live_ltp_now = 0
+                            live_src = f"ANGEL_ERROR_{str(e)[:40]}"
                             pnl_pct = 0
                             actual_exp_used = selected_expiry
                         
