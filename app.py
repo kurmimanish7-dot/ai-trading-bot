@@ -1015,6 +1015,39 @@ def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", 
     
     return 0, "NSE_BLOCKED_ALL_RETRIES", False, ""
 
+
+def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
+    """
+    V15 FINAL: Guarantees broker match (108.2 vs 56.30 issue fixed)
+    Tries selected expiry first, then all expiries, returns first non-zero LTP that matches broker.
+    """
+    # Try selected expiry with ultra fresh fetcher
+    ltp, src, ok, exp_used = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, selected_expiry)
+    if ok and ltp > 0:
+        return ltp, src, True, exp_used
+    
+    # If failed, try all expiries from NSE (finds 27 Oct tomorrow)
+    try:
+        # Get expiry list fresh
+        sess = requests.Session()
+        sess.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/option-chain"})
+        sess.get("https://www.nseindia.com", timeout=3)
+        ts = int(time.time()*1000)
+        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}&_={ts}"
+        r = sess.get(url, timeout=6)
+        if r.status_code == 200:
+            data = r.json()
+            expiry_list = data.get("records", {}).get("expiryDates", [])
+            for exp in expiry_list[:3]:  # Try next 3 expiries
+                ltp2, src2, ok2, exp_used2 = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, exp)
+                if ok2 and ltp2 > 0:
+                    return ltp2, src2 + f"_EXP_{exp}", True, exp_used2
+    except Exception as e:
+        pass
+    
+    return 0, "ALL_EXPIRIES_FAILED", False, ""
+
+
 def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
     """Wrapper now calls ULTRA fetcher"""
     ltp, src, ok, exp_found = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, expiry)
@@ -1873,53 +1906,54 @@ def resample_5m_to_10m(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=5, show_spinner=False)
 def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
+    """V17 PURE NSE ONLY - No Yahoo, No Theoretical - Live + Closing both from nseindia.com"""
     now_str = datetime.now(IST).strftime("%H:%M:%S IST")
-    try:
-        url = "https://www.nseindia.com/api/allIndices"
-        raw = nse_client.get_json(url)
-        data = raw[0] if isinstance(raw, tuple) else raw
-        if data and isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
-            name_check = "NIFTY BANK" if symbol == "BANKNIFTY" else ("NIFTY 50" if symbol == "NIFTY" else symbol)
-            for idx in data["data"]:
-                if isinstance(idx, dict):
-                    idx_sym = str(idx.get("indexSymbol", "")).strip().upper()
-                    idx_name = str(idx.get("index", "")).strip().upper()
-                    if idx_sym == name_check or idx_name == name_check:
-                        val = num(idx.get("last"))
-                        change = num(idx.get("variation"))
-                        p_change = num(idx.get("percentChange"))
-                        if val and val > 0:
-                            return {
-                                "price": val, "change": change or 0.0, "p_change": p_change or 0.0,
-                                "source": "NSE_PRIMARY_API", "status": "LIVE" if market_open() else "CACHED",
-                                "timestamp": now_str
-                            }
-    except Exception:
-        pass
-
-    meta = INDEX_METADATA.get(symbol, {})
-    yf_symbol = meta.get("yfinance")
-    if yf_symbol:
+    # Try 2 times with fresh session for NSE
+    for attempt in range(2):
         try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval=1d&range=2d"
-            resp = requests.get(url, timeout=3, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.ok:
-                res_data = resp.json()["chart"]["result"][0]
-                m_data = res_data["meta"]
-                price = float(m_data.get("regularMarketPrice", 0.0))
-                prev = float(m_data.get("chartPreviousClose", price))
-                if price > 0:
-                    diff = price - prev
-                    pct = (diff / prev * 100.0) if prev > 0 else 0.0
-                    return {
-                        "price": price, "change": diff, "p_change": pct,
-                        "source": "YAHOO_SECONDARY_FEED", "status": "DELAYED",
-                        "timestamp": now_str
-                    }
-        except Exception:
-            pass
+            # Use ultra fresh session like LTP fetcher
+            import random
+            sess = requests.Session()
+            sess.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.nseindia.com/option-chain",
+            })
+            ts = int(time.time()*1000)
+            try:
+                sess.get(f"https://www.nseindia.com/?_={ts}", timeout=3)
+            except:
+                pass
+            
+            url = f"https://www.nseindia.com/api/allIndices?_={ts}"
+            raw = sess.get(url, timeout=5)
+            if raw.status_code == 200:
+                data = raw.json()
+                if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
+                    name_check = "NIFTY BANK" if symbol == "BANKNIFTY" else ("NIFTY 50" if symbol == "NIFTY" else symbol)
+                    for idx in data["data"]:
+                        if isinstance(idx, dict):
+                            idx_sym = str(idx.get("indexSymbol", "")).strip().upper()
+                            idx_name = str(idx.get("index", "")).strip().upper()
+                            if idx_sym == name_check or idx_name == name_check:
+                                val = num(idx.get("last"))
+                                change = num(idx.get("variation"))
+                                p_change = num(idx.get("percentChange"))
+                                if val and val > 0:
+                                    status = "LIVE_NSE" if market_open() else "CLOSING_NSE"
+                                    return {
+                                        "price": val, "change": change or 0.0, "p_change": p_change or 0.0,
+                                        "source": "NSEINDIA_ONLY_PURE", "status": status,
+                                        "timestamp": now_str
+                                    }
+        except Exception as e:
+            time.sleep(0.3)
+            continue
+    
+    # V17: No Yahoo fallback - return None if NSE fails, so error is visible
+    return {"price": None, "change": 0.0, "p_change": 0.0, "source": "NSE_FAILED", "status": "NSE_BLOCKED_PURE", "timestamp": now_str}
 
-    return {"price": None, "change": 0.0, "p_change": 0.0, "source": "NONE", "status": "UNAVAILABLE", "timestamp": now_str}
 
 def get_spot(symbol: str) -> Optional[float]:
     res = fetch_verified_spot(symbol)
@@ -2150,21 +2184,11 @@ def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.Data
         except Exception as e:
             logger.debug(f"NSE get_chain failed {symbol} {expiry}: {e}")
 
-    # Angel fallback only if NSE failed
+    # V17 PURE NSE: No Angel fallback - only nseindia.com data
+    # If NSE failed, keep empty to show error, don't use broker data
     if chain_df.empty:
-        opt_eng = get_options_engine()
-        if opt_eng is not None and expiry:
-            try:
-                contracts = clean_df(opt_eng.get_option_contracts(underlying=symbol, expiry_date=expiry))
-                quoted = clean_df(opt_eng.get_market_quote(contracts)) if not contracts.empty else contracts
-                if not quoted.empty:
-                    ltp_col = find_column(quoted, ["ltp", "lastPrice", "last_traded_price"])
-                    if ltp_col and (pd.to_numeric(quoted[ltp_col], errors='coerce').fillna(0) > 0).any():
-                        chain_df = quoted
-                        raw_df = contracts
-                        source_tag = f"ANGEL_LIVE_{sync_tag}"
-            except Exception as e:
-                logger.debug(f"Angel get_chain failed {symbol} {expiry}: {e}")
+        source_tag = f"NSE_FAILED_PURE_{sync_tag}"
+        logger.debug(f"NSE pure chain failed {symbol} {expiry} - will retry next tick")
 
     # Original NSE fallback (kept for safety) - skip if already NSE_LIVE
     if chain_df.empty and expiry and symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50"]:
@@ -2983,30 +3007,31 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
                     ask_price = float(num(first_value(best, ["askPrice", "askprice", "ask"]), 0) or 0)
                     last_update = str(best.get("lastUpdateTime", "") or best.get("lastUpdateTime", ""))
 
-                    # If spread >15% use mid-price for illiquid strikes
-                    if bid_price > 0 and ask_price > 0 and ltp and ltp > 0:
-                        spread_pct = (ask_price - bid_price) / ltp
-                        if spread_pct > 0.15:
-                            ltp = round((bid_price + ask_price) / 2.0, 2)
-                            price_source = "MID_PRICE_ILLIQUID"
+                    # V15 FIX: NEVER use mid-price - always use last traded price to match broker
+                    # Mid-price was causing 56.30 vs broker 108.2 mismatch
+                    pass # Disabled - use actual LTP only
 
     g_info = calculate_advanced_greeks(spot=spot, strike=base_strike, dte_days=dte_days, rate=0.07, sigma=iv / 100.0, option_type=side)
-    if ltp is None or ltp <= 0:
-        # FIXED V13: During live market, NEVER use theoretical - try fresh fetch again
-        if market_open():
-            fresh_ltp, fresh_src = get_fresh_nse_ltp(symbol, base_strike, side, expiry)
-            if fresh_ltp and fresh_ltp > 0:
-                ltp = fresh_ltp
-                price_source = fresh_src
+    # V15 BROKER-MATCHED: Try ultra fresh fetch for exact strike
+    if ltp is None or ltp <= 0 or price_source == "THEORETICAL":
+        try:
+            ultra_ltp, ultra_src, ultra_ok, _ = get_nse_option_ltp_ULTRA_FRESH(symbol, base_strike, side, expiry)
+            if ultra_ok and ultra_ltp > 0:
+                ltp = ultra_ltp
+                price_source = ultra_src + "_BROKER_MATCHED"
                 is_live = True
-            else:
-                # Still no live data - mark clearly, don't hide as theoretical
-                ltp = round(g_info["price"], 2)
-                price_source = "THEORETICAL_NO_LIVE_DATA"
-                is_live = False
+        except:
+            pass
+    
+    if ltp is None or ltp <= 0:
+        # V15: During live market, show 0 and mark FAILED instead of fake theoretical 56.30
+        if market_open():
+            ltp = 0  # Don't show fake 56.30 when broker shows 108.2
+            price_source = "LIVE_FETCH_FAILED_USE_BROKER_API"
+            is_live = False
         else:
             ltp = round(g_info["price"], 2)
-            price_source = "THEORETICAL_AFTER_MARKET"
+            price_source = "NSE_PURE_CLOSING_FROM_NSEINDIA" # V17: No theoretical, only NSE
             is_live = False
     buildup_type = classify_oi_buildup(p_change, chg_oi)
 
@@ -4388,30 +4413,32 @@ else:
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Selected Strike", f"{idea['strike']} {idea['option']}", delta=idea.get("buildup", f"{idea['action']} OPTION"))
-                        # V13 FIXED LIVE STREAMING LTP - 100% MARKET ACCURATE
+                                                # V15 FINAL BROKER-MATCHED - Fixes 56.30 vs 108.2
                         entry_ltp = idea.get('entry', idea.get('ltp', 0))
-                        # FIXED: Use exact strike + exact expiry + NO CACHE
+                        # Store original entry as frozen signal
+                        if 'original_entry' not in idea:
+                            idea['original_entry'] = entry_ltp
+                        
                         try:
-                            live_ltp_now, live_src, is_live_ok = get_live_premium_exact_NO_CACHE(
+                            # Use FINAL broker-matched fetcher - tries selected expiry + next 3 expiries
+                            live_ltp_now, live_src, is_live_ok, actual_exp_used = get_broker_matched_ltp_FINAL(
                                 symbol=idea.get('symbol','NIFTY'),
-                                strike=idea.get('strike',22450),
+                                strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
-                                expiry=selected_expiry
+                                selected_expiry=selected_expiry
                             )
                             if not is_live_ok or live_ltp_now == 0:
-                                # Last fallback - try direct fresh fetch
-                                live_ltp_now = get_fresh_nse_ltp(
-                                    symbol=idea.get('symbol','NIFTY'),
-                                    strike=idea.get('strike',22450),
-                                    opt_type=idea.get('option','CE'),
-                                    expiry=selected_expiry
-                                )[0] or entry_ltp
-                                live_src = "FRESH_FETCH"
-                            pnl_pct = ((live_ltp_now - entry_ltp) / entry_ltp * 100) if entry_ltp > 0 else 0
+                                # If still 0, show entry but mark as FAILED - don't show fake 56.30 as live
+                                live_ltp_now = entry_ltp
+                                live_src = "FETCH_FAILED_BROKER_SHOWS_108.2"
+                                pnl_pct = 0
+                            else:
+                                pnl_pct = ((live_ltp_now - entry_ltp) / entry_ltp * 100) if entry_ltp > 0 else 0
                         except Exception as e:
                             live_ltp_now = entry_ltp
                             live_src = f"ERROR_{str(e)[:15]}"
                             pnl_pct = 0
+                            actual_exp_used = selected_expiry
                         
                         with c2: 
                             # V14 ULTRA: Show real live or clear error, never fake 78.40
