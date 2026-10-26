@@ -472,14 +472,31 @@ def send_telegram_message(bot_token, chat_id, message):
         return False, str(e)[:100]
 
 def format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str):
-    """Format Entry alert for Telegram"""
+    """Format Entry alert for Telegram - LIVE 108.20 based"""
     symbol = idea.get('symbol','NIFTY')
     strike = idea.get('strike','')
     opt = idea.get('option','')
-    entry = live_ltp if live_ltp > 0 else idea.get('entry',0)
-    sl = idea.get('sl',0)
-    t1 = idea.get('target1',0)
-    t2 = idea.get('target2',0)
+    old_entry = idea.get('entry',52.26)
+    entry = live_ltp if live_ltp > 0 else old_entry
+    
+    # Recalculate SL/T1/T2 based on LIVE entry like trading bot UI
+    if live_ltp > 0 and old_entry > 0:
+        try:
+            sl_pct = (old_entry - idea.get('sl',0)) / old_entry if old_entry > 0 else 0.18
+            t1_pct = (idea.get('target1',0) - old_entry) / old_entry if old_entry > 0 else 0.25
+            t2_pct = (idea.get('target2',0) - old_entry) / old_entry if old_entry > 0 else 0.40
+            sl = live_ltp * (1 - sl_pct)
+            t1 = live_ltp * (1 + t1_pct)
+            t2 = live_ltp * (1 + t2_pct)
+        except:
+            sl = idea.get('sl',0)
+            t1 = idea.get('target1',0)
+            t2 = idea.get('target2',0)
+    else:
+        sl = idea.get('sl',0)
+        t1 = idea.get('target1',0)
+        t2 = idea.get('target2',0)
+    
     rr = idea.get('risk_reward',0)
     conf = idea.get('confidence',0)
     
