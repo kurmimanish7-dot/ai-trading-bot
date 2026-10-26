@@ -4924,13 +4924,21 @@ else:
                             actual_exp_used = selected_expiry
                         
                         with c2: 
-                            # V14 ULTRA: Show real live or clear error, never fake 78.40
-                            if live_src.startswith("NSE_BLOCKED"):
-                                st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Frozen)", delta="⚠️ NSE BLOCKED - Retry...", delta_color="inverse")
-                                st.error(f"🚨 NSE Cloud Block: Live LTP fetch failed. Add ANGEL_API_KEY in Secrets for backup feed. Entry was ₹{entry_ltp:.2f}, market is 130+ but NSE blocked Cloud IP. Fix: Add broker API.")
-                            else:
+                            # V23 FINAL: Always show real LTP or detailed Angel error
+                            if is_live_ok and live_ltp_now > 0:
                                 st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"🔴 LIVE NOW: {RUPEE}{fmt(live_ltp_now)} ({pnl_pct:+.1f}%) [{live_src}]", delta_color="normal")
-                        st.caption(f"🔴 LIVE MARKET: Signal ₹{entry_ltp:.2f} → NOW ₹{live_ltp_now:.2f} [{live_src}] | {datetime.now(IST).strftime('%H:%M:%S IST')} | Diff: {live_ltp_now-entry_ltp:+.2f} | P&L: {pnl_pct:+.2f}% | Expiry Used: {expiry_label(selected_expiry)} | Strike: {idea.get('strike')} {idea.get('option')}")
+                            else:
+                                # Show actual Angel/NSE error, not generic NSE BLOCKED
+                                if "ANGEL" in live_src:
+                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"⚠️ ANGEL: {live_src[:40]}", delta_color="inverse")
+                                    st.error(f"🚨 Angel Error: {live_src}. Check Secrets + requirements.txt (smartapi-python, pyotp). Entry was ₹{entry_ltp:.2f}.")
+                                elif "PROXY" in live_src or "NSE_BLOCKED" in live_src:
+                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Frozen)", delta=f"⚠️ {live_src[:35]}", delta_color="inverse")
+                                    st.error(f"🚨 {live_src}. Add Angel keys for 108.20. NSE blocked on Cloud IP.")
+                                else:
+                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"⚠️ {live_src}", delta_color="inverse")
+                                    st.error(f"🚨 LTP Fetch Failed: {live_src}. Entry ₹{entry_ltp:.2f}")
+                        st.caption(f"🔴 MARKET: Signal ₹{entry_ltp:.2f} → NOW ₹{live_ltp_now:.2f} [{live_src}] | {datetime.now(IST).strftime('%H:%M:%S IST')} | Strike: {idea.get('strike')} {idea.get('option')} | P&L: {pnl_pct:+.2f}%")
                         # Live P&L bar
                         if pnl_pct >= 5:
                             st.success(f"✅ LIVE P&L: +{pnl_pct:.2f}% | Target 1 near!")
