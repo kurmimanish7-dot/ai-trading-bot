@@ -2095,7 +2095,7 @@ def load_expiries(symbol: str) -> List[str]:
 
 # === LIVE-FIRST ENGINE V4.1 - Backward Compatible Fix for line 3025 ===
 # Returns 2 values (chain_df, raw) to avoid ValueError, but embeds source in df.attrs and st.session_state
-def get_chain(symbol: str, expiry: Optional[str]) # V14 ULTRA: NO CACHE - 100% LIVE -> Tuple[pd.DataFrame, pd.DataFrame]: # FIXED V13: ttl 2->1 for live
+def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]: # V14 ULTRA: NO CACHE - 100% LIVE
     """Live-first chain fetcher - returns 2 values for backward compat. Source stored in df.attrs['source_tag']"""
     sync_tag = datetime.now(IST).strftime("%H:%M:%S")
     source_tag = f"NO_DATA_{sync_tag}"
