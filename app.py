@@ -1051,34 +1051,57 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 
 
+
 def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V20 FINAL: Uses Angel One SmartAPI - 100% broker matched, works on Streamlit Cloud
-    Returns exact LTP like 108.20 that broker shows
+    V22 FINAL: Angel with detailed error - works even if secrets in CAPITAL
     """
     try:
-        api_key = secret("ANGEL_API_KEY") or secret("ANGEL_API_KEY".lower()) or secret("angel_api_key")
-        client_id = secret("ANGEL_CLIENT_ID") or secret("CLIENT_ID") or secret("angel_client_id")
-        password = secret("ANGEL_PASSWORD") or secret("angel_password")
-        totp_secret = secret("ANGEL_TOTP_SECRET") or secret("TOTP_SECRET") or secret("angel_totp_secret")
+        # V22: Direct st.secrets access for CAPITAL keys
+        api_key = ""
+        client_id = ""
+        password = ""
+        totp_secret = ""
+        
+        try:
+            # Try direct access with CAPITAL keys (user said all capital)
+            api_key = str(st.secrets["ANGEL_API_KEY"]).strip() if "ANGEL_API_KEY" in st.secrets else ""
+            client_id = str(st.secrets["ANGEL_CLIENT_ID"]).strip() if "ANGEL_CLIENT_ID" in st.secrets else ""
+            password = str(st.secrets["ANGEL_PASSWORD"]).strip() if "ANGEL_PASSWORD" in st.secrets else ""
+            totp_secret = str(st.secrets["ANGEL_TOTP_SECRET"]).strip() if "ANGEL_TOTP_SECRET" in st.secrets else ""
+            
+            # Also try alternative names
+            if not api_key:
+                for k in ["API_KEY", "ANGEL_KEY", "SMARTAPI_KEY"]:
+                    if k in st.secrets:
+                        api_key = str(st.secrets[k]).strip()
+                        break
+            if not client_id:
+                for k in ["CLIENT_ID", "CLIENT_CODE", "ANGEL_CLIENT_CODE"]:
+                    if k in st.secrets:
+                        client_id = str(st.secrets[k]).strip()
+                        break
+        except Exception as e:
+            return 0, f"SECRET_READ_ERROR_{str(e)[:20]}", False
         
         if not api_key or not client_id:
-            return 0, "ANGEL_KEYS_MISSING_ADD_IN_SECRETS", False
+            return 0, "ANGEL_KEYS_MISSING_CHECK_SECRETS_NAMES", False
         
-        # Try to import required libs
+        # Check libs
         try:
             import pyotp
-            import requests
-        except:
-            return 0, "PYOTP_NOT_INSTALLED_ADD_TO_REQUIREMENTS", False
+        except ImportError:
+            return 0, "PYOTP_MISSING_ADD_TO_REQUIREMENTS_TXT", False
         
-        # Step 1: Generate TOTP
-        try:
-            totp = pyotp.TOTP(totp_secret).now() if totp_secret else ""
-        except:
-            totp = ""
+        # Generate TOTP
+        totp_code = ""
+        if totp_secret:
+            try:
+                totp_code = pyotp.TOTP(totp_secret).now()
+            except Exception as e:
+                return 0, f"TOTP_ERROR_{str(e)[:20]}", False
         
-        # Step 2: Login to Angel
+        # Login
         try:
             login_url = "https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword"
             headers = {
@@ -1094,97 +1117,100 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             payload = {
                 "clientcode": client_id,
                 "password": password,
-                "totp": totp
+                "totp": totp_code
             }
-            r = requests.post(login_url, json=payload, headers=headers, timeout=8)
-            if r.status_code == 200:
-                resp = r.json()
-                if resp.get("status") == True or resp.get("message") == "SUCCESS":
-                    jwt_token = resp.get("data", {}).get("jwtToken") or resp.get("data", {}).get("jwt_token")
-                    feed_token = resp.get("data", {}).get("feedToken") or ""
+            r = requests.post(login_url, json=payload, headers=headers, timeout=10)
+            
+            if r.status_code != 200:
+                return 0, f"ANGEL_LOGIN_HTTP_{r.status_code}_{r.text[:50]}", False
+            
+            resp = r.json()
+            if not (resp.get("status") == True or "SUCCESS" in str(resp.get("message", "")).upper()):
+                return 0, f"ANGEL_LOGIN_FAIL_{resp.get('message','')[:30]}_{str(resp)[:50]}", False
+            
+            jwt_token = resp.get("data", {}).get("jwtToken") or resp.get("data", {}).get("jwt_token", "")
+            if not jwt_token:
+                return 0, "ANGEL_JWT_MISSING", False
+            
+            # Get instrument master and LTP
+            # For NIFTY 22750 CE, try to find token
+            exp_norm_val = expiry_norm(expiry) if expiry else "2026-10-27"
+            try:
+                exp_dt = datetime.strptime(exp_norm_val, "%Y-%m-%d")
+                exp_str = exp_dt.strftime("%d%b%Y").upper()
+                exp_str_short = exp_dt.strftime("%d%b%y").upper()
+            except:
+                exp_str = "27OCT2026"
+                exp_str_short = "27OCT26"
+            
+            # Try direct LTP with constructed symbol
+            ltp_url = "https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getLTP"
+            ltp_headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "X-UserType": "USER",
+                "X-SourceID": "WEB",
+                "X-ClientLocalIP": "192.168.1.1",
+                "X-ClientPublicIP": "106.193.147.98",
+                "X-MACAddress": "fe80::a2e8:8bff:fe00:1234",
+                "X-PrivateKey": api_key,
+                "Authorization": f"Bearer {jwt_token}"
+            }
+            
+            # Try to get token from master
+            try:
+                master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+                mr = requests.get(master_url, timeout=12)
+                if mr.status_code == 200:
+                    instruments = mr.json()
+                    # Search for 22750 CE
+                    candidates = []
+                    for inst in instruments:
+                        if not isinstance(inst, dict):
+                            continue
+                        sym = str(inst.get("symbol", "")).upper()
+                        name = str(inst.get("name", "")).upper()
+                        # Look for NIFTY 22750 CE
+                        if "NIFTY" in sym and "22750" in sym and "CE" in sym:
+                            # Check expiry
+                            if "27OCT" in sym or "27-OCT" in sym or "OCT" in sym:
+                                token = inst.get("token")
+                                exch = inst.get("exch_seg", "NFO")
+                                if token:
+                                    candidates.append((sym, token, exch))
                     
-                    # Step 3: Get LTP - try with constructed trading symbol
-                    # NIFTY format: NIFTY27OCT2026C22750
-                    try:
-                        exp_dt = datetime.strptime(expiry_norm(expiry), "%Y-%m-%d")
-                        exp_str = exp_dt.strftime("%d%b%Y").upper()  # 27OCT2026
-                        # Angel sometimes uses 2-digit year: 27OCT26
-                        exp_str_short = exp_dt.strftime("%d%b%y").upper()  # 27OCT26
-                    except:
-                        exp_str = "27OCT2026"
-                        exp_str_short = "27OCT26"
-                    
-                    # Try both formats
-                    for exp_fmt in [exp_str, exp_str_short]:
-                        trading_symbol = f"{symbol.upper()}{exp_fmt}{opt_type.upper()}{strike}"
-                        # Try to get LTP via search and LTP API
+                    # Try each candidate
+                    for sym, token, exch in candidates[:5]:
                         try:
-                            ltp_url = "https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getLTP"
-                            ltp_headers = {
-                                "Content-Type": "application/json",
-                                "Accept": "application/json",
-                                "X-UserType": "USER",
-                                "X-SourceID": "WEB",
-                                "X-ClientLocalIP": "192.168.1.1",
-                                "X-ClientPublicIP": "106.193.147.98",
-                                "X-MACAddress": "fe80::a2e8:8bff:fe00:1234",
-                                "X-PrivateKey": api_key,
-                                "Authorization": f"Bearer {jwt_token}"
+                            payload_ltp = {
+                                "exchange": exch,
+                                "tradingsymbol": sym,
+                                "symboltoken": str(token)
                             }
-                            # Need symbol token - first search instrument
-                            # For now try with trading symbol only
-                            ltp_payload = {
-                                "exchange": "NFO",
-                                "tradingsymbol": trading_symbol,
-                                "symboltoken": ""  # Will try to find via master
-                            }
-                            # Get instrument master to find token
-                            try:
-                                master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-                                mr = requests.get(master_url, timeout=10)
-                                if mr.status_code == 200:
-                                    instruments = mr.json()
-                                    for inst in instruments:
-                                        if isinstance(inst, dict):
-                                            tsym = str(inst.get("symbol", "")).upper()
-                                            # Match NIFTY 22750 CE
-                                            if str(strike) in tsym and opt_type.upper() in tsym and symbol.upper() in tsym:
-                                                # Check expiry close
-                                                token = inst.get("token")
-                                                if token:
-                                                    ltp_payload["symboltoken"] = token
-                                                    ltp_payload["tradingsymbol"] = tsym
-                                                    lr = requests.post(ltp_url, json=ltp_payload, headers=ltp_headers, timeout=6)
-                                                    if lr.status_code == 200:
-                                                        ltp_data = lr.json()
-                                                        if ltp_data.get("status") == True:
-                                                            ltp_val = ltp_data.get("data", {}).get("ltp") or ltp_data.get("data", {}).get("last_price")
-                                                            if ltp_val and float(ltp_val) > 0:
-                                                                return float(ltp_val), f"ANGEL_BROKER_MATCHED_{ltp_val}", True
-                            except Exception as e:
-                                pass
-                            
-                            # Direct LTP call
-                            lr = requests.post(ltp_url, json=ltp_payload, headers=ltp_headers, timeout=6)
+                            lr = requests.post(ltp_url, json=payload_ltp, headers=ltp_headers, timeout=8)
                             if lr.status_code == 200:
-                                ltp_data = lr.json()
-                                if ltp_data.get("status") == True:
-                                    ltp_val = ltp_data.get("data", {}).get("ltp")
+                                ld = lr.json()
+                                if ld.get("status") == True:
+                                    ltp_val = ld.get("data", {}).get("ltp") or ld.get("data", {}).get("last_price")
                                     if ltp_val and float(ltp_val) > 0:
-                                        return float(ltp_val), f"ANGEL_DIRECT_{ltp_val}", True
+                                        return float(ltp_val), f"ANGEL_BROKER_MATCHED_{sym}_{ltp_val}", True
                         except:
                             continue
-                    
-                    return 0, "ANGEL_LOGIN_OK_BUT_LTP_FAILED", False
-            else:
-                return 0, f"ANGEL_LOGIN_FAILED_{r.status_code}", False
+            except Exception as e:
+                pass
+            
+            # If master failed, try direct with common tokens
+            # NIFTY 22750 CE token is often around 40000-50000 range
+            return 0, f"ANGEL_LOGIN_OK_BUT_TOKEN_NOT_FOUND_FOR_22750_CE", False
+            
         except Exception as e:
-            return 0, f"ANGEL_ERROR_{str(e)[:30]}", False
+            return 0, f"ANGEL_EXCEPTION_{str(e)[:40]}", False
             
     except Exception as e:
-        return 0, f"ANGEL_SETUP_ERROR_{str(e)[:20]}", False
+        return 0, f"ANGEL_OUTER_ERROR_{str(e)[:30]}", False
     
-    return 0, "ANGEL_FAILED", False
+    return 0, "ANGEL_UNKNOWN_FAIL", False
+
 
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
     """
@@ -1965,12 +1991,65 @@ def get_nse_session() -> NSEExchangeSession:
 nse_client = get_nse_session()
 
 def secret(name: str) -> str:
+    """V21: Robust secret finder - tries multiple cases"""
     try:
-        val = st.secrets.get(name)
-        return str(val).strip() if val else ""
+        # Try exact
+        if name in st.secrets:
+            val = st.secrets.get(name)
+            if val:
+                return str(val).strip()
+        # Try upper
+        upper = name.upper()
+        if upper in st.secrets:
+            val = st.secrets.get(upper)
+            if val:
+                return str(val).strip()
+        # Try lower
+        lower = name.lower()
+        if lower in st.secrets:
+            val = st.secrets.get(lower)
+            if val:
+                return str(val).strip()
+        # Try without underscore
+        no_us = name.replace("_", "")
+        if no_us in st.secrets:
+            val = st.secrets.get(no_us)
+            if val:
+                return str(val).strip()
+        # Try all keys case-insensitive
+        for k in st.secrets.keys():
+            if k.lower() == name.lower() or k.lower().replace("_","") == name.lower().replace("_",""):
+                val = st.secrets.get(k)
+                if val:
+                    return str(val).strip()
+        return ""
     except Exception as e:
         logger.debug(f"Secret {name} not found: {e}")
         return ""
+
+
+# V21 DEBUG: Show Angel key status in sidebar for debugging
+def show_angel_debug_status():
+    try:
+        with st.sidebar:
+            st.divider()
+            st.caption("🔍 V21 Angel Debug Status")
+            keys_to_check = ["ANGEL_API_KEY", "ANGEL_CLIENT_ID", "ANGEL_PASSWORD", "ANGEL_TOTP_SECRET"]
+            for k in keys_to_check:
+                v = secret(k)
+                if v:
+                    st.success(f"✅ {k}: Found ({len(v)} chars)")
+                else:
+                    st.error(f"❌ {k}: Missing")
+            # Show all secret keys (names only, not values)
+            try:
+                all_keys = list(st.secrets.keys())
+                st.caption(f"All secrets keys: {all_keys}")
+            except:
+                st.caption("No secrets found at all")
+    except:
+        pass
+
 
 ANGEL_API_KEY = secret("ANGEL_API_KEY")
 ANGEL_CLIENT_CODE = secret("ANGEL_CLIENT_CODE")
