@@ -3540,6 +3540,124 @@ st.divider()
 # ==============================================================================
 # SEGMENT 1: UNIVERSAL 5,000+ EQUITY STOCK INTELLIGENCE (MULTI-FACTOR ENGINE)
 # ==============================================================================
+@live_fragment(run_every=10)
+def render_live_equity_view(stock, tf):
+    quote = fetch_equity_live_quote(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"))
+    df = add_indicators(fetch_equity_candles(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"), tf_cfg=tf), current_live_price=quote.get("price"))
+    fundamentals = fetch_equity_fundamentals(stock["symbol"], exchange=stock["exchange"], yf_sym=stock.get("yfinance"), current_price=quote.get("price"))
+    corp_intel = fetch_corporate_filings_and_future_plans(stock["symbol"], stock["name"])
+    analysis = analyze_equity_setup(stock, quote, df, tf_cfg=tf, fundamentals=fundamentals, corp_intel=corp_intel)
+
+    st.markdown(f"### {BUILDING} {stock['name']} (`{stock['symbol']}` {BULLET} {stock['exchange']} {BULLET} {fundamentals.get('sector')}) - [{tf['label']}]")
+
+    p1, p2, p3, p4 = st.columns(4)
+    with p1: st.metric("Live Market Price (LTP)", f"{RUPEE}{fmt(quote.get('price'))}", delta=f"{quote.get('change_pct', 0.0):+.2f}%")
+    with p2: st.metric("Upside Target Potential", f"+{RUPEE}{fmt(analysis['upside_pts'])}" if analysis else "Calculating", delta=f"+{analysis['upside_pct']:.1f}% to T2" if analysis else None)
+    with p3: st.metric("Downside Risk Floor", f"-{RUPEE}{fmt(analysis['downside_pts'])}" if analysis else "Calculating", delta=f"-{analysis['downside_pct']:.1f}% SL Risk" if analysis else None, delta_color="inverse")
+    with p4: st.metric("Composite Multi-Factor Score", f"{analysis['score']:+d} Pts" if analysis else "ANALYZING", delta=analysis["action_dir"] if analysis else None, delta_color="off")
+
+    if analysis:
+        math_m = analysis["math"]
+        icon = ROCKET if analysis["action_dir"] == "BUY" else (DOWN_ARROW if analysis["action_dir"] == "SELL" else SCALE)
+
+        # 1. ENTRY CALL & TARGET TIME (ETA) BANNER
+        st.markdown(
+            f""" <div class="{analysis['badge']}"> <h3 style="margin: 0; padding: 0;">{icon} Institutional Entry Call: <b>{analysis['stance']}</b> ({tf['label']})</h3> <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;"> <b>Ideal Entry Zone:</b> {RUPEE}{fmt(analysis['entry_zone_low'])} – {RUPEE}{fmt(analysis['entry_zone_high'])} | <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])} | <b>Recommended Size:</b> {analysis['recommended_qty']} Shares ({RUPEE}{analysis['alloc_capital']:,.0f} | Kelly: {analysis['kelly_pct']}%) </p> <p style="margin: 0.25rem 0; font-size: 14.5px;"> <b>🎯 Target 1:</b> {RUPEE}{fmt(analysis['t1'])} (<b>ETA:</b> <code>{math_m['t1_eta']}</code>) | <b>🎯 Target 2:</b> {RUPEE}{fmt(analysis['t2'])} (<b>ETA:</b> <code>{math_m['t2_eta']}</code>) </p> <span style="font-size: 13.5px;"><b>Regime Status:</b> {analysis['sideways_notes']}</span> </div> """,
+            unsafe_allow_html=True,
+        )
+
+        # 2. DEDICATED EXIT CALL & TRAILING SCHEDULE BOX
+        st.markdown(
+            f""" <div class="exit-box"> <b>{STOPWATCH} Active Exit Call & Profit-Booking Schedule ({analysis['exit_call_status']}):</b><br> {analysis['exit_call_action']} </div> """,
+            unsafe_allow_html=True,
+        )
+
+        # 3. EXACT PRICE, TIME & RISK MATRIX
+        st.markdown(f"#### {RULER} Entry, Exit, Target Price & Target Time Matrix ({tf['smartapi']})")
+        t_col1, t_col2, t_col3, t_col4 = st.columns(4)
+        with t_col1: st.metric("Target 1 Price & ETA", f"{RUPEE}{fmt(analysis['t1'])}", delta=math_m["t1_eta"])
+        with t_col2: st.metric("Target 2 Price & ETA", f"{RUPEE}{fmt(analysis['t2'])}", delta=math_m["t2_eta"])
+        with t_col3: st.metric("Stop Loss (Exit Trigger)", f"{RUPEE}{fmt(analysis['sl'])}", delta=f"Max Hold: {math_m['max_hold_bars']} Bars", delta_color="inverse")
+        with t_col4: st.metric("Reward-to-Risk (T1 / T2)", f"1:{analysis['rr_t1']} / 1:{analysis['rr_t2']}", delta=f"Quarter-Kelly: {analysis['kelly_pct']}%")
+
+        # 4. ARITHMETIC, MATHEMATICAL & VOLUME / INVESTMENT MATRIX
+        st.markdown(f"#### {COMPASS} Arithmetic, Mathematical & Institutional Volume Flow")
+        m1, m2, m3, m4 = st.columns(4)
+        with m1: st.metric("Linear Regression Slope", f"{math_m['reg_slope']:+.3f}/bar", delta=f"R² Fit: {math_m['r_squared']:.2f}", delta_color="normal")
+        with m2: st.metric("Statistical Z-Score (20-Bar)", f"{math_m['z_score']:+.2f} σ", delta="Overbought (>2σ)" if math_m['z_score']>2 else ("Oversold (<-2σ)" if math_m['z_score']<-2 else "Mean Zone"), delta_color="off")
+        with m3: st.metric("Relative Volume (RVOL)", f"{math_m['rvol']:.2f}x Avg", delta=f"CMF Money Flow: {math_m['cmf_20']:+.2f}", delta_color="normal")
+        with m4: st.metric("Annualized Volatility", f"{math_m['ann_vol_pct']:.1f}%", delta=f"Mean Bar Ret: {math_m['arith_mean_ret_pct']:+.2f}%", delta_color="off")
+
+        st.info(
+            f"📐 **Fibonacci Mathematical Structure:** "
+            f"Retracement Support: **38.2%:** `{RUPEE}{math_m['fib_382']:,.2f}` | **50.0%:** `{RUPEE}{math_m['fib_500']:,.2f}` | **61.8% (Golden Pocket):** `{RUPEE}{math_m['fib_618']:,.2f}` "
+            f"• Upside Breakout Extensions: **127.2%:** `{RUPEE}{math_m['fib_ext_1272']:,.2f}` | **161.8%:** `{RUPEE}{math_m['fib_ext_1618']:,.2f}` \n"
+            f"🏦 **Institutional Volume & Investment Footprint:** `{math_m['investment_flow_status']}` (Candle Pattern: `{analysis['candle_eval']['pattern']}`)"
+        )
+
+        # 5. FUNDAMENTAL & VALUATION PILLAR
+        st.markdown(f"#### {TEMPLE} Fundamental & Balance Sheet Valuation Pillar")
+        f_c1, f_c2, f_c3, f_c4 = st.columns(4)
+        with f_c1: st.metric("P/E Ratio (Valuation)", f"{fundamentals['pe_ratio']:.1f}x" if fundamentals.get("pe_ratio") else "Sector Par", delta=fundamentals["fund_verdict"], delta_color="off")
+        with f_c2: st.metric("Price-to-Book (P/B) & EPS", f"{fundamentals['pb_ratio']:.2f}x" if fundamentals.get("pb_ratio") else f"EPS: ₹{fmt(fundamentals.get('eps_ttm'))}", delta="Balance Sheet Multiple", delta_color="off")
+        with f_c3: st.metric("Return on Equity (ROE)", f"{fundamentals['roe_pct']:.1f}%" if fundamentals.get("roe_pct") else "Institutional", delta=f"D/E: {fundamentals['debt_to_eq']:.2f}" if fundamentals.get("debt_to_eq") is not None else "Low Leverage", delta_color="off")
+        with f_c4: st.metric("52-Week Range Proximity", f"₹{fmt(quote.get('low_52w'), 0)} – ₹{fmt(quote.get('high_52w'), 0)}", delta=f"Mkt Cap: ₹{fmt(fundamentals.get('mkt_cap_cr'), 0)} Cr" if fundamentals.get("mkt_cap_cr") else "Active Equity", delta_color="off")
+
+        # 6. TECHNICAL INDICATOR CONFLUENCE
+        st.markdown(f"#### {TRAFFIC} Technical Indicator Confluence Matrix ({tf['label']})")
+        i1, i2, i3, i4 = st.columns(4)
+        with i1: st.metric("Wilder RSI (14-RMA)", f"{analysis['rsi']:.1f}", delta="Bullish (>58)" if analysis['rsi']>=58 else ("Bearish (<42)" if analysis['rsi']<=42 else "Neutral"), delta_color="off")
+        with i2: st.metric("ADX Trend Strength", f"{analysis['adx']:.1f}", delta="Trending (>20)" if analysis['adx']>=20 else "Sideways (<20)", delta_color="off")
+        with i3: st.metric("Demand Support Zone", f"{RUPEE}{fmt(analysis['support'])}", delta=f"VWAP: ₹{fmt(analysis['vwap'])}", delta_color="off")
+        with i4: st.metric("Supply Resistance Zone", f"{RUPEE}{fmt(analysis['resistance'])}", delta=f"200 EMA: ₹{fmt(analysis['ema200'])}", delta_color="off")
+
+        # 7. CORPORATE ANNOUNCEMENTS, LEGAL INSIDER DISCLOSURES & FUTURE PLANS
+        st.markdown(f"#### {NEWS} Corporate Disclosures, Promoter/Insider Activity & Future Plans")
+        st.info(f"**Corporate Catalyst Verdict ({corp_intel['catalyst_score']:+d}):** {corp_intel['catalyst_verdict']}")
+        col_n1, col_n2 = st.columns(2)
+        with col_n1:
+            st.markdown("**🚀 Future Plans, Capex & Order Book Catalysts:**")
+            for fp in corp_intel["future_plans"]:
+                st.caption(f"{BULLET} {fp}")
+            if corp_intel["company_headlines"]:
+                st.markdown("**📰 Latest Company Headlines:**")
+                for ch in corp_intel["company_headlines"]:
+                    st.caption(f"{BULLET} {ch}")
+        with col_n2:
+            st.markdown("**🏛️ Promoter, Institutional & Legal Insider Disclosures:**")
+            for ins in corp_intel["insider_signals"]:
+                st.caption(f"{BULLET} {ins}")
+            if corp_intel["exchange_filings"]:
+                st.markdown("**📄 Official NSE Corporate Filings:**")
+                for ef in corp_intel["exchange_filings"]:
+                    st.caption(f"{BULLET} {ef}")
+
+        st.markdown(
+            f""" <div class="reason-box"> <b>{PIN} Multi-Factor Trade Formulation Summary ({tf['label']}):</b><br> {' | '.join(analysis['reasons'])} </div> """,
+            unsafe_allow_html=True,
+        )
+
+        # 8. PAPER TRADE EXECUTION FOR EQUITY
+        if analysis["action_dir"] in ["BUY", "SELL"]:
+            if st.button(f"{ROCKET} EXECUTE EQUITY PAPER TRADE: {analysis['action_dir']} {analysis['recommended_qty']} SHARES OF {stock['symbol']} @ ₹{fmt(analysis['price'])}", type="primary", use_container_width=True):
+                execute_paper_order(
+                    symbol=stock["symbol"],
+                    action=analysis["action_dir"],
+                    strike="CASH",
+                    option_type="EQ",
+                    price=analysis["price"],
+                    qty=analysis["recommended_qty"],
+                    sl=analysis["sl"],
+                    t1=analysis["t1"],
+                    t2=analysis["t2"],
+                    expiry=tf["holding"],
+                    reasons=" | ".join(analysis["reasons"][:3]),
+                    is_equity=True,
+                )
+                st.rerun()
+
+    return analysis, fundamentals, corp_intel
+
 if "Universal 5,000+" in segment_mode:
     st.markdown(f"## {CHART_UP} Universal 5,000+ Equity Multi-Factor Intelligence - [{active_tf['label']}]")
     st.caption(
@@ -3603,123 +3721,6 @@ if "Universal 5,000+" in segment_mode:
     if selected_stock:
         st.divider()
 
-@live_fragment(run_every=10)
-        def render_live_equity_view(stock, tf):
-            quote = fetch_equity_live_quote(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"))
-            df = add_indicators(fetch_equity_candles(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"), tf_cfg=tf), current_live_price=quote.get("price"))
-            fundamentals = fetch_equity_fundamentals(stock["symbol"], exchange=stock["exchange"], yf_sym=stock.get("yfinance"), current_price=quote.get("price"))
-            corp_intel = fetch_corporate_filings_and_future_plans(stock["symbol"], stock["name"])
-            analysis = analyze_equity_setup(stock, quote, df, tf_cfg=tf, fundamentals=fundamentals, corp_intel=corp_intel)
-
-            st.markdown(f"### {BUILDING} {stock['name']} (`{stock['symbol']}` {BULLET} {stock['exchange']} {BULLET} {fundamentals.get('sector')}) - [{tf['label']}]")
-            
-            p1, p2, p3, p4 = st.columns(4)
-            with p1: st.metric("Live Market Price (LTP)", f"{RUPEE}{fmt(quote.get('price'))}", delta=f"{quote.get('change_pct', 0.0):+.2f}%")
-            with p2: st.metric("Upside Target Potential", f"+{RUPEE}{fmt(analysis['upside_pts'])}" if analysis else "Calculating", delta=f"+{analysis['upside_pct']:.1f}% to T2" if analysis else None)
-            with p3: st.metric("Downside Risk Floor", f"-{RUPEE}{fmt(analysis['downside_pts'])}" if analysis else "Calculating", delta=f"-{analysis['downside_pct']:.1f}% SL Risk" if analysis else None, delta_color="inverse")
-            with p4: st.metric("Composite Multi-Factor Score", f"{analysis['score']:+d} Pts" if analysis else "ANALYZING", delta=analysis["action_dir"] if analysis else None, delta_color="off")
-
-            if analysis:
-                math_m = analysis["math"]
-                icon = ROCKET if analysis["action_dir"] == "BUY" else (DOWN_ARROW if analysis["action_dir"] == "SELL" else SCALE)
-
-                # 1. ENTRY CALL & TARGET TIME (ETA) BANNER
-                st.markdown(
-                    f""" <div class="{analysis['badge']}"> <h3 style="margin: 0; padding: 0;">{icon} Institutional Entry Call: <b>{analysis['stance']}</b> ({tf['label']})</h3> <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;"> <b>Ideal Entry Zone:</b> {RUPEE}{fmt(analysis['entry_zone_low'])} – {RUPEE}{fmt(analysis['entry_zone_high'])} | <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])} | <b>Recommended Size:</b> {analysis['recommended_qty']} Shares ({RUPEE}{analysis['alloc_capital']:,.0f} | Kelly: {analysis['kelly_pct']}%) </p> <p style="margin: 0.25rem 0; font-size: 14.5px;"> <b>🎯 Target 1:</b> {RUPEE}{fmt(analysis['t1'])} (<b>ETA:</b> <code>{math_m['t1_eta']}</code>) | <b>🎯 Target 2:</b> {RUPEE}{fmt(analysis['t2'])} (<b>ETA:</b> <code>{math_m['t2_eta']}</code>) </p> <span style="font-size: 13.5px;"><b>Regime Status:</b> {analysis['sideways_notes']}</span> </div> """,
-                    unsafe_allow_html=True,
-                )
-
-                # 2. DEDICATED EXIT CALL & TRAILING SCHEDULE BOX
-                st.markdown(
-                    f""" <div class="exit-box"> <b>{STOPWATCH} Active Exit Call & Profit-Booking Schedule ({analysis['exit_call_status']}):</b><br> {analysis['exit_call_action']} </div> """,
-                    unsafe_allow_html=True,
-                )
-
-                # 3. EXACT PRICE, TIME & RISK MATRIX
-                st.markdown(f"#### {RULER} Entry, Exit, Target Price & Target Time Matrix ({tf['smartapi']})")
-                t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-                with t_col1: st.metric("Target 1 Price & ETA", f"{RUPEE}{fmt(analysis['t1'])}", delta=math_m["t1_eta"])
-                with t_col2: st.metric("Target 2 Price & ETA", f"{RUPEE}{fmt(analysis['t2'])}", delta=math_m["t2_eta"])
-                with t_col3: st.metric("Stop Loss (Exit Trigger)", f"{RUPEE}{fmt(analysis['sl'])}", delta=f"Max Hold: {math_m['max_hold_bars']} Bars", delta_color="inverse")
-                with t_col4: st.metric("Reward-to-Risk (T1 / T2)", f"1:{analysis['rr_t1']} / 1:{analysis['rr_t2']}", delta=f"Quarter-Kelly: {analysis['kelly_pct']}%")
-
-                # 4. ARITHMETIC, MATHEMATICAL & VOLUME / INVESTMENT MATRIX
-                st.markdown(f"#### {COMPASS} Arithmetic, Mathematical & Institutional Volume Flow")
-                m1, m2, m3, m4 = st.columns(4)
-                with m1: st.metric("Linear Regression Slope", f"{math_m['reg_slope']:+.3f}/bar", delta=f"R² Fit: {math_m['r_squared']:.2f}", delta_color="normal")
-                with m2: st.metric("Statistical Z-Score (20-Bar)", f"{math_m['z_score']:+.2f} σ", delta="Overbought (>2σ)" if math_m['z_score']>2 else ("Oversold (<-2σ)" if math_m['z_score']<-2 else "Mean Zone"), delta_color="off")
-                with m3: st.metric("Relative Volume (RVOL)", f"{math_m['rvol']:.2f}x Avg", delta=f"CMF Money Flow: {math_m['cmf_20']:+.2f}", delta_color="normal")
-                with m4: st.metric("Annualized Volatility", f"{math_m['ann_vol_pct']:.1f}%", delta=f"Mean Bar Ret: {math_m['arith_mean_ret_pct']:+.2f}%", delta_color="off")
-
-                st.info(
-                    f"📐 **Fibonacci Mathematical Structure:** "
-                    f"Retracement Support: **38.2%:** `{RUPEE}{math_m['fib_382']:,.2f}` | **50.0%:** `{RUPEE}{math_m['fib_500']:,.2f}` | **61.8% (Golden Pocket):** `{RUPEE}{math_m['fib_618']:,.2f}` "
-                    f"• Upside Breakout Extensions: **127.2%:** `{RUPEE}{math_m['fib_ext_1272']:,.2f}` | **161.8%:** `{RUPEE}{math_m['fib_ext_1618']:,.2f}` \n"
-                    f"🏦 **Institutional Volume & Investment Footprint:** `{math_m['investment_flow_status']}` (Candle Pattern: `{analysis['candle_eval']['pattern']}`)"
-                )
-
-                # 5. FUNDAMENTAL & VALUATION PILLAR
-                st.markdown(f"#### {TEMPLE} Fundamental & Balance Sheet Valuation Pillar")
-                f_c1, f_c2, f_c3, f_c4 = st.columns(4)
-                with f_c1: st.metric("P/E Ratio (Valuation)", f"{fundamentals['pe_ratio']:.1f}x" if fundamentals.get("pe_ratio") else "Sector Par", delta=fundamentals["fund_verdict"], delta_color="off")
-                with f_c2: st.metric("Price-to-Book (P/B) & EPS", f"{fundamentals['pb_ratio']:.2f}x" if fundamentals.get("pb_ratio") else f"EPS: ₹{fmt(fundamentals.get('eps_ttm'))}", delta="Balance Sheet Multiple", delta_color="off")
-                with f_c3: st.metric("Return on Equity (ROE)", f"{fundamentals['roe_pct']:.1f}%" if fundamentals.get("roe_pct") else "Institutional", delta=f"D/E: {fundamentals['debt_to_eq']:.2f}" if fundamentals.get("debt_to_eq") is not None else "Low Leverage", delta_color="off")
-                with f_c4: st.metric("52-Week Range Proximity", f"₹{fmt(quote.get('low_52w'), 0)} – ₹{fmt(quote.get('high_52w'), 0)}", delta=f"Mkt Cap: ₹{fmt(fundamentals.get('mkt_cap_cr'), 0)} Cr" if fundamentals.get("mkt_cap_cr") else "Active Equity", delta_color="off")
-
-                # 6. TECHNICAL INDICATOR CONFLUENCE
-                st.markdown(f"#### {TRAFFIC} Technical Indicator Confluence Matrix ({tf['label']})")
-                i1, i2, i3, i4 = st.columns(4)
-                with i1: st.metric("Wilder RSI (14-RMA)", f"{analysis['rsi']:.1f}", delta="Bullish (>58)" if analysis['rsi']>=58 else ("Bearish (<42)" if analysis['rsi']<=42 else "Neutral"), delta_color="off")
-                with i2: st.metric("ADX Trend Strength", f"{analysis['adx']:.1f}", delta="Trending (>20)" if analysis['adx']>=20 else "Sideways (<20)", delta_color="off")
-                with i3: st.metric("Demand Support Zone", f"{RUPEE}{fmt(analysis['support'])}", delta=f"VWAP: ₹{fmt(analysis['vwap'])}", delta_color="off")
-                with i4: st.metric("Supply Resistance Zone", f"{RUPEE}{fmt(analysis['resistance'])}", delta=f"200 EMA: ₹{fmt(analysis['ema200'])}", delta_color="off")
-
-                # 7. CORPORATE ANNOUNCEMENTS, LEGAL INSIDER DISCLOSURES & FUTURE PLANS
-                st.markdown(f"#### {NEWS} Corporate Disclosures, Promoter/Insider Activity & Future Plans")
-                st.info(f"**Corporate Catalyst Verdict ({corp_intel['catalyst_score']:+d}):** {corp_intel['catalyst_verdict']}")
-                col_n1, col_n2 = st.columns(2)
-                with col_n1:
-                    st.markdown("**🚀 Future Plans, Capex & Order Book Catalysts:**")
-                    for fp in corp_intel["future_plans"]:
-                        st.caption(f"{BULLET} {fp}")
-                    if corp_intel["company_headlines"]:
-                        st.markdown("**📰 Latest Company Headlines:**")
-                        for ch in corp_intel["company_headlines"]:
-                            st.caption(f"{BULLET} {ch}")
-                with col_n2:
-                    st.markdown("**🏛️ Promoter, Institutional & Legal Insider Disclosures:**")
-                    for ins in corp_intel["insider_signals"]:
-                        st.caption(f"{BULLET} {ins}")
-                    if corp_intel["exchange_filings"]:
-                        st.markdown("**📄 Official NSE Corporate Filings:**")
-                        for ef in corp_intel["exchange_filings"]:
-                            st.caption(f"{BULLET} {ef}")
-
-                st.markdown(
-                    f""" <div class="reason-box"> <b>{PIN} Multi-Factor Trade Formulation Summary ({tf['label']}):</b><br> {' | '.join(analysis['reasons'])} </div> """,
-                    unsafe_allow_html=True,
-                )
-
-                # 8. PAPER TRADE EXECUTION FOR EQUITY
-                if analysis["action_dir"] in ["BUY", "SELL"]:
-                    if st.button(f"{ROCKET} EXECUTE EQUITY PAPER TRADE: {analysis['action_dir']} {analysis['recommended_qty']} SHARES OF {stock['symbol']} @ ₹{fmt(analysis['price'])}", type="primary", use_container_width=True):
-                        execute_paper_order(
-                            symbol=stock["symbol"],
-                            action=analysis["action_dir"],
-                            strike="CASH",
-                            option_type="EQ",
-                            price=analysis["price"],
-                            qty=analysis["recommended_qty"],
-                            sl=analysis["sl"],
-                            t1=analysis["t1"],
-                            t2=analysis["t2"],
-                            expiry=tf["holding"],
-                            reasons=" | ".join(analysis["reasons"][:3]),
-                            is_equity=True,
-                        )
-                        st.rerun()
-
-            return analysis, fundamentals, corp_intel
 
         eq_pack = render_live_equity_view(selected_stock, active_tf)
         analysis_result = eq_pack[0] if isinstance(eq_pack, tuple) else None
