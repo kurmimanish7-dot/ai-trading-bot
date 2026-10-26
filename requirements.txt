@@ -18,3 +18,5 @@ google-genai
 google-generativeai
 
 openpyxl
+smartapi-python
+pyotp
