@@ -20,3 +20,4 @@ google-generativeai
 openpyxl
 smartapi-python
 pyotp
+streamlit-autorefresh
