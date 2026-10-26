@@ -472,26 +472,48 @@ def send_telegram_message(bot_token, chat_id, message):
         return False, str(e)[:100]
 
 def format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str):
-    """Format Entry alert for Telegram - LIVE 108.20 based"""
+    """Format Entry alert for Telegram - LIVE 108.20 based FIXED"""
     symbol = idea.get('symbol','NIFTY')
     strike = idea.get('strike','')
     opt = idea.get('option','')
-    old_entry = idea.get('entry',52.26)
+    # Use original_entry which is the true 52.26 signal, not updated 108.20
+    original_entry = idea.get('original_entry', idea.get('entry', 52.26))
+    # If original_entry is already 108.20 (already updated), try to recover true old entry
+    # True old entry should be < live_ltp for CE buying typically, but use stored original if available
+    old_entry = original_entry
     entry = live_ltp if live_ltp > 0 else old_entry
     
     # Recalculate SL/T1/T2 based on LIVE entry like trading bot UI
+    # old_entry is 52.26 signal, sl is 42.08 (from 52.26), so sl_pct = (52.26-42.08)/52.26 = 19.5%
+    # Then new_sl = 108.20 * (1 - 0.195) = 87.1
     if live_ltp > 0 and old_entry > 0:
         try:
-            sl_pct = (old_entry - idea.get('sl',0)) / old_entry if old_entry > 0 else 0.18
-            t1_pct = (idea.get('target1',0) - old_entry) / old_entry if old_entry > 0 else 0.25
-            t2_pct = (idea.get('target2',0) - old_entry) / old_entry if old_entry > 0 else 0.40
+            # Get original SL/T1/T2 that were calculated from old_entry
+            orig_sl = idea.get('sl', 0)
+            orig_t1 = idea.get('target1', 0)
+            orig_t2 = idea.get('target2', 0)
+            
+            # If orig values are already based on live (like 42.08 is close to 108.20*0.39), recalc from percentages
+            # Use fixed percentages for consistency: SL 18% below, T1 25% above, T2 40% above LIVE
+            # This matches trading bot UI logic when original percentages are corrupted
+            if orig_sl < old_entry * 0.5:  # SL is way below entry (like 42 vs 108) - indicates old calc
+                # Use standard percentages - most accurate
+                sl_pct = 0.18
+                t1_pct = 0.25
+                t2_pct = 0.40
+            else:
+                sl_pct = (old_entry - orig_sl) / old_entry if old_entry > 0 else 0.18
+                t1_pct = (orig_t1 - old_entry) / old_entry if old_entry > 0 else 0.25
+                t2_pct = (orig_t2 - old_entry) / old_entry if old_entry > 0 else 0.40
+            
             sl = live_ltp * (1 - sl_pct)
             t1 = live_ltp * (1 + t1_pct)
             t2 = live_ltp * (1 + t2_pct)
         except:
-            sl = idea.get('sl',0)
-            t1 = idea.get('target1',0)
-            t2 = idea.get('target2',0)
+            # Fallback to standard 18%/25%/40% from LIVE
+            sl = live_ltp * 0.82
+            t1 = live_ltp * 1.25
+            t2 = live_ltp * 1.40
     else:
         sl = idea.get('sl',0)
         t1 = idea.get('target1',0)
@@ -560,6 +582,12 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
         if not bot_token or not chat_id:
             return False, "Telegram keys missing"
         
+        # Fix: Don't send if strike is None or empty (BANKNIFTY None None bug)
+        if not idea.get('strike') or idea.get('strike') == 'None' or str(idea.get('strike')).lower() == 'none':
+            return False, "Strike None - skip"
+        if not idea.get('option') or str(idea.get('option')).lower() == 'none':
+            return False, "Option None - skip"
+    
         # Create unique key for this signal to avoid duplicate alerts
         signal_key = f"{idea.get('symbol')}_{idea.get('strike')}_{idea.get('option')}_{idea.get('expiry')}_{int(idea.get('entry',0))}"
         
@@ -4806,6 +4834,22 @@ if "Universal 5,000+" in segment_mode:
 # SEGMENT 2: INDEX & OPTIONS ADVISOR (QUANTITATIVE GEX & MAX PAIN RADAR)
 # ==============================================================================
 else:
+    # V32 AUTO ALERT MODE - No manual scan needed
+    st.sidebar.markdown("### 🤖 Auto Alert Mode")
+    auto_alert_enabled = st.sidebar.checkbox("✅ Enable Auto Entry/Exit Alerts (No Scan Click)", value=True, help="When ON, scans every 5 min and sends Telegram automatically without clicking SCAN ALL")
+    auto_scan_interval = st.sidebar.slider("Auto Scan Interval (min)", 1, 15, 5, help="How often to auto scan for new setups")
+    
+    # Show auto status
+    if auto_alert_enabled:
+        if 'last_auto_scan' in st.session_state:
+            last_scan = st.session_state['last_auto_scan']
+            import time
+            elapsed = (time.time() - last_scan) / 60
+            st.sidebar.caption(f"Last auto scan: {elapsed:.1f} min ago | Next in {max(0, auto_scan_interval - elapsed):.1f} min")
+        else:
+            st.sidebar.caption("Auto scan will run on next refresh")
+    
+    st.sidebar.divider()
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
     expiries = load_expiries(underlying)
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
@@ -4998,7 +5042,21 @@ else:
     st.markdown(f"## {TARGET} Detailed High-Conviction Trade Setups - [{active_tf['label']}]")
     st.caption(f"Technical Structure {BULLET} Dynamic Greeks {BULLET} GEX Levels {BULLET} Quarter-Kelly Sizing {BULLET} Trailing Rules")
 
-    if st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True):
+    # V32 AUTO SCAN LOGIC - Runs without clicking SCAN ALL
+    should_auto_scan = False
+    if 'auto_alert_enabled' in locals() and auto_alert_enabled:
+        import time
+        current_time = time.time()
+        last_scan = st.session_state.get('last_auto_scan', 0)
+        if current_time - last_scan >= (auto_scan_interval * 60):
+            should_auto_scan = True
+            st.session_state['last_auto_scan'] = current_time
+            st.info(f"🤖 Auto Scanning... (Interval: {auto_scan_interval} min) - No manual click needed!")
+
+    # Trigger scan if manual button clicked OR auto scan due
+    manual_scan_clicked = st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True)
+    
+    if manual_scan_clicked or should_auto_scan:
         with st.spinner(f"Fast live scan on [{active_tf['label']}] - cached + parallel..."):
             progress = st.progress(0)
             status = st.empty()
@@ -5161,21 +5219,27 @@ else:
                             st.error(f"🚨 LIVE P&L: {pnl_pct:.2f}% | Exit check!")
                         else:
                             st.info(f"📊 LIVE P&L: {pnl_pct:+.2f}% | Holding")
-                        # V28: Recalculate SL/Targets based on LIVE 108.20 when available
+                        # V30: Recalculate SL/Targets based on LIVE 108.20 using original_entry
+                        # entry_ltp is original signal (52.26), live_ltp_now is 108.20
                         if is_live_ok and live_ltp_now > 0 and entry_ltp > 0:
-                            # Calculate % from old entry
                             try:
-                                sl_pct = (entry_ltp - idea['sl']) / entry_ltp if entry_ltp > 0 else 0.18
-                                t1_pct = (idea['target1'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.25
-                                t2_pct = (idea['target2'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.40
-                                # New SL/Targets based on LIVE
+                                # Use original percentages - if SL is way below, use standard 18%/25%/40%
+                                orig_sl = idea['sl']
+                                if orig_sl < entry_ltp * 0.5:
+                                    sl_pct = 0.18
+                                    t1_pct = 0.25
+                                    t2_pct = 0.40
+                                else:
+                                    sl_pct = (entry_ltp - idea['sl']) / entry_ltp if entry_ltp > 0 else 0.18
+                                    t1_pct = (idea['target1'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.25
+                                    t2_pct = (idea['target2'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.40
                                 new_sl = live_ltp_now * (1 - sl_pct)
                                 new_t1 = live_ltp_now * (1 + t1_pct)
                                 new_t2 = live_ltp_now * (1 + t2_pct)
                             except:
-                                new_sl = idea['sl']
-                                new_t1 = idea['target1']
-                                new_t2 = idea['target2']
+                                new_sl = live_ltp_now * 0.82
+                                new_t1 = live_ltp_now * 1.25
+                                new_t2 = live_ltp_now * 1.40
                         else:
                             new_sl = idea['sl']
                             new_t1 = idea['target1']
