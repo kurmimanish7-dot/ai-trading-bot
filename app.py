@@ -598,9 +598,57 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
         if signal_key in st.session_state['sent_telegram_signals']:
             return False, "Already sent"
         
-        # Send
+        # Send Telegram
         msg = format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str)
         ok, resp = send_telegram_message(bot_token, chat_id, msg)
+        
+        # V34 AUTO ENTRY AT MARKET PRICE - If real trading enabled
+        try:
+            # Check if real auto trading enabled
+            real_enabled = False
+            real_qty = 75  # Default 1 lot NIFTY
+            try:
+                # Try to get from session or secrets
+                if 'enable_real_trading' in st.session_state and st.session_state.get('enable_real_trading'):
+                    real_enabled = True
+            except:
+                pass
+            
+            # Also check if global enable_real_trading exists
+            try:
+                if 'enable_real_trading' in locals() or 'enable_real_trading' in globals():
+                    pass
+            except:
+                pass
+            
+            # For auto entry, check sidebar flag via st.session_state
+            # We store it in session when checkbox is ticked
+            try:
+                if st.session_state.get('auto_real_entry_enabled', False):
+                    real_enabled = True
+                    real_qty = st.session_state.get('real_trading_qty_lots', 1)
+            except:
+                pass
+            
+            if real_enabled and ok:  # Only if telegram sent and real enabled
+                # Auto place real order at market
+                auto_ok, auto_msg = auto_entry_market_price(idea, live_ltp, real_qty, enable_real=True)
+                if auto_ok:
+                    # Send confirmation telegram
+                    try:
+                        confirm_msg = f"""🔴 *AUTO REAL ENTRY EXECUTED*
+
+📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}
+💰 Entry: ₹{live_ltp:.2f} x {real_qty} qty @ MARKET
+🆔 {auto_msg}
+⏰ {datetime.now(IST).strftime('%H:%M:%S IST')}
+
+✅ Auto entry at market price!"""
+                        send_telegram_message(bot_token, chat_id, confirm_msg)
+                    except:
+                        pass
+        except Exception as e:
+            pass
         
         if ok:
             st.session_state['sent_telegram_signals'].add(signal_key)
@@ -641,10 +689,20 @@ def auto_check_and_exit_positions():
                 t1 = pos.get('t1',0)
                 t2 = pos.get('t2',0)
                 
-                # Check SL hit
+                # Check SL hit - AUTO EXIT AT MARKET PRICE
                 if live_ltp <= sl:
-                    # SL hit - exit
-                    close_paper_position(trade_id, live_ltp, f"SL Hit @ ₹{live_ltp:.2f}")
+                    # Check if real auto exit enabled
+                    real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
+                    
+                    if real_exit_enabled:
+                        # Real exit at market
+                        auto_ok, auto_msg = auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
+                        exit_reason = f"SL Hit @ ₹{live_ltp:.2f} | AUTO REAL EXIT"
+                    else:
+                        # Paper exit
+                        close_paper_position(trade_id, live_ltp, f"SL Hit @ ₹{live_ltp:.2f}")
+                        exit_reason = f"SL Hit @ ₹{live_ltp:.2f}"
+                    
                     # Send Telegram
                     try:
                         bot_token = secret("TELEGRAM_BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN","")
@@ -658,15 +716,26 @@ def auto_check_and_exit_positions():
                             pass
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
-                            msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"SL Hit @ ₹{live_ltp:.2f}")
+                            if real_exit_enabled:
+                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"SL Hit @ ₹{live_ltp:.2f} | 🔴 REAL EXIT @ MARKET")
+                            else:
+                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"SL Hit @ ₹{live_ltp:.2f}")
                             send_telegram_message(bot_token, chat_id, msg)
                     except:
                         pass
                     continue
                 
-                # Check T2 hit
+                # Check T2 hit - AUTO EXIT AT MARKET PRICE
                 if live_ltp >= t2:
-                    close_paper_position(trade_id, live_ltp, f"Target 2 Hit @ ₹{live_ltp:.2f}")
+                    real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
+                    
+                    if real_exit_enabled:
+                        auto_ok, auto_msg = auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
+                        exit_reason = f"Target 2 Hit @ ₹{live_ltp:.2f} | AUTO REAL EXIT @ MARKET"
+                    else:
+                        close_paper_position(trade_id, live_ltp, f"Target 2 Hit @ ₹{live_ltp:.2f}")
+                        exit_reason = f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯"
+                    
                     try:
                         bot_token = secret("TELEGRAM_BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN","")
                         chat_id = secret("TELEGRAM_CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID","")
@@ -679,7 +748,10 @@ def auto_check_and_exit_positions():
                             pass
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
-                            msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯")
+                            if real_exit_enabled:
+                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯 | 🔴 REAL EXIT @ MARKET")
+                            else:
+                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯")
                             send_telegram_message(bot_token, chat_id, msg)
                     except:
                         pass
@@ -3591,6 +3663,164 @@ def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float, is_eq
 
     return True, "RISK APPROVED"
 
+
+# ===== V33 REAL AUTO TRADING WITH ANGEL ONE - Direct Broker Execution =====
+
+def place_angel_real_order(symbol, strike, opt_type, expiry, quantity, order_type="BUY", price=0):
+    """
+    Place REAL order on Angel One via SmartAPI
+    WARNING: This places REAL money order!
+    """
+    try:
+        # Get secrets
+        api_key = ""
+        client_id = ""
+        password = ""
+        totp_secret = ""
+        
+        for k in ["ANGEL_API_KEY", "API_KEY"]:
+            if k in st.secrets:
+                api_key = str(st.secrets[k]).strip()
+                break
+        for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID"]:
+            if k in st.secrets:
+                client_id = str(st.secrets[k]).strip()
+                break
+        for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD"]:
+            if k in st.secrets:
+                password = str(st.secrets[k]).strip()
+                break
+        for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
+            if k in st.secrets:
+                totp_secret = str(st.secrets[k]).strip()
+                break
+        
+        if not api_key or not client_id:
+            return False, "Angel keys missing", None
+        
+        try:
+            from SmartApi import SmartConnect
+            import pyotp
+            import requests
+        except ImportError:
+            return False, "smartapi-python not installed", None
+        
+        # Login
+        totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
+        obj = SmartConnect(api_key=api_key)
+        data = obj.generateSession(client_id, password, totp_code)
+        
+        if not (data and data.get("status") == True):
+            return False, f"Login failed: {data}", None
+        
+        # Find instrument token for order
+        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        mr = requests.get(master_url, timeout=12)
+        if mr.status_code != 200:
+            return False, "Master fetch failed", None
+        
+        instruments = mr.json()
+        target_token = None
+        target_symbol = None
+        trading_symbol = None
+        
+        for inst in instruments:
+            if not isinstance(inst, dict):
+                continue
+            sym = str(inst.get("symbol", "")).upper()
+            if str(strike) in sym and opt_type.upper() in sym and "NIFTY" in sym:
+                # Match expiry if possible
+                if sym.endswith(f"{strike}{opt_type.upper()}") or f"{strike}{opt_type.upper()}" in sym:
+                    target_token = str(inst.get("token", ""))
+                    target_symbol = sym
+                    trading_symbol = inst.get("symbol", "")
+                    # Prefer exact expiry match if provided
+                    if expiry and expiry.replace("-","").upper()[:3] in sym:
+                        break
+        
+        if not target_token:
+            return False, f"Token not found for {symbol} {strike} {opt_type}", None
+        
+        # Place order via SmartAPI
+        try:
+            # Angel placeOrder params
+            order_params = {
+                "variety": "NORMAL",
+                "tradingsymbol": trading_symbol,
+                "symboltoken": target_token,
+                "transactiontype": order_type.upper(),  # BUY or SELL
+                "exchange": "NFO",
+                "ordertype": "MARKET" if price == 0 else "LIMIT",
+                "producttype": "CARRYFORWARD",  # For options
+                "duration": "DAY",
+                "price": str(price) if price > 0 else "0",
+                "squareoff": "0",
+                "stoploss": "0",
+                "quantity": str(quantity)
+            }
+            
+            order_id = obj.placeOrder(order_params)
+            return True, f"Order placed: {order_id} for {trading_symbol} @ {price}", order_id
+            
+        except Exception as e:
+            return False, f"Place order failed: {str(e)[:100]}", None
+            
+    except Exception as e:
+        return False, f"Real order error: {str(e)[:100]}", None
+
+def execute_real_trade_with_confirmation(idea, live_ltp, quantity, enable_real=False):
+    """Execute real trade with double confirmation"""
+    if not enable_real:
+        return False, "Real trading disabled - enable in sidebar"
+    
+    try:
+        symbol = idea.get('symbol','NIFTY')
+        strike = idea.get('strike',0)
+        opt_type = idea.get('option','CE')
+        expiry = idea.get('expiry','')
+        
+        # Safety checks
+        if live_ltp <= 0:
+            return False, "Live LTP 0 - cannot place real order"
+        
+        if live_ltp > 1000:
+            return False, f"LTP too high: ₹{live_ltp} - safety check failed"
+        
+        # Place BUY order
+        ok, msg, order_id = place_angel_real_order(
+            symbol=symbol,
+            strike=strike,
+            opt_type=opt_type,
+            expiry=expiry,
+            quantity=quantity,
+            order_type="BUY",
+            price=0  # Market order
+        )
+        
+        # Send Telegram notification for real order
+        if ok:
+            try:
+                bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","")
+                chat_id = st.secrets.get("TELEGRAM_CHAT_ID","")
+                if bot_token and chat_id:
+                    real_msg = f"""🔴 *REAL ORDER PLACED - {symbol}*
+
+📊 *{symbol} {strike} {opt_type}*
+💰 Entry: ₹{live_ltp:.2f} x {quantity} qty
+🆔 Order ID: {order_id}
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+
+⚠️ REAL MONEY ORDER - Check Angel One app!"""
+                    send_telegram_message(bot_token, chat_id, real_msg)
+            except:
+                pass
+        
+        return ok, msg
+        
+    except Exception as e:
+        return False, f"Real trade error: {str(e)[:100]}"
+
+
 def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str, price: float, qty: int, sl: float, t1: float, t2: float, expiry: str, reasons: str, is_equity: bool = False) -> bool:
     allowed, msg = evaluate_risk_gates(symbol, qty, abs(price - sl) * qty, is_equity=is_equity)
     if not allowed:
@@ -3819,11 +4049,24 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         step = meta["step"]
         resolved_strike = int(contract.get("strike") or (round(entry_spot / step) * step))
 
-        opt_entry = float(contract.get("ltp", 0.0))
-        opt_risk = max(round(opt_entry * 0.18, 2), 5.0)
-        opt_sl = round(opt_entry - opt_risk, 2)
-        opt_t1 = round(opt_entry + (opt_risk * 1.39), 2)
-        opt_t2 = round(opt_entry + (opt_risk * 2.50), 2)
+        opt_entry = float(contract.get("ltp", 0.0) or 0.0)
+        # If chain LTP is 0, try to get from live or use spot-based estimate
+        if opt_entry <= 0:
+            # Estimate from spot distance - ATM premium rough estimate
+            # Will be overridden by LIVE Angel LTP at display time
+            opt_entry = 0.0  # Keep 0 to trigger LIVE recalculation later
+        
+        if opt_entry > 0:
+            opt_risk = max(round(opt_entry * 0.18, 2), 5.0)
+            opt_sl = round(opt_entry - opt_risk, 2)
+            opt_t1 = round(opt_entry + (opt_risk * 1.39), 2)
+            opt_t2 = round(opt_entry + (opt_risk * 2.50), 2)
+        else:
+            # Placeholder values when entry is 0 - will be recalculated with LIVE
+            opt_risk = 5.0
+            opt_sl = -5.0  # Marker for recalculation needed
+            opt_t1 = 6.95
+            opt_t2 = 12.50
         opt_rr = (opt_t1 - opt_entry) / opt_risk
         opt_kelly = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=opt_rr)
 
@@ -4834,13 +5077,57 @@ if "Universal 5,000+" in segment_mode:
 # SEGMENT 2: INDEX & OPTIONS ADVISOR (QUANTITATIVE GEX & MAX PAIN RADAR)
 # ==============================================================================
 else:
-    # V32 AUTO ALERT MODE - No manual scan needed
+    # V32 AUTO ALERT MODE - No manual scan needed + Time filter
     st.sidebar.markdown("### 🤖 Auto Alert Mode")
     auto_alert_enabled = st.sidebar.checkbox("✅ Enable Auto Entry/Exit Alerts (No Scan Click)", value=True, help="When ON, scans every 5 min and sends Telegram automatically without clicking SCAN ALL")
     auto_scan_interval = st.sidebar.slider("Auto Scan Interval (min)", 1, 15, 5, help="How often to auto scan for new setups")
     
-    # Show auto status
+    # Time filter for auto trading - Morning/Afternoon
+    st.sidebar.markdown("#### ⏰ Auto Trading Time")
+    auto_time_mode = st.sidebar.selectbox("When to Auto Trade", ["Full Day (9:15-15:30)", "Morning Only (9:15-12:00)", "Afternoon Only (12:00-15:30)", "Custom"], index=0)
+    
+    if auto_time_mode == "Custom":
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            start_hour = st.number_input("Start Hour", 9, 15, 9)
+            start_min = st.number_input("Start Min", 0, 59, 15)
+        with col2:
+            end_hour = st.number_input("End Hour", 9, 15, 15)
+            end_min = st.number_input("End Min", 0, 59, 30)
+        auto_start = (start_hour, start_min)
+        auto_end = (end_hour, end_min)
+    elif auto_time_mode == "Morning Only (9:15-12:00)":
+        auto_start = (9, 15)
+        auto_end = (12, 0)
+    elif auto_time_mode == "Afternoon Only (12:00-15:30)":
+        auto_start = (12, 0)
+        auto_end = (15, 30)
+    else:
+        auto_start = (9, 15)
+        auto_end = (15, 30)
+    
+    st.session_state['auto_start'] = auto_start
+    st.session_state['auto_end'] = auto_end
+    
+    # Check if current time is within auto trading window
+    from datetime import datetime
+    try:
+        now_ist = datetime.now(IST)
+        current_minutes = now_ist.hour * 60 + now_ist.minute
+        start_minutes = auto_start[0] * 60 + auto_start[1]
+        end_minutes = auto_end[0] * 60 + auto_end[1]
+        is_within_time = start_minutes <= current_minutes <= end_minutes
+    except:
+        is_within_time = True
+    
     if auto_alert_enabled:
+        if is_within_time:
+            st.sidebar.success(f"✅ Auto ON - {auto_start[0]:02d}:{auto_start[1]:02d} to {auto_end[0]:02d}:{auto_end[1]:02d} IST")
+        else:
+            st.sidebar.warning(f"⏸️ Auto PAUSED - Outside {auto_start[0]:02d}:{auto_start[1]:02d}-{auto_end[0]:02d}:{auto_end[1]:02d} IST")
+    
+    # Show auto status
+    if auto_alert_enabled and is_within_time:
         if 'last_auto_scan' in st.session_state:
             last_scan = st.session_state['last_auto_scan']
             import time
@@ -4848,6 +5135,40 @@ else:
             st.sidebar.caption(f"Last auto scan: {elapsed:.1f} min ago | Next in {max(0, auto_scan_interval - elapsed):.1f} min")
         else:
             st.sidebar.caption("Auto scan will run on next refresh")
+    
+    st.sidebar.divider()
+    st.sidebar.markdown("### 🔴 REAL TRADING (Angel One)")
+    enable_real_trading = st.sidebar.checkbox("⚠️ Enable REAL Money Trading", value=False, help="WARNING: Places REAL orders with REAL money on Angel One!")
+    real_trading_qty = st.sidebar.number_input("Real Trading Qty (Lots)", min_value=1, max_value=10, value=1, help="Number of lots for REAL trading")
+    
+    # V34 FULL AUTO ENTRY/EXIT AT MARKET
+    auto_real_entry = False
+    if enable_real_trading:
+        st.sidebar.markdown("#### 🤖 Full Auto Mode")
+        auto_real_entry = st.sidebar.checkbox("🚀 Auto Entry @ MARKET on Setup", value=False, help="When ON: Auto BUY at market price when entry setup comes - no click needed!")
+        auto_real_exit = st.sidebar.checkbox("🎯 Auto Exit @ MARKET on SL/Target", value=False, help="When ON: Auto SELL at market price when SL or Target hits!")
+        
+        # Store in session state for background tasks - use correct lot sizes
+        st.session_state['auto_real_entry_enabled'] = auto_real_entry and auto_real_exit
+        # Don't hardcode 75 - will use INDEX_METADATA per symbol at order time
+        st.session_state['real_trading_qty_lots'] = real_trading_qty
+        st.session_state['enable_real_trading'] = enable_real_trading
+        # Show correct lot sizes
+        st.sidebar.caption(f"NIFTY 1 lot = 65 qty | BANKNIFTY 1 lot = 30 qty (NSE revised Dec 2025)")
+        
+        if auto_real_entry:
+            st.sidebar.success(f"✅ Auto Entry @ MARKET ON - {real_trading_qty} lots")
+        if auto_real_exit:
+            st.sidebar.success(f"✅ Auto Exit @ MARKET ON - SL/Target auto")
+    
+    if enable_real_trading:
+        st.sidebar.error("⚠️ REAL MONEY MODE ON! Orders will be placed on Angel One with real money!")
+        st.sidebar.caption(f"Qty: {real_trading_qty} lot(s)")
+        if auto_real_entry:
+            st.sidebar.warning("🤖 FULL AUTO: Entry + Exit @ MARKET without click!")
+    else:
+        st.sidebar.caption("Paper trading only (safe)")
+        st.session_state['auto_real_entry_enabled'] = False
     
     st.sidebar.divider()
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
@@ -5042,16 +5363,29 @@ else:
     st.markdown(f"## {TARGET} Detailed High-Conviction Trade Setups - [{active_tf['label']}]")
     st.caption(f"Technical Structure {BULLET} Dynamic Greeks {BULLET} GEX Levels {BULLET} Quarter-Kelly Sizing {BULLET} Trailing Rules")
 
-    # V32 AUTO SCAN LOGIC - Runs without clicking SCAN ALL
+    # V32 AUTO SCAN LOGIC - Runs without clicking SCAN ALL + Time filter
     should_auto_scan = False
     if 'auto_alert_enabled' in locals() and auto_alert_enabled:
-        import time
-        current_time = time.time()
-        last_scan = st.session_state.get('last_auto_scan', 0)
-        if current_time - last_scan >= (auto_scan_interval * 60):
-            should_auto_scan = True
-            st.session_state['last_auto_scan'] = current_time
-            st.info(f"🤖 Auto Scanning... (Interval: {auto_scan_interval} min) - No manual click needed!")
+        # Check time filter
+        try:
+            now_ist_check = datetime.now(IST)
+            curr_min_check = now_ist_check.hour * 60 + now_ist_check.minute
+            start_min_check = st.session_state.get('auto_start', (9,15))[0]*60 + st.session_state.get('auto_start', (9,15))[1]
+            end_min_check = st.session_state.get('auto_end', (15,30))[0]*60 + st.session_state.get('auto_end', (15,30))[1]
+            time_ok = start_min_check <= curr_min_check <= end_min_check
+        except:
+            time_ok = True
+        
+        if time_ok:
+            import time
+            current_time = time.time()
+            last_scan = st.session_state.get('last_auto_scan', 0)
+            if current_time - last_scan >= (auto_scan_interval * 60):
+                should_auto_scan = True
+                st.session_state['last_auto_scan'] = current_time
+                st.info(f"🤖 Auto Scanning... (Interval: {auto_scan_interval} min) - No manual click needed! | Time: {now_ist_check.strftime('%H:%M IST')}")
+        else:
+            st.caption(f"⏸️ Auto trading paused - outside trading hours {st.session_state.get('auto_start', (9,15))[0]:02d}:{st.session_state.get('auto_start', (9,15))[1]:02d}-{st.session_state.get('auto_end', (15,30))[0]:02d}:{st.session_state.get('auto_end', (15,30))[1]:02d} IST")
 
     # Trigger scan if manual button clicked OR auto scan due
     manual_scan_clicked = st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True)
@@ -5219,27 +5553,45 @@ else:
                             st.error(f"🚨 LIVE P&L: {pnl_pct:.2f}% | Exit check!")
                         else:
                             st.info(f"📊 LIVE P&L: {pnl_pct:+.2f}% | Holding")
-                        # V30: Recalculate SL/Targets based on LIVE 108.20 using original_entry
-                        # entry_ltp is original signal (52.26), live_ltp_now is 108.20
-                        if is_live_ok and live_ltp_now > 0 and entry_ltp > 0:
+                        # V36 FIX: Recalculate SL/Targets based on LIVE when entry is 0 or invalid
+                        # Fixes bug where SL=-5, T1=6.95, T2=12.50 when signal was ₹0.00
+                        if is_live_ok and live_ltp_now > 0:
                             try:
-                                # Use original percentages - if SL is way below, use standard 18%/25%/40%
-                                orig_sl = idea['sl']
-                                if orig_sl < entry_ltp * 0.5:
-                                    sl_pct = 0.18
-                                    t1_pct = 0.25
-                                    t2_pct = 0.40
+                                # If original entry is 0 or invalid, use LIVE-based standard calculation
+                                # Original formula: risk = max(entry*0.18, 5), sl = entry - risk, t1 = entry + risk*1.39, t2 = entry + risk*2.5
+                                if entry_ltp <= 0 or entry_ltp < 1:
+                                    # Use LIVE price for fresh calculation
+                                    risk = max(round(live_ltp_now * 0.18, 2), 5.0)
+                                    new_sl = round(live_ltp_now - risk, 2)
+                                    new_t1 = round(live_ltp_now + (risk * 1.39), 2)
+                                    new_t2 = round(live_ltp_now + (risk * 2.50), 2)
                                 else:
-                                    sl_pct = (entry_ltp - idea['sl']) / entry_ltp if entry_ltp > 0 else 0.18
-                                    t1_pct = (idea['target1'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.25
-                                    t2_pct = (idea['target2'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.40
-                                new_sl = live_ltp_now * (1 - sl_pct)
-                                new_t1 = live_ltp_now * (1 + t1_pct)
-                                new_t2 = live_ltp_now * (1 + t2_pct)
-                            except:
-                                new_sl = live_ltp_now * 0.82
-                                new_t1 = live_ltp_now * 1.25
-                                new_t2 = live_ltp_now * 1.40
+                                    # Normal case: entry_ltp is valid (52.26 etc), recalc percentages
+                                    orig_sl = idea['sl']
+                                    if orig_sl < entry_ltp * 0.5 or orig_sl <= 0:
+                                        # SL is way below or negative - use standard 18%/1.39x/2.5x
+                                        risk = max(round(live_ltp_now * 0.18, 2), 5.0)
+                                        new_sl = round(live_ltp_now - risk, 2)
+                                        new_t1 = round(live_ltp_now + (risk * 1.39), 2)
+                                        new_t2 = round(live_ltp_now + (risk * 2.50), 2)
+                                    else:
+                                        sl_pct = (entry_ltp - idea['sl']) / entry_ltp if entry_ltp > 0 else 0.18
+                                        t1_pct = (idea['target1'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.25
+                                        t2_pct = (idea['target2'] - entry_ltp) / entry_ltp if entry_ltp > 0 else 0.40
+                                        new_sl = live_ltp_now * (1 - sl_pct)
+                                        new_t1 = live_ltp_now * (1 + t1_pct)
+                                        new_t2 = live_ltp_now * (1 + t2_pct)
+                                
+                                # Also update idea dict for Telegram and paper trading to use LIVE-based values
+                                idea['sl'] = new_sl
+                                idea['target1'] = new_t1
+                                idea['target2'] = new_t2
+                                idea['entry'] = live_ltp_now
+                            except Exception as e:
+                                risk = max(round(live_ltp_now * 0.18, 2), 5.0)
+                                new_sl = round(live_ltp_now - risk, 2)
+                                new_t1 = round(live_ltp_now + (risk * 1.39), 2)
+                                new_t2 = round(live_ltp_now + (risk * 2.50), 2)
                         else:
                             new_sl = idea['sl']
                             new_t1 = idea['target1']
@@ -5270,13 +5622,31 @@ else:
                         meta_info = INDEX_METADATA.get(idea["symbol"], INDEX_METADATA["NIFTY"])
                         lot_qty = meta_info["lot_size"]
 
-                        if st.button(f"{ROCKET} EXECUTE PAPER TRADE: 1 LOT ({lot_qty} QTY) #{i}", key=f"btn_paper_{i}"):
-                            execute_paper_order(
-                                symbol=idea["symbol"], action="BUY", strike=idea["strike"], option_type=idea["option"],
-                                price=idea["entry"], qty=lot_qty, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
-                                expiry=idea["expiry"], reasons=idea["why"], is_equity=False
-                            )
-                            st.rerun()
+                        col_paper, col_real = st.columns(2)
+                        with col_paper:
+                            if st.button(f"{ROCKET} PAPER TRADE: 1 LOT ({lot_qty} QTY) #{i}", key=f"btn_paper_{i}"):
+                                execute_paper_order(
+                                    symbol=idea["symbol"], action="BUY", strike=idea["strike"], option_type=idea["option"],
+                                    price=idea["entry"], qty=lot_qty, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
+                                    expiry=idea["expiry"], reasons=idea["why"], is_equity=False
+                                )
+                                st.rerun()
+                        with col_real:
+                            if 'enable_real_trading' in locals() and enable_real_trading:
+                                if st.button(f"🔴 REAL BUY: {idea['strike']} {idea['option']} ({real_trading_qty} lots) #{i}", key=f"btn_real_{i}", type="primary"):
+                                    # Double confirmation
+                                    if st.session_state.get(f'confirm_real_{i}', False):
+                                        ok, msg = execute_real_trade_with_confirmation(idea, live_ltp_now if 'live_ltp_now' in locals() else idea['entry'], real_trading_qty * lot_qty, enable_real=True)
+                                        if ok:
+                                            st.success(f"✅ REAL ORDER: {msg}")
+                                            st.session_state[f'confirm_real_{i}'] = False
+                                        else:
+                                            st.error(f"❌ REAL ORDER FAILED: {msg}")
+                                    else:
+                                        st.session_state[f'confirm_real_{i}'] = True
+                                        st.warning(f"⚠️ Click again to CONFIRM REAL MONEY ORDER for {idea['symbol']} {idea['strike']} {idea['option']} @ ₹{live_ltp_now if 'live_ltp_now' in locals() else idea['entry']:.2f}")
+                            else:
+                                st.caption("Enable REAL trading in sidebar for live orders")
 
                     else:
                         c1, c2, c3, c4 = st.columns(4)
@@ -5377,3 +5747,87 @@ else:
     st.dataframe(journal_df[display_cols], use_container_width=True)
 
 st.caption(f"Paper Trading Engine Active {BULLET} Real Broker Order Routing Disabled {BULLET} Strictly Educational Quantitative Research.")
+def auto_entry_market_price(idea, live_ltp, quantity_lots, enable_real=False):
+    """Auto Entry at MARKET PRICE when setup comes - no click needed - FIXED LOT SIZE"""
+    if not enable_real:
+        return False, "Real trading disabled"
+    
+    try:
+        symbol = idea.get('symbol','NIFTY')
+        # Get correct lot size from INDEX_METADATA
+        lot_size = INDEX_METADATA.get(symbol, {}).get('lot_size', 65)
+        if symbol == 'NIFTY':
+            lot_size = 65
+        elif symbol == 'BANKNIFTY':
+            lot_size = 30
+        elif symbol == 'FINNIFTY':
+            lot_size = 60
+        elif symbol == 'MIDCPNIFTY':
+            lot_size = 120
+        elif symbol == 'SENSEX':
+            lot_size = 20
+        
+        quantity = quantity_lots * lot_size
+        
+        # Place BUY at market
+        ok, msg, order_id = place_angel_real_order(
+            symbol=symbol,
+            strike=idea.get('strike',0),
+            opt_type=idea.get('option','CE'),
+            expiry=idea.get('expiry',''),
+            quantity=quantity,
+            order_type="BUY",
+            price=0  # Market price
+        )
+        
+        if ok:
+            # Also create paper position for tracking
+            try:
+                lot_qty = quantity
+                execute_paper_order(
+                    symbol=idea["symbol"], action="BUY", strike=idea["strike"], option_type=idea["option"],
+                    price=live_ltp, qty=lot_qty, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
+                    expiry=idea["expiry"], reasons=idea["why"] + " | AUTO REAL ENTRY", is_equity=False
+                )
+            except:
+                pass
+        
+        return ok, msg
+        
+    except Exception as e:
+        return False, str(e)[:80]
+
+def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
+    """Auto Exit at MARKET PRICE when SL/Target hit"""
+    if not enable_real:
+        return False, "Real trading disabled"
+    
+    try:
+        symbol = position.get('symbol','NIFTY')
+        strike = position.get('strike',0)
+        opt_type = position.get('option_type','CE')
+        expiry = position.get('expiry','')
+        qty = position.get('qty',0)
+        
+        # Place SELL at market
+        ok, msg, order_id = place_angel_real_order(
+            symbol=symbol,
+            strike=strike,
+            opt_type=opt_type,
+            expiry=expiry,
+            quantity=qty,
+            order_type="SELL",
+            price=0  # Market price for exit
+        )
+        
+        if ok:
+            # Close paper position
+            close_paper_position(trade_id, live_ltp, f"AUTO REAL EXIT @ ₹{live_ltp:.2f} | Order: {order_id}")
+        
+        return ok, msg
+        
+    except Exception as e:
+        return False, str(e)[:80]
+
+
+
