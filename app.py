@@ -1372,134 +1372,128 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V26 FINAL WORKING: Copy of debug test that successfully showed 22750 CE price
-    User confirmed login success and correct price for 22750 CE (9 Nov 26)
+    V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY
     """
     try:
-        # Get secrets - support both CLIENT_CODE and CLIENT_ID, PIN and PASSWORD
-        api_key = ""
-        client_id = ""
-        password = ""
-        totp_secret = ""
-        
+        api_key = ""; client_id = ""; password = ""; totp_secret = ""
         for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
             if k in st.secrets:
-                api_key = str(st.secrets[k]).strip()
-                break
+                api_key = str(st.secrets[k]).strip(); break
         for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"]:
             if k in st.secrets:
-                client_id = str(st.secrets[k]).strip()
-                break
+                client_id = str(st.secrets[k]).strip(); break
         for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"]:
             if k in st.secrets:
-                password = str(st.secrets[k]).strip()
-                break
+                password = str(st.secrets[k]).strip(); break
         for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
             if k in st.secrets:
-                totp_secret = str(st.secrets[k]).strip()
-                break
-        
+                totp_secret = str(st.secrets[k]).strip(); break
         if not api_key or not client_id:
             return 0, "ANGEL_KEYS_MISSING", False
-        
         try:
             from SmartApi import SmartConnect
             import pyotp
             import requests
+            import re
         except ImportError as e:
             return 0, f"LIB_MISSING_{str(e)[:20]}", False
-        
-        # Generate TOTP
         totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
-        
-        # Login with SmartConnect (this worked in debug test)
         obj = SmartConnect(api_key=api_key)
         data = obj.generateSession(client_id, password, totp_code)
-        
         if not (data and data.get("status") == True):
             return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
-        
-        # Login success - now find 22750 CE LTP
-        # User said 9 Nov 26 price came, so search for nearest expiry
         try:
-            # Get instrument master
             master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
             mr = requests.get(master_url, timeout=12)
             if mr.status_code != 200:
                 return 0, "MASTER_FETCH_FAILED", False
-            
             instruments = mr.json()
-            
-            # Normalize target expiry if provided
+            symbol = symbol.upper().strip()
+            if symbol == "NIFTY":
+                def is_match(sym):
+                    sym_u = sym.upper()
+                    if "FINNIFTY" in sym_u or "BANKNIFTY" in sym_u or "MIDCPNIFTY" in sym_u or "NIFTYNXT" in sym_u:
+                        return False
+                    return sym_u.startswith("NIFTY") and str(strike) in sym_u and opt_type.upper() in sym_u
+                search_label = "NIFTY"
+            elif symbol == "BANKNIFTY":
+                def is_match(sym):
+                    return "BANKNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "BANKNIFTY"
+            elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
+                def is_match(sym):
+                    sym_u = sym.upper()
+                    return ("FINNIFTY" in sym_u or (sym_u.startswith("FIN") and "NIFTY" in sym_u)) and str(strike) in sym_u and opt_type.upper() in sym_u
+                search_label = "FINNIFTY"
+            elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
+                def is_match(sym):
+                    return "MIDCPNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "MIDCPNIFTY"
+            elif symbol in ["SENSEX", "BSESN"]:
+                def is_match(sym):
+                    return "SENSEX" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "SENSEX"
+            else:
+                def is_match(sym):
+                    return symbol in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = symbol
             target_exp_norm = ""
             try:
                 target_exp_norm = expiry_norm(expiry) if expiry else ""
                 target_exp_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d") if target_exp_norm else None
             except:
                 target_exp_dt = None
-            
-            # Search for candidates - prioritize exact expiry match, then nearest
             candidates = []
             for inst in instruments:
                 if not isinstance(inst, dict):
                     continue
                 sym = str(inst.get("symbol", "")).upper()
-                # Must be NIFTY, 22750, CE
-                if "NIFTY" not in sym or str(strike) not in sym or opt_type.upper() not in sym:
+                if not is_match(sym):
                     continue
-                # Must be NFO
-                if inst.get("exch_seg") != "NFO":
+                if inst.get("exch_seg") not in ["NFO", "BFO"]:
                     continue
-                
-                # Parse expiry from symbol - NIFTY27OCT2026C22750 or NIFTY27OCT26C22750 etc
-                # Try to extract date
                 exp_score = 0
                 if target_exp_dt:
-                    # Try to match expiry month/year
                     try:
-                        # Symbol contains date like 27OCT2026
-                        import re
                         m = re.search(r"(\d{2})([A-Z]{3})(\d{2,4})", sym)
                         if m:
-                            day, mon, yr = m.groups()
-                            # If expiry matches target month, higher score
                             if target_exp_dt.strftime("%b").upper() in sym:
                                 exp_score += 10
                             if str(target_exp_dt.day) in sym:
                                 exp_score += 5
+                            if str(target_exp_dt.year)[-2:] in sym or str(target_exp_dt.year) in sym:
+                                exp_score += 3
                     except:
                         pass
                 else:
                     exp_score = 1
-                
                 candidates.append((exp_score, inst))
-            
-            # Sort by score (higher first) - so 27 Oct will come before 9 Nov if target is 27 Oct
             candidates.sort(key=lambda x: x[0], reverse=True)
-            
-            # Try top 5 candidates
             for score, inst in candidates[:10]:
-                sym = inst.get("symbol", "")
-                token = str(inst.get("token", ""))
-                exch = inst.get("exch_seg", "NFO")
+                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
                 try:
                     ltp_data = obj.ltpData(exch, sym, token)
                     if ltp_data and ltp_data.get("status") == True:
                         ltp_val = ltp_data.get("data", {}).get("ltp")
                         if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{sym}_{ltp_val}", True
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}{expiry.replace('-','').upper() if expiry else ''}{strike}{opt_type.upper()}_{ltp_val}", True
                 except:
                     continue
-            
-            return 0, "ANGEL_TOKEN_NOT_FOUND_FOR_22750", False
-            
+            for score, inst in candidates[:20]:
+                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
+                try:
+                    ltp_data = obj.ltpData(exch, sym, token)
+                    if ltp_data and ltp_data.get("status") == True:
+                        ltp_val = ltp_data.get("data", {}).get("ltp")
+                        if ltp_val and float(ltp_val) > 0:
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}_FALLBACK_{strike}{opt_type}_{ltp_val}", True
+                except:
+                    continue
+            return 0, f"NO_LTP_FOUND_{search_label}_{strike}{opt_type}", False
         except Exception as e:
-            return 0, f"ANGEL_LTP_ERROR_{str(e)[:30]}", False
-            
+            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:50]}", False
     except Exception as e:
-        return 0, f"ANGEL_OUTER_ERROR_{str(e)[:30]}", False
-    
-    return 0, "ANGEL_UNKNOWN_FAIL", False
+        return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
 
 
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
@@ -4049,24 +4043,11 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         step = meta["step"]
         resolved_strike = int(contract.get("strike") or (round(entry_spot / step) * step))
 
-        opt_entry = float(contract.get("ltp", 0.0) or 0.0)
-        # If chain LTP is 0, try to get from live or use spot-based estimate
-        if opt_entry <= 0:
-            # Estimate from spot distance - ATM premium rough estimate
-            # Will be overridden by LIVE Angel LTP at display time
-            opt_entry = 0.0  # Keep 0 to trigger LIVE recalculation later
-        
-        if opt_entry > 0:
-            opt_risk = max(round(opt_entry * 0.18, 2), 5.0)
-            opt_sl = round(opt_entry - opt_risk, 2)
-            opt_t1 = round(opt_entry + (opt_risk * 1.39), 2)
-            opt_t2 = round(opt_entry + (opt_risk * 2.50), 2)
-        else:
-            # Placeholder values when entry is 0 - will be recalculated with LIVE
-            opt_risk = 5.0
-            opt_sl = -5.0  # Marker for recalculation needed
-            opt_t1 = 6.95
-            opt_t2 = 12.50
+        opt_entry = float(contract.get("ltp", 0.0))
+        opt_risk = max(round(opt_entry * 0.18, 2), 5.0)
+        opt_sl = round(opt_entry - opt_risk, 2)
+        opt_t1 = round(opt_entry + (opt_risk * 1.39), 2)
+        opt_t2 = round(opt_entry + (opt_risk * 2.50), 2)
         opt_rr = (opt_t1 - opt_entry) / opt_risk
         opt_kelly = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=opt_rr)
 
@@ -5554,22 +5535,16 @@ else:
                         else:
                             st.info(f"📊 LIVE P&L: {pnl_pct:+.2f}% | Holding")
                         # V36 FIX: Recalculate SL/Targets based on LIVE when entry is 0 or invalid
-                        # Fixes bug where SL=-5, T1=6.95, T2=12.50 when signal was ₹0.00
                         if is_live_ok and live_ltp_now > 0:
                             try:
-                                # If original entry is 0 or invalid, use LIVE-based standard calculation
-                                # Original formula: risk = max(entry*0.18, 5), sl = entry - risk, t1 = entry + risk*1.39, t2 = entry + risk*2.5
                                 if entry_ltp <= 0 or entry_ltp < 1:
-                                    # Use LIVE price for fresh calculation
                                     risk = max(round(live_ltp_now * 0.18, 2), 5.0)
                                     new_sl = round(live_ltp_now - risk, 2)
                                     new_t1 = round(live_ltp_now + (risk * 1.39), 2)
                                     new_t2 = round(live_ltp_now + (risk * 2.50), 2)
                                 else:
-                                    # Normal case: entry_ltp is valid (52.26 etc), recalc percentages
                                     orig_sl = idea['sl']
                                     if orig_sl < entry_ltp * 0.5 or orig_sl <= 0:
-                                        # SL is way below or negative - use standard 18%/1.39x/2.5x
                                         risk = max(round(live_ltp_now * 0.18, 2), 5.0)
                                         new_sl = round(live_ltp_now - risk, 2)
                                         new_t1 = round(live_ltp_now + (risk * 1.39), 2)
@@ -5581,13 +5556,11 @@ else:
                                         new_sl = live_ltp_now * (1 - sl_pct)
                                         new_t1 = live_ltp_now * (1 + t1_pct)
                                         new_t2 = live_ltp_now * (1 + t2_pct)
-                                
-                                # Also update idea dict for Telegram and paper trading to use LIVE-based values
                                 idea['sl'] = new_sl
                                 idea['target1'] = new_t1
                                 idea['target2'] = new_t2
                                 idea['entry'] = live_ltp_now
-                            except Exception as e:
+                            except:
                                 risk = max(round(live_ltp_now * 0.18, 2), 5.0)
                                 new_sl = round(live_ltp_now - risk, 2)
                                 new_t1 = round(live_ltp_now + (risk * 1.39), 2)
