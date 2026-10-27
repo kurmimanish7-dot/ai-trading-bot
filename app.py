@@ -621,14 +621,24 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
             except:
                 pass
             
-            # For auto entry, check sidebar flag via st.session_state
-            # We store it in session when checkbox is ticked
+            # V42 WARMUP: Block real entry before 9:30
             try:
-                if st.session_state.get('auto_real_entry_enabled', False):
-                    real_enabled = True
-                    real_qty = st.session_state.get('real_trading_qty_lots', 1)
+                from datetime import datetime
+                now_w = datetime.now(IST)
+                if now_w.hour*60+now_w.minute < 570:  # 9:30
+                    real_enabled = False
+                    print(f"WARMUP: Blocking real entry at {now_w.strftime('%H:%M')} - till 9:30")
+                else:
+                    if st.session_state.get('auto_real_entry_enabled', False):
+                        real_enabled = True
+                        real_qty = st.session_state.get('real_trading_qty_lots', 1)
             except:
-                pass
+                try:
+                    if st.session_state.get('auto_real_entry_enabled', False):
+                        real_enabled = True
+                        real_qty = st.session_state.get('real_trading_qty_lots', 1)
+                except:
+                    pass
             
             if real_enabled and ok:  # Only if telegram sent and real enabled
                 # Auto place real order at market
@@ -659,6 +669,41 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
         return ok, resp
     except Exception as e:
         return False, str(e)[:80]
+
+def check_momentum_reversal(pos, current_rsi=60, current_trend="BULLISH"):
+    """
+    V39 MOMENTUM REVERSAL DETECTION
+    Returns: (is_reversal, reversal_type, severity)
+    """
+    try:
+        entry_rsi = pos.get('entry_rsi', 65)
+        entry_trend = pos.get('entry_trend', 'BULLISH')
+        entry_price = pos.get('entry_price', 0)
+        t1_price = pos.get('t1', 0)
+        highest_ltp = pos.get('highest_ltp', entry_price)
+        
+        # Rule 1: RSI reversal - Entry RSI >60, now <45 = Extreme reversal
+        if entry_rsi >= 60 and current_rsi <= 45:
+            return True, "RSI_EXTREME_REVERSAL", "EXTREME"
+        if entry_rsi >= 55 and current_rsi <= 50 and entry_trend != current_trend:
+            return True, "RSI_TREND_REVERSAL", "HIGH"
+        
+        # Rule 2: Trend reversal - BULLISH to BEARISH or vice versa
+        if entry_trend == "BULLISH" and current_trend == "BEARISH":
+            return True, "TREND_REVERSAL_BULL_TO_BEAR", "EXTREME"
+        if entry_trend == "BEARISH" and current_trend == "BULLISH":
+            return True, "TREND_REVERSAL_BEAR_TO_BULL", "EXTREME"
+        
+        # Rule 3: Price reversal after T1 - If LTP drops 50% of T1 profit after hitting near T1
+        if t1_price > 0 and highest_ltp >= t1_price * 0.95:  # Near T1
+            profit_from_entry = t1_price - entry_price
+            drop_from_high = highest_ltp - pos.get('current_ltp', highest_ltp)
+            if drop_from_high >= (profit_from_entry * 0.5):  # 50% profit wiped
+                return True, "PRICE_REVERSAL_AFTER_T1", "HIGH"
+        
+        return False, "", ""
+    except:
+        return False, "", ""
 
 def auto_check_and_exit_positions():
     """Auto check SL/Target/Time exit and send Telegram Exit alert - V38 FIXED"""
@@ -721,6 +766,53 @@ def auto_check_and_exit_positions():
                 except:
                     pass
                 
+                # Priority 0: EXTREME MOMENTUM REVERSAL - Full exit without SL (V39 NEW)
+                try:
+                    # Check extreme reversal even before SL
+                    # If RSI crashes or trend flips completely, exit full trade immediately
+                    entry_rsi = pos.get('entry_rsi', 65)
+                    # Estimate current RSI from price action for extreme check
+                    # If LTP drops sharply from entry (>10% drop in 15 min), treat as extreme
+                    if entry > 0 and live_ltp < entry * 0.90:  # 10% drop from entry without SL hit (gap down)
+                        is_extreme = True
+                        rev_reason = f"EXTREME REVERSAL - 10% Gap Down @ ₹{live_ltp:.2f} from ₹{entry:.2f}"
+                    else:
+                        # Check if trend completely reversed (need to get latest trend)
+                        # For now, use price momentum: if dropped >5% in last check and below entry
+                        is_extreme = False
+                        rev_reason = ""
+                        if pos.get('highest_ltp', entry) > 0:
+                            drop_pct = (pos.get('highest_ltp', entry) - live_ltp) / pos.get('highest_ltp', entry) * 100
+                            if drop_pct >= 8 and live_ltp < entry:  # 8% drop from high and below entry
+                                is_extreme = True
+                                rev_reason = f"EXTREME MOMENTUM REVERSAL @ ₹{live_ltp:.2f} - Dropped {drop_pct:.1f}% from high ₹{pos.get('highest_ltp', entry):.2f}"
+                    
+                    if 'is_extreme' in locals() and is_extreme:
+                        real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
+                        if real_exit_enabled:
+                            try:
+                                auto_ok, auto_msg = auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
+                            except:
+                                close_paper_position(trade_id, live_ltp, rev_reason)
+                        else:
+                            close_paper_position(trade_id, live_ltp, rev_reason)
+                        
+                        try:
+                            bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
+                            chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
+                            bot_token = str(bot_token).strip()
+                            chat_id = str(chat_id).strip()
+                            if bot_token and chat_id:
+                                pnl = (live_ltp - entry) * pos.get('qty',0)
+                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"{rev_reason} 🚨 EXTREME EXIT FULL SELL @ MARKET | {'🔴 REAL' if real_exit_enabled else 'PAPER'}")
+                                send_telegram_message(bot_token, chat_id, msg)
+                        except:
+                            pass
+                        continue
+                except Exception as e:
+                    print(f"Extreme reversal check error: {e}")
+                    pass
+                
                 # Priority 1: SL hit
                 if live_ltp <= sl:
                     real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
@@ -770,9 +862,8 @@ def auto_check_and_exit_positions():
                         pass
                     continue
                 
-                # Priority 3: T1 hit - Partial or full
+                # Priority 3: T1 hit - Partial booking logic
                 if live_ltp >= t1 and t1 > 0:
-                    # Check if already booked T1
                     if not pos.get('t1_booked', False):
                         try:
                             bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
@@ -781,16 +872,67 @@ def auto_check_and_exit_positions():
                             chat_id = str(chat_id).strip()
                             if bot_token and chat_id:
                                 pnl = (live_ltp - entry) * pos.get('qty',0)
-                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 1 Hit @ ₹{live_ltp:.2f} 📈 50% Book - Trail SL to Cost")
+                                # 2 Lot logic: 1st lot T1 pe nikla
+                                remaining_qty = pos.get('qty',0) // 2 if pos.get('qty',0) > 1 else 0
+                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 1 Hit @ ₹{live_ltp:.2f} 📈 1st LOT BOOKED @ T1, 2nd LOT HOLD FOR T2")
                                 send_telegram_message(bot_token, chat_id, msg)
-                            # Mark T1 booked, trail SL to cost
+                            # V39: Mark T1 booked, trail SL to T1 (not cost) for 2nd lot safety
                             pos['t1_booked'] = True
-                            pos['sl'] = entry  # Trail to cost
-                        except:
-                            pass
+                            pos['t1_exit_price'] = live_ltp  # Store T1 exit price for 2nd lot reversal
+                            pos['highest_ltp'] = max(pos.get('highest_ltp', live_ltp), live_ltp)
+                            # Trail SL to T1 level for 2nd lot (as per user request)
+                            # If momentum reverses, 2nd lot will exit at T1
+                            pos['sl'] = t1 * 0.98  # Trail to 98% of T1 (small buffer)
+                            pos['trail_reason'] = "T1 Booked - Trail to T1 for 2nd lot"
+                        except Exception as e:
+                            print(f"T1 booking error: {e}")
                         continue
                 
-                # Priority 4: Time based exit - 15:15 forced or 3hr holding
+                                # Priority 3B: After T1 - Check momentum reversal for 2nd lot (V40 with mode toggle)
+                if pos.get('t1_booked', False):
+                    try:
+                        exit_mode = st.session_state.get('exit_mode', 'HYBRID')
+                        if exit_mode == "CONSERVATIVE":
+                            # Conservative: Hold till T2 or SL, ignore small reversals
+                            pos['highest_ltp'] = max(pos.get('highest_ltp', live_ltp), live_ltp)
+                            pos['current_ltp'] = live_ltp
+                        else:
+                            # Aggressive/Hybrid: Check reversal for 2nd lot
+                            current_rsi_est = 55
+                            current_trend_est = pos.get('entry_trend', 'BULLISH')
+                            t1_exit_price = pos.get('t1_exit_price', t1)
+                            if live_ltp < t1_exit_price * 0.97:
+                                current_rsi_est = 48
+                                is_rev, rev_type, severity = check_momentum_reversal(pos, current_rsi_est, current_trend_est)
+                                highest = pos.get('highest_ltp', t1_exit_price)
+                                if live_ltp < highest * 0.97 or is_rev:
+                                    real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
+                                    if real_exit_enabled:
+                                        try:
+                                            auto_ok, auto_msg = auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
+                                        except:
+                                            close_paper_position(trade_id, live_ltp, f"Momentum Reversal @ ₹{live_ltp:.2f} - 2nd LOT Exit @ T1 ₹{t1_exit_price:.2f}")
+                                    else:
+                                        close_paper_position(trade_id, live_ltp, f"Momentum Reversal @ ₹{live_ltp:.2f} - 2nd LOT Exit")
+                                    try:
+                                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
+                                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
+                                        bot_token = str(bot_token).strip()
+                                        chat_id = str(chat_id).strip()
+                                        if bot_token and chat_id:
+                                            pnl = (live_ltp - entry) * pos.get('qty',0)
+                                            msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Momentum Reversal @ ₹{live_ltp:.2f} 🔄 2nd LOT EXIT @ T1 ₹{t1_exit_price:.2f} | {rev_type} | {exit_mode} | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT")
+                                            send_telegram_message(bot_token, chat_id, msg)
+                                    except:
+                                        pass
+                                    continue
+                            pos['highest_ltp'] = max(pos.get('highest_ltp', live_ltp), live_ltp)
+                            pos['current_ltp'] = live_ltp
+                    except Exception as e:
+                        print(f"Reversal check error: {e}")
+                        pass
+                
+# Priority 4: Time based exit - 15:15 forced or 3hr holding
                 if is_time_exit or time_exit_reason:
                     reason = "15:15 Time Exit - Market Close" if is_time_exit else time_exit_reason
                     real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
