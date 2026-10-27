@@ -602,17 +602,14 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
         msg = format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str)
         ok, resp = send_telegram_message(bot_token, chat_id, msg)
         
-        # V34 AUTO ENTRY AT MARKET PRICE - If real trading enabled
+        # V43 CONFIRM CALL LOGIC - Safety before real money
         try:
+            require_confirm = st.session_state.get('require_confirm_call', True)
+            
+            # V34 AUTO ENTRY AT MARKET PRICE - If real trading enabled
             # Check if real auto trading enabled
             real_enabled = False
-            real_qty = 75  # Default 1 lot NIFTY
-            try:
-                # Try to get from session or secrets
-                if 'enable_real_trading' in st.session_state and st.session_state.get('enable_real_trading'):
-                    real_enabled = True
-            except:
-                pass
+            real_qty = 75
             
             # Also check if global enable_real_trading exists
             try:
@@ -621,7 +618,7 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
             except:
                 pass
             
-            # V42 WARMUP: Block real entry before 9:30
+            # V42 WARMUP + V43 CONFIRM CALL
             try:
                 from datetime import datetime
                 now_w = datetime.now(IST)
@@ -630,9 +627,35 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
                     print(f"WARMUP: Blocking real entry at {now_w.strftime('%H:%M')} - till 9:30")
                 else:
                     if st.session_state.get('auto_real_entry_enabled', False):
-                        real_enabled = True
-                        real_qty = st.session_state.get('real_trading_qty_lots', 1)
-            except:
+                        # V43: Check if confirmation required
+                        require_confirm = st.session_state.get('require_confirm_call', True)
+                        if require_confirm:
+                            # Don't auto entry immediately, create pending confirmation
+                            pending_key = f"pending_confirm_{idea.get('symbol')}_{idea.get('strike')}_{idea.get('option')}"
+                            # Store pending order for confirmation
+                            st.session_state[pending_key] = {
+                                'idea': idea,
+                                'live_ltp': live_ltp,
+                                'spot': spot,
+                                'expiry': expiry_label_str,
+                                'qty': st.session_state.get('real_trading_qty_lots', 1),
+                                'time': datetime.now(IST).strftime('%H:%M:%S'),
+                                'conviction': idea.get('confidence', 0)
+                            }
+                            real_enabled = False  # Block auto, wait for confirm
+                            print(f"CONFIRM CALL PENDING: {pending_key}")
+                            # Send confirm call telegram
+                            try:
+                                send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str)
+                            except Exception as e:
+                                print(f"Confirm call telegram failed: {e}")
+                        else:
+                            real_enabled = True
+                            real_qty = st.session_state.get('real_trading_qty_lots', 1)
+                    else:
+                        real_enabled = False
+            except Exception as e:
+                print(f"Warmup/Confirm check error: {e}")
                 try:
                     if st.session_state.get('auto_real_entry_enabled', False):
                         real_enabled = True
@@ -5339,7 +5362,18 @@ else:
         auto_real_entry = st.sidebar.checkbox("🚀 Auto Entry @ MARKET on Setup", value=False, help="When ON: Auto BUY at market price when entry setup comes - no click needed!")
         auto_real_exit = st.sidebar.checkbox("🎯 Auto Exit @ MARKET on SL/Target", value=False, help="When ON: Auto SELL at market price when SL or Target hits!")
         
-        # Store in session state for background tasks - use correct lot sizes
+        # V43 CONFIRM CALL - Safety for real money
+        st.sidebar.markdown("#### 📞 Confirm Before Real Entry")
+        require_confirm = st.sidebar.checkbox("📞 Confirm Call Before Real BUY", value=True, help="When ON: Telegram pe confirm call ayega - YES bolo tabhi real entry hoga. Safe!")
+        st.session_state['require_confirm_call'] = require_confirm
+        
+        if require_confirm:
+            st.sidebar.success("📞 Confirm Call ON - Pehle call ayega fir entry")
+            st.sidebar.caption("Telegram: High Conviction 78% - Reply YES to confirm entry, 60 sec me auto cancel")
+        else:
+            st.sidebar.warning("⚠️ No Confirm - Direct auto entry @ MARKET")
+        
+        # Store in session state for background tasks
         st.session_state['auto_real_entry_enabled'] = auto_real_entry and auto_real_exit
         # Don't hardcode 75 - will use INDEX_METADATA per symbol at order time
         st.session_state['real_trading_qty_lots'] = real_trading_qty
