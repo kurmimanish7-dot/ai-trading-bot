@@ -661,7 +661,7 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
         return False, str(e)[:80]
 
 def auto_check_and_exit_positions():
-    """Auto check SL/Target hit and send Telegram Exit alert"""
+    """Auto check SL/Target/Time exit and send Telegram Exit alert - V38 FIXED"""
     try:
         if 'paper_portfolio' not in st.session_state:
             return
@@ -669,6 +669,13 @@ def auto_check_and_exit_positions():
         positions = st.session_state.paper_portfolio.get("positions", {})
         if not positions:
             return
+        
+        from datetime import datetime
+        now_ist = datetime.now(IST)
+        current_minutes = now_ist.hour * 60 + now_ist.minute
+        
+        # Time based exit: 15:15 IST forced exit for intraday
+        is_time_exit = current_minutes >= (15*60 + 15)
         
         # For each position, check live LTP
         for trade_id, pos in list(positions.items()):
@@ -678,95 +685,156 @@ def auto_check_and_exit_positions():
                 opt_type = pos.get('option_type','CE')
                 expiry = pos.get('expiry','')
                 
-                # Get live LTP
+                # Get live LTP - use broker matched
                 live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
                 
                 if not is_ok or live_ltp <= 0:
-                    continue
+                    # Try fallback proxy if Angel fails
+                    try:
+                        live_ltp, live_src, is_ok, _ = get_broker_matched_ltp_FINAL(symbol, strike, opt_type, expiry)
+                    except:
+                        continue
+                    if not is_ok or live_ltp <= 0:
+                        continue
                 
                 entry = pos.get('entry_price',0)
                 sl = pos.get('sl',0)
                 t1 = pos.get('t1',0)
                 t2 = pos.get('t2',0)
+                entry_time_str = pos.get('entry_time','')
                 
-                # Check SL hit - AUTO EXIT AT MARKET PRICE
+                # Check holding time - if > 3 hours, time exit
+                time_exit_reason = ""
+                try:
+                    if entry_time_str:
+                        # entry_time is like "11:57:00"
+                        from datetime import datetime
+                        et = datetime.strptime(entry_time_str, "%H:%M:%S")
+                        now_t = now_ist.time()
+                        # Rough check: if holding > 180 min
+                        entry_minutes = et.hour*60 + et.minute
+                        holding_minutes = current_minutes - entry_minutes
+                        if holding_minutes < 0:
+                            holding_minutes += 24*60  # overnight
+                        if holding_minutes >= 180:  # 3 hours
+                            time_exit_reason = f"Time Exit - 3Hr Holding ({holding_minutes}min)"
+                except:
+                    pass
+                
+                # Priority 1: SL hit
                 if live_ltp <= sl:
-                    # Check if real auto exit enabled
                     real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
-                    
                     if real_exit_enabled:
-                        # Real exit at market
-                        auto_ok, auto_msg = auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
-                        exit_reason = f"SL Hit @ ₹{live_ltp:.2f} | AUTO REAL EXIT"
-                    else:
-                        # Paper exit
-                        close_paper_position(trade_id, live_ltp, f"SL Hit @ ₹{live_ltp:.2f}")
-                        exit_reason = f"SL Hit @ ₹{live_ltp:.2f}"
-                    
-                    # Send Telegram
-                    try:
-                        bot_token = secret("TELEGRAM_BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN","")
-                        chat_id = secret("TELEGRAM_CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID","")
                         try:
-                            if not bot_token and "TELEGRAM_BOT_TOKEN" in st.secrets:
-                                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
-                            if not chat_id and "TELEGRAM_CHAT_ID" in st.secrets:
-                                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+                            auto_ok, auto_msg = auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
                         except:
-                            pass
+                            close_paper_position(trade_id, live_ltp, f"SL Hit @ ₹{live_ltp:.2f} | REAL EXIT FAILED - PAPER")
+                    else:
+                        close_paper_position(trade_id, live_ltp, f"SL Hit @ ₹{live_ltp:.2f}")
+                    
+                    try:
+                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or secret("TELEGRAM_BOT_TOKEN") or ""
+                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or secret("TELEGRAM_CHAT_ID") or ""
+                        bot_token = str(bot_token).strip()
+                        chat_id = str(chat_id).strip()
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
-                            if real_exit_enabled:
-                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"SL Hit @ ₹{live_ltp:.2f} | 🔴 REAL EXIT @ MARKET")
-                            else:
-                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"SL Hit @ ₹{live_ltp:.2f}")
+                            msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"SL Hit @ ₹{live_ltp:.2f} 🚨 | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT @ MARKET")
+                            send_telegram_message(bot_token, chat_id, msg)
+                            print(f"Telegram Exit SL sent for {trade_id}")
+                    except Exception as e:
+                        print(f"Telegram exit SL failed: {e}")
+                    continue
+                
+                # Priority 2: T2 hit
+                if live_ltp >= t2:
+                    real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
+                    if real_exit_enabled:
+                        try:
+                            auto_ok, auto_msg = auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
+                        except:
+                            close_paper_position(trade_id, live_ltp, f"T2 Hit @ ₹{live_ltp:.2f}")
+                    else:
+                        close_paper_position(trade_id, live_ltp, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯")
+                    
+                    try:
+                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or secret("TELEGRAM_BOT_TOKEN") or ""
+                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or secret("TELEGRAM_CHAT_ID") or ""
+                        bot_token = str(bot_token).strip()
+                        chat_id = str(chat_id).strip()
+                        if bot_token and chat_id:
+                            pnl = (live_ltp - entry) * pos.get('qty',0)
+                            msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯 | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT @ MARKET")
                             send_telegram_message(bot_token, chat_id, msg)
                     except:
                         pass
                     continue
                 
-                # Check T2 hit - AUTO EXIT AT MARKET PRICE
-                if live_ltp >= t2:
-                    real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
-                    
-                    if real_exit_enabled:
-                        auto_ok, auto_msg = auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
-                        exit_reason = f"Target 2 Hit @ ₹{live_ltp:.2f} | AUTO REAL EXIT @ MARKET"
-                    else:
-                        close_paper_position(trade_id, live_ltp, f"Target 2 Hit @ ₹{live_ltp:.2f}")
-                        exit_reason = f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯"
-                    
-                    try:
-                        bot_token = secret("TELEGRAM_BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN","")
-                        chat_id = secret("TELEGRAM_CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID","")
+                # Priority 3: T1 hit - Partial or full
+                if live_ltp >= t1 and t1 > 0:
+                    # Check if already booked T1
+                    if not pos.get('t1_booked', False):
                         try:
-                            if not bot_token and "TELEGRAM_BOT_TOKEN" in st.secrets:
-                                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
-                            if not chat_id and "TELEGRAM_CHAT_ID" in st.secrets:
-                                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+                            bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
+                            chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
+                            bot_token = str(bot_token).strip()
+                            chat_id = str(chat_id).strip()
+                            if bot_token and chat_id:
+                                pnl = (live_ltp - entry) * pos.get('qty',0)
+                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 1 Hit @ ₹{live_ltp:.2f} 📈 50% Book - Trail SL to Cost")
+                                send_telegram_message(bot_token, chat_id, msg)
+                            # Mark T1 booked, trail SL to cost
+                            pos['t1_booked'] = True
+                            pos['sl'] = entry  # Trail to cost
                         except:
                             pass
+                        continue
+                
+                # Priority 4: Time based exit - 15:15 forced or 3hr holding
+                if is_time_exit or time_exit_reason:
+                    reason = "15:15 Time Exit - Market Close" if is_time_exit else time_exit_reason
+                    real_exit_enabled = st.session_state.get('auto_real_entry_enabled', False)
+                    if real_exit_enabled:
+                        try:
+                            auto_ok, auto_msg = auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
+                        except:
+                            close_paper_position(trade_id, live_ltp, reason)
+                    else:
+                        close_paper_position(trade_id, live_ltp, reason)
+                    
+                    try:
+                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
+                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
+                        bot_token = str(bot_token).strip()
+                        chat_id = str(chat_id).strip()
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
-                            if real_exit_enabled:
-                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯 | 🔴 REAL EXIT @ MARKET")
-                            else:
-                                msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯")
+                            msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"{reason} @ ₹{live_ltp:.2f} ⏰ | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT @ MARKET")
                             send_telegram_message(bot_token, chat_id, msg)
                     except:
                         pass
                     continue
                     
             except Exception as e:
+                print(f"Exit check error for {trade_id}: {e}")
                 continue
     except Exception as e:
+        print(f"auto_check_and_exit_positions outer error: {e}")
         pass
 
-# Add auto check at app start - runs every refresh
+# Add auto check at app start - runs every refresh + in auto loop
 try:
     auto_check_and_exit_positions()
-except:
-    pass
+except Exception as e:
+    print(f"Initial exit check failed: {e}")
+
+# Also ensure exit check runs in auto scan interval
+def run_exit_check_in_loop():
+    try:
+        auto_check_and_exit_positions()
+    except:
+        pass
+
 
 
 # ================= V18 ENTRY/EXIT ALERT + 3 LIGHT SYSTEM =================
@@ -5344,6 +5412,13 @@ else:
     st.markdown(f"## {TARGET} Detailed High-Conviction Trade Setups - [{active_tf['label']}]")
     st.caption(f"Technical Structure {BULLET} Dynamic Greeks {BULLET} GEX Levels {BULLET} Quarter-Kelly Sizing {BULLET} Trailing Rules")
 
+    # V38 FIXED: Auto exit check must run EVERY refresh, not just on scan interval
+    # This ensures Telegram exit comes on time even if no new entry
+    try:
+        auto_check_and_exit_positions()
+    except:
+        pass
+    
     # V32 AUTO SCAN LOGIC - Runs without clicking SCAN ALL + Time filter
     should_auto_scan = False
     if 'auto_alert_enabled' in locals() and auto_alert_enabled:
@@ -5365,8 +5440,19 @@ else:
                 should_auto_scan = True
                 st.session_state['last_auto_scan'] = current_time
                 st.info(f"🤖 Auto Scanning... (Interval: {auto_scan_interval} min) - No manual click needed! | Time: {now_ist_check.strftime('%H:%M IST')}")
+                # Also run exit check on auto scan
+                try:
+                    auto_check_and_exit_positions()
+                except:
+                    pass
         else:
             st.caption(f"⏸️ Auto trading paused - outside trading hours {st.session_state.get('auto_start', (9,15))[0]:02d}:{st.session_state.get('auto_start', (9,15))[1]:02d}-{st.session_state.get('auto_end', (15,30))[0]:02d}:{st.session_state.get('auto_end', (15,30))[1]:02d} IST")
+            # Even when paused, check exits for existing positions!
+            try:
+                auto_check_and_exit_positions()
+            except:
+                pass
+
 
     # Trigger scan if manual button clicked OR auto scan due
     manual_scan_clicked = st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True)
