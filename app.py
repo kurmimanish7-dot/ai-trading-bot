@@ -457,6 +457,27 @@ TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "") if hasattr(st, 'secret
 # ===== V29 AUTO TELEGRAM ALERT SYSTEM - Entry + Exit without click =====
 
 def send_telegram_message(bot_token, chat_id, message):
+    """V44: Block all telegram calls after 3:15 pm IST"""
+    try:
+        from datetime import datetime
+        import pytz
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        curr_min = now.hour*60+now.minute
+        # After 15:15 (3:15 PM) - no trade calls
+        if curr_min >= (15*60+15):
+            # Check if message is trade call (entry/exit)
+            msg_lower = message.lower()
+            if any(x in msg_lower for x in ['entry', 'buy', 'sell', 'target', 'sl hit', 'trade', 'confirm call']):
+                # Allow only final P&L and square off messages after 3:15
+                if 'p&l' in msg_lower or 'pnl' in msg_lower or 'square off' in msg_lower or 'day close' in msg_lower or 'final' in msg_lower:
+                    pass  # Allow P&L messages
+                else:
+                    print(f"Telegram blocked after 3:15 PM: {message[:50]}")
+                    return False, "Blocked after 3:15 PM - No trade calls"
+    except:
+        pass
+    # Original function continues
     """Send Telegram message - works for both Entry and Exit"""
     try:
         import requests
@@ -742,8 +763,19 @@ def auto_check_and_exit_positions():
         now_ist = datetime.now(IST)
         current_minutes = now_ist.hour * 60 + now_ist.minute
         
-        # Time based exit: 15:15 IST forced exit for intraday
+        # V44: Time based exit: 15:15 IST forced exit - No carry forward + No telegram after 3:15
         is_time_exit = current_minutes >= (15*60 + 15)
+        is_after_315 = current_minutes >= (15*60 + 15)
+        
+        # V44 Feature 1: After 3:15 no new trade calls at all
+        if is_after_315:
+            # If any pending confirmations, cancel them
+            try:
+                pending_keys = [k for k in st.session_state.keys() if k.startswith('pending_confirm_')]
+                for k in pending_keys:
+                    del st.session_state[k]
+            except:
+                pass
         
         # For each position, check live LTP
         for trade_id, pos in list(positions.items()):
@@ -987,8 +1019,10 @@ def auto_check_and_exit_positions():
         print(f"auto_check_and_exit_positions outer error: {e}")
         pass
 
-# Add auto check at app start - runs every refresh + in auto loop
+# V44: Force same day close + auto check at app start
 try:
+    # Feature 2: No carry forward - force close at 15:15
+    force_close_all_positions_same_day()
     auto_check_and_exit_positions()
 except Exception as e:
     print(f"Initial exit check failed: {e}")
