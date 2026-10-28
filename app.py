@@ -514,6 +514,18 @@ try:
 except Exception:
     pass
 
+# V54 TELEGRAM CALLBACK POLLER - Har 3 sec pe Telegram YES/NO check - Direct trade
+@live_fragment(run_every=3)
+def telegram_callback_poller():
+    try:
+        if st.session_state.get('enable_real_trading', False) and st.session_state.get('require_confirm_call', True):
+            handle_telegram_callback_query()
+    except Exception:
+        pass
+
+telegram_callback_poller()
+
+
 
 # Show persistent status
 try:
@@ -724,9 +736,10 @@ def send_telegram_message(bot_token, chat_id, message):
         return False, str(e)[:100]
 
 def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
-    """V52 FIXED: Confirm Call Telegram - No NameError"""
+    """V54 FIXED: Confirm Call Telegram with YES/NO Buttons IN TELEGRAM - Direct Trade"""
     try:
         from datetime import datetime
+        import requests
         bot_token, chat_id = get_telegram_keys()
         if not bot_token or not chat_id:
             return False, "Telegram keys missing"
@@ -743,6 +756,9 @@ def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
         else:
             color = "🔴 LOW"
         qty = st.session_state.get('real_trading_qty_lots', 1)
+        pending_key = f"pending_confirm_{symbol}_{strike}_{opt}"
+        
+        # V54 NEW: Telegram pe direct YES/NO buttons
         msg = f"""📞 *CONFIRM CALL - {conv}% {symbol}*
 
 🎯 High Conviction: {conv}% {color}
@@ -752,19 +768,180 @@ def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
 ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
 ✅ Real order pending - Confirm needed
 
-✅ *To CONFIRM:* App me YES button click karo
-❌ *To CANCEL:* NO click ya ignore
-
 Qty: {qty} lots
 Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
 
-_App me neeche YES/NO button dekho_"""
-        ok, resp = send_telegram_message(bot_token, chat_id, msg)
-        return ok, resp
+👇 *Telegram pe hi YES/NO dabao - Direct trade!*"""
+
+        # Inline keyboard with YES/NO callback buttons - Direct in Telegram
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ YES - BUY NOW", "callback_data": f"YES_BUY_{pending_key}"},
+                    {"text": "❌ NO - Cancel", "callback_data": f"NO_CANCEL_{pending_key}"}
+                ],
+                [
+                    {"text": "📊 App Kholo", "callback_data": f"OPEN_APP_{pending_key}"}
+                ]
+            ]
+        }
+        
+        try:
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": msg,
+                "parse_mode": "Markdown",
+                "reply_markup": keyboard
+            }
+            r = requests.post(url, json=payload, timeout=8)
+            if r.status_code == 200:
+                result = r.json()
+                # Save message_id for editing later
+                try:
+                    msg_id = result.get('result', {}).get('message_id')
+                    if msg_id:
+                        st.session_state[f'tg_msg_id_{pending_key}'] = msg_id
+                except:
+                    pass
+                return True, "OK with buttons"
+            else:
+                # Fallback to simple message without buttons
+                ok, resp = send_telegram_message(bot_token, chat_id, msg)
+                return ok, resp
+        except Exception as e2:
+            # Fallback
+            ok, resp = send_telegram_message(bot_token, chat_id, msg)
+            return ok, f"Fallback: {resp}"
+            
     except Exception as e:
         import traceback
         traceback.print_exc()
         return False, str(e)[:100]
+
+def handle_telegram_callback_query():
+    """V54 NEW: Handle YES/NO clicks from Telegram - Direct trade without app"""
+    try:
+        import requests
+        from datetime import datetime
+        
+        bot_token, chat_id = get_telegram_keys()
+        if not bot_token:
+            return False
+            
+        # Get last update_id
+        last_update_id = st.session_state.get('tg_last_update_id', 0)
+        
+        url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+        params = {"offset": last_update_id + 1, "timeout": 2, "allowed_updates": '["callback_query"]'}
+        
+        r = requests.get(url, params=params, timeout=5)
+        if r.status_code != 200:
+            return False
+            
+        data = r.json()
+        if not data.get('ok') or not data.get('result'):
+            return False
+            
+        for update in data['result']:
+            update_id = update.get('update_id', 0)
+            st.session_state['tg_last_update_id'] = update_id
+            
+            callback = update.get('callback_query')
+            if not callback:
+                continue
+                
+            callback_id = callback.get('id')
+            callback_data = callback.get('data', '')
+            from_user = callback.get('from', {})
+            message = callback.get('message', {})
+            msg_id = message.get('message_id')
+            
+            # Answer callback query to remove loading
+            try:
+                answer_url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+                requests.post(answer_url, json={"callback_query_id": callback_id}, timeout=3)
+            except:
+                pass
+            
+            if callback_data.startswith("YES_BUY_"):
+                pending_key = callback_data.replace("YES_BUY_", "")
+                pdata = st.session_state.get(pending_key)
+                if not pdata:
+                    # Try to find in persistent
+                    continue
+                    
+                idea = pdata.get('idea', {})
+                live_ltp = pdata.get('live_ltp', 0)
+                qty = pdata.get('qty', 1)
+                
+                # Execute real trade
+                try:
+                    from datetime import datetime
+                    ok, msg = auto_entry_market_price(idea, live_ltp, qty, enable_real=st.session_state.get('enable_real_trading', False))
+                    
+                    # Edit Telegram message to show result
+                    try:
+                        if ok:
+                            new_text = f"✅ *ORDER PLACED!*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\n💰 LTP: ₹{live_ltp:.2f}\nQty: {qty} lots\n\n✅ {msg}\n\nTime: {datetime.now(IST).strftime('%H:%M:%S IST')}"
+                        else:
+                            new_text = f"❌ *ORDER FAILED*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\nError: {msg}"
+                        
+                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                        edit_payload = {
+                            "chat_id": chat_id,
+                            "message_id": msg_id,
+                            "text": new_text,
+                            "parse_mode": "Markdown"
+                        }
+                        requests.post(edit_url, json=edit_payload, timeout=5)
+                    except:
+                        pass
+                    
+                    # Send confirmation
+                    try:
+                        if ok:
+                            send_telegram_message(bot_token, chat_id, f"✅ *REAL ORDER EXECUTED VIA TELEGRAM*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\n💰 Entry: ₹{live_ltp:.2f}\nQty: {qty} lots\n\nTelegram YES se direct trade!")
+                    except:
+                        pass
+                    
+                    # Remove pending
+                    try:
+                        if pending_key in st.session_state:
+                            del st.session_state[pending_key]
+                    except:
+                        pass
+                        
+                except Exception as e:
+                    try:
+                        send_telegram_message(bot_token, chat_id, f"❌ Error placing order: {str(e)[:100]}")
+                    except:
+                        pass
+                        
+            elif callback_data.startswith("NO_CANCEL_"):
+                pending_key = callback_data.replace("NO_CANCEL_", "")
+                try:
+                    if pending_key in st.session_state:
+                        del st.session_state[pending_key]
+                except:
+                    pass
+                try:
+                    edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                    edit_payload = {
+                        "chat_id": chat_id,
+                        "message_id": msg_id,
+                        "text": f"❌ *CANCELLED via Telegram*\n\nPending order {pending_key} cancelled.\nTime: {datetime.now(IST).strftime('%H:%M:%S IST')}",
+                        "parse_mode": "Markdown"
+                    }
+                    requests.post(edit_url, json=edit_payload, timeout=5)
+                except:
+                    pass
+                    
+        return True
+    except Exception as e:
+        print(f"Callback handle error: {e}")
+        return False
+
 
 
 
@@ -5925,6 +6102,12 @@ _App me neeche YES/NO button dekho_"""
                     continue
         except Exception as e:
             pass
+    
+    # V54 NEW: Check Telegram YES/NO callbacks first - Direct trade from Telegram
+    try:
+        handle_telegram_callback_query()
+    except Exception as e:
+        print(f"Telegram callback check error: {e}")
     
     # Call it before ticker
     render_pending_confirmations_ui()
