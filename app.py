@@ -5553,6 +5553,41 @@ else:
         if require_confirm:
             st.sidebar.success("📞 Confirm Call ON - Pehle call ayega fir entry")
             st.sidebar.caption("Telegram: High Conviction 78% - Reply YES to confirm entry, 60 sec me auto cancel")
+            
+            # V49 TEST BUTTON - Immediate test
+            if st.sidebar.button("🧪 TEST Confirm Call (85% Dummy)", key="test_confirm_call"):
+                try:
+                    from datetime import datetime
+                    dummy_idea = {
+                        'symbol': 'NIFTY',
+                        'strike': 22750,
+                        'option': 'CE',
+                        'confidence': 85,
+                        'conviction': 85,
+                        'sl': 90,
+                        'target1': 125,
+                        'target2': 140,
+                        'entry': 108.2
+                    }
+                    pkey = f"pending_confirm_TEST_NIFTY_22750_CE"
+                    st.session_state[pkey] = {
+                        'idea': dummy_idea,
+                        'live_ltp': 108.2,
+                        'spot': 22800,
+                        'expiry': '03 Nov 2026',
+                        'qty': st.session_state.get('real_trading_qty_lots', 1),
+                        'time': datetime.now(IST).strftime('%H:%M:%S'),
+                        'conviction': 85,
+                        'is_warmup': False
+                    }
+                    ok_t, resp_t = send_confirm_call_telegram(dummy_idea, 108.2, 22800, '03 Nov 2026')
+                    if ok_t:
+                        st.sidebar.success(f"✅ TEST Confirm Call sent to Telegram! Check Telegram & below for YES/NO")
+                    else:
+                        st.sidebar.error(f"❌ Test failed: {resp_t} - Check Bot Token + Chat ID")
+                    st.rerun()
+                except Exception as e:
+                    st.sidebar.error(f"Test error: {e}")
         else:
             st.sidebar.warning("⚠️ No Confirm - Direct auto entry @ MARKET")
         
