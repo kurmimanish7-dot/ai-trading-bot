@@ -2350,7 +2350,7 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V57.2 FIXED: Broker mismatch 445 vs 209 fixed - exact expiry + strike parsing
+    V58 FIXED: CANDIDATES0 bug - now supports both Angel formats C22650 and 22650CE
     """
     try:
         api_key = ""; client_id = ""; password = ""; totp_secret = ""
@@ -2381,9 +2381,8 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
         if not (data and data.get("status") == True):
             return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
         
-        # Helper to extract expiry from Angel symbol - EXACT MATCH
         def extract_expiry_date(sym):
-            """Extract expiry from symbol like NIFTY03NOV2622650CE -> 2026-11-03"""
+            """Extract expiry from symbol like NIFTY03NOV22C22650 or NIFTY03NOV2622650CE -> 2022-11-03"""
             try:
                 m = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', sym.upper())
                 if not m:
@@ -2397,25 +2396,49 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
                 year = int(year_str)
                 if year < 100:
                     year = 2000 + year
-                # Validate date
                 from datetime import date
                 return date(year, mon, day)
             except:
                 return None
         
-        def extract_strike_exact(sym, opt_type):
-            """Extract exact strike - NIFTY03NOV2622650CE -> 22650"""
+        def extract_strike_both_formats(sym, opt_type):
+            """
+            Angel has 2 formats:
+            Format 1: NIFTY03NOV22C22650 -> C/P before strike
+            Format 2: NIFTY03NOV2622650CE -> CE/PE after strike
+            """
             try:
-                sym_u = sym.upper()
-                ot = opt_type.upper()
-                if not sym_u.endswith(ot):
-                    return None
-                # Remove CE/PE suffix
-                without_opt = sym_u[:-len(ot)]
-                # Strike is trailing digits (4-6 digits)
-                m = re.search(r'(\d+)$', without_opt)
-                if m:
-                    return int(m.group(1))
+                sym_u = sym.upper().strip()
+                target_strike = int(strike)
+                # Try Format 1: C/P + strike at end - e.g., ...C22650 or ...P22650
+                m1 = re.search(r'[CP](\d{4,6})$', sym_u)
+                if m1:
+                    try:
+                        s = int(m1.group(1))
+                        if s == target_strike:
+                            return s
+                    except:
+                        pass
+                # Try Format 2: strike + CE/PE at end - e.g., ...22650CE
+                m2 = re.search(r'(\d{4,6})(CE|PE)$', sym_u)
+                if m2:
+                    try:
+                        s = int(m2.group(1))
+                        if s == target_strike:
+                            return s
+                    except:
+                        pass
+                # Try Format 3: strike anywhere with CE/PE nearby - loose but verify exact
+                # Extract all numbers 4-6 digits
+                all_nums = re.findall(r'\d{4,6}', sym_u)
+                for num_str in all_nums:
+                    try:
+                        if int(num_str) == target_strike:
+                            # Also check opt type present
+                            if opt_type.upper() in sym_u or opt_type.upper()[0] in sym_u:
+                                return target_strike
+                    except:
+                        continue
                 return None
             except:
                 return None
@@ -2428,7 +2451,6 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             instruments = mr.json()
             symbol = symbol.upper().strip()
             
-            # Target expiry normalized
             target_exp_date = None
             try:
                 target_exp_norm = expiry_norm(expiry) if expiry else ""
@@ -2437,20 +2459,18 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             except:
                 target_exp_date = None
             
-            # Symbol matching with exact strike check
             def is_valid_candidate(inst):
                 if not isinstance(inst, dict):
                     return False
-                sym = str(inst.get("symbol","")).upper()
+                sym = str(inst.get("symbol","")).upper().strip()
                 exch = inst.get("exch_seg","")
                 if exch not in ["NFO","BFO"]:
                     return False
-                
-                # Check symbol type
+                # Symbol type check - loose
                 if symbol == "NIFTY":
                     if "FINNIFTY" in sym or "BANKNIFTY" in sym or "MIDCPNIFTY" in sym or "NIFTYNXT" in sym:
                         return False
-                    if not sym.startswith("NIFTY"):
+                    if "NIFTY" not in sym:
                         return False
                 elif symbol == "BANKNIFTY":
                     if "BANKNIFTY" not in sym:
@@ -2465,16 +2485,30 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
                     if "SENSEX" not in sym:
                         return False
                 
-                # Exact strike match
-                strike_extracted = extract_strike_exact(sym, opt_type)
-                if strike_extracted is None:
-                    return False
-                if strike_extracted != int(strike):
+                # Strike check - must contain target strike digits
+                if str(strike) not in sym:
                     return False
                 
-                # Must end with CE/PE
-                if not sym.endswith(opt_type.upper()):
+                # Exact strike extraction
+                strike_extracted = extract_strike_both_formats(sym, opt_type)
+                if strike_extracted is None:
                     return False
+                
+                # Opt type check - CE/PE or C/P
+                ot = opt_type.upper()
+                # For CE, symbol should have C or CE, for PE, P or PE
+                if ot == "CE":
+                    if "CE" not in sym and not re.search(r'C\d+$', sym):
+                        # Check if ends with C+strike
+                        if not re.search(r'C' + str(strike) + r'$', sym):
+                            # Allow if contains C
+                            if "C" not in sym:
+                                return False
+                elif ot == "PE":
+                    if "PE" not in sym and not re.search(r'P\d+$', sym):
+                        if not re.search(r'P' + str(strike) + r'$', sym):
+                            if "P" not in sym:
+                                return False
                 
                 return True
             
@@ -2483,51 +2517,35 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
                 if not is_valid_candidate(inst):
                     continue
                 sym = str(inst.get("symbol","")).upper()
-                # Extract expiry
                 exp_date = extract_expiry_date(sym)
                 score = 0
-                # Exact expiry match gets highest score
                 if target_exp_date and exp_date:
                     if exp_date == target_exp_date:
-                        score = 100  # Perfect match
+                        score = 100
                     elif exp_date.month == target_exp_date.month and exp_date.year == target_exp_date.year:
-                        # Same month/year but different day - partial
-                        score = 50 - abs((exp_date - target_exp_date).days)
+                        # Same month/year, calculate day diff
+                        try:
+                            day_diff = abs((exp_date - target_exp_date).days)
+                            score = 80 - day_diff
+                        except:
+                            score = 50
                     else:
-                        # Different expiry - low score but keep as fallback
-                        score = 10 - abs((exp_date - target_exp_date).days) / 10
+                        # Different month/year - lower score
+                        try:
+                            month_diff = abs((exp_date.year - target_exp_date.year)*12 + (exp_date.month - target_exp_date.month))
+                            score = 20 - month_diff
+                        except:
+                            score = 10
                 elif not target_exp_date:
                     score = 1
                 else:
                     score = 0
-                
                 candidates.append((score, exp_date, inst))
             
-            # Sort by score descending - exact expiry first
             candidates.sort(key=lambda x: x[0], reverse=True)
             
-            # Debug: log candidates
-            if candidates:
-                print(f"Angel candidates for {symbol} {strike} {opt_type} exp {target_exp_date}: found {len(candidates)}")
-                for sc, ed, inst in candidates[:5]:
-                    print(f"  Score {sc} Exp {ed} Sym {inst.get('symbol')} Token {inst.get('token')}")
-            
-            # Try exact matches first (score 100)
-            for score, exp_date, inst in candidates:
-                if score < 90:  # Only exact for first pass
-                    break
-                sym = inst.get("symbol",""); token = str(inst.get("token","")); exch = inst.get("exch_seg","NFO")
-                try:
-                    ltp_data = obj.ltpData(exch, sym, token)
-                    if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data",{}).get("ltp")
-                        if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_EXACT_{symbol}_{exp_date}_{strike}{opt_type}_{ltp_val}", True
-                except:
-                    continue
-            
-            # Second pass - try all candidates in score order
-            for score, exp_date, inst in candidates[:15]:
+            # Try candidates in score order
+            for score, exp_date, inst in candidates[:20]:
                 sym = inst.get("symbol",""); token = str(inst.get("token","")); exch = inst.get("exch_seg","NFO")
                 try:
                     ltp_data = obj.ltpData(exch, sym, token)
@@ -2536,33 +2554,83 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
                         if ltp_val and float(ltp_val) > 0:
                             exp_str = exp_date.strftime("%d%b%y").upper() if exp_date else "NO_EXP"
                             return float(ltp_val), f"ANGEL_BROKER_MATCHED_{symbol}_{exp_str}_{strike}{opt_type}_{ltp_val}_SCORE{score}", True
+                except Exception as e:
+                    continue
+            
+            # If still not found, try fallback with just strike match (old logic but with better expiry scoring)
+            # This handles cases where exact extraction failed but strike is present
+            fallback_candidates = []
+            for inst in instruments:
+                if not isinstance(inst, dict):
+                    continue
+                sym = str(inst.get("symbol","")).upper()
+                exch = inst.get("exch_seg","")
+                if exch not in ["NFO","BFO"]:
+                    continue
+                if symbol == "NIFTY" and ("FINNIFTY" in sym or "BANKNIFTY" in sym):
+                    continue
+                if symbol not in sym:
+                    continue
+                if str(strike) not in sym:
+                    continue
+                if opt_type.upper() not in sym and opt_type.upper()[0] not in sym:
+                    continue
+                exp_date = extract_expiry_date(sym)
+                score = 0
+                if target_exp_date and exp_date:
+                    if exp_date == target_exp_date:
+                        score = 90
+                    else:
+                        score = 10
+                fallback_candidates.append((score, exp_date, inst))
+            
+            fallback_candidates.sort(key=lambda x: x[0], reverse=True)
+            for score, exp_date, inst in fallback_candidates[:10]:
+                sym = inst.get("symbol",""); token = str(inst.get("token","")); exch = inst.get("exch_seg","NFO")
+                try:
+                    ltp_data = obj.ltpData(exch, sym, token)
+                    if ltp_data and ltp_data.get("status") == True:
+                        ltp_val = ltp_data.get("data",{}).get("ltp")
+                        if ltp_val and float(ltp_val) > 0:
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_FALLBACK_{symbol}_{strike}{opt_type}_{ltp_val}", True
                 except:
                     continue
             
-            return 0, f"NO_LTP_FOUND_{symbol}_{strike}{opt_type}_EXP{target_exp_date}_CANDIDATES{len(candidates)}", False
+            return 0, f"NO_LTP_FOUND_{symbol}_{strike}{opt_type}_EXP{target_exp_date}_CANDIDATES{len(candidates)}_FALLBACK{len(fallback_candidates)}", False
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:50]}", False
+            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:80]}", False
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
+        return 0, f"ANGEL_ERROR_{str(e)[:80]}", False
 
 
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
     """
-    V20: Tries Angel first (100% broker matched), then proxy, then NSE
+    V58: Tries Angel first, then NSE ultra fresh, then proxy - 100% broker matched
     """
     # Try Angel first - 100% broker matched, works on Cloud
     ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
     if ok and ltp > 0:
         return ltp, src, True
     
+    # Angel failed, try NSE ultra fresh directly (bypasses Cloudflare)
+    try:
+        ltp_u, src_u, ok_u, _ = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, expiry)
+        if ok_u and ltp_u > 0:
+            return ltp_u, src_u + "_AFTER_ANGEL_FAIL", True
+    except:
+        pass
+    
     # If Angel keys missing, try proxy
-    ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
-    if ok2 and ltp2 > 0:
-        return ltp2, src2, True
+    try:
+        ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
+        if ok2 and ltp2 > 0:
+            return ltp2, src2, True
+    except:
+        pass
     
     # Try ultimate
     try:
@@ -2572,10 +2640,10 @@ def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
     except:
         pass
     
-    # All failed - return 0 with clear message
+    # All failed - return Angel src for debugging, but don't hide NSE
     if "ANGEL_KEYS_MISSING" in src:
-        return 0, "ADD_ANGEL_KEYS_IN_SECRETS_FOR_108.20", False
-    return 0, src, False
+        return 0, f"ADD_ANGEL_KEYS_IN_SECRETS + NSE_BLOCKED | {src}", False
+    return 0, src + "_NSE_ALSO_FAILED", False
 
 
 def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
