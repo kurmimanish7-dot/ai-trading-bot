@@ -456,28 +456,165 @@ TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "") if hasattr(st, 'secret
 
 # ===== V29 AUTO TELEGRAM ALERT SYSTEM - Entry + Exit without click =====
 
+def get_telegram_keys():
+    """V48: Get telegram token/chat from UI input OR secrets"""
+    bot_token = ""
+    chat_id = ""
+    # First try UI inputs (tg_token, tg_chat from sidebar)
+    try:
+        if 'tg_token' in st.session_state and st.session_state['tg_token']:
+            bot_token = str(st.session_state['tg_token']).strip()
+    except:
+        pass
+    try:
+        if 'tg_chat' in st.session_state and st.session_state['tg_chat']:
+            chat_id = str(st.session_state['tg_chat']).strip()
+    except:
+        pass
+    # Fallback to secrets
+    if not bot_token:
+        try:
+            bot_token = secret("TELEGRAM_BOT_TOKEN") or ""
+        except:
+            pass
+    if not bot_token:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
+                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
+        except:
+            pass
+    if not chat_id:
+        try:
+            chat_id = secret("TELEGRAM_CHAT_ID") or ""
+        except:
+            pass
+    if not chat_id:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_CHAT_ID" in st.secrets:
+                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+        except:
+            pass
+    return bot_token.strip(), chat_id.strip()
+
+def get_telegram_keys():
+    """V48 FINAL FIX: Get token/chat from UI input OR secrets"""
+    bot_token = ""
+    chat_id = ""
+    try:
+        if 'tg_token' in st.session_state and st.session_state['tg_token']:
+            bot_token = str(st.session_state['tg_token']).strip()
+    except:
+        pass
+    try:
+        if 'tg_chat' in st.session_state and st.session_state['tg_chat']:
+            chat_id = str(st.session_state['tg_chat']).strip()
+    except:
+        pass
+    if not bot_token:
+        try:
+            bot_token = secret("TELEGRAM_BOT_TOKEN") or ""
+        except:
+            pass
+    if not bot_token:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
+                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
+        except:
+            pass
+    if not chat_id:
+        try:
+            chat_id = secret("TELEGRAM_CHAT_ID") or ""
+        except:
+            pass
+    if not chat_id:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_CHAT_ID" in st.secrets:
+                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+        except:
+            pass
+    return bot_token.strip(), chat_id.strip()
+
 def send_telegram_message(bot_token, chat_id, message):
-    """V44: Block all telegram calls after 3:15 pm IST"""
+    """V48 FINAL: Uses UI token/chat + Blocks after 3:15"""
+    # Auto get from UI if not passed
+    if not bot_token or len(str(bot_token)) < 10:
+        try:
+            ui_t, ui_c = get_telegram_keys()
+            if ui_t:
+                bot_token = ui_t
+            if ui_c and (not chat_id or len(str(chat_id))<3):
+                chat_id = ui_c
+        except:
+            pass
+    
+    # Check enabled
+    try:
+        ml = message.lower()
+        if ('entry' in ml or 'confirm call' in ml) and 'tg_entry_enabled' in st.session_state and not st.session_state['tg_entry_enabled']:
+            return False, "Entry disabled"
+        if ('exit' in ml or 'sl hit' in ml) and 'tg_exit_enabled' in st.session_state and not st.session_state['tg_exit_enabled']:
+            return False, "Exit disabled"
+    except:
+        pass
+    
+    # Block after 3:15
+    try:
+        from datetime import datetime
+        import pytz
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        if now.hour*60+now.minute >= 945:
+            ml = message.lower()
+            if any(x in ml for x in ['entry','buy','sell','target','sl hit','trade','confirm call']):
+                if not any(y in ml for y in ['p&l','pnl','square off','day close','final']):
+                    return False, "Blocked after 3:15"
+    except:
+        pass
+    # Original continues
+def send_telegram_message(bot_token, chat_id, message):
+    """V48: Fixed to use UI token/chat + Block after 3:15"""
+    # If no token passed, get from UI/secrets
+    if not bot_token or len(str(bot_token)) < 10:
+        try:
+            ui_token, ui_chat = get_telegram_keys()
+            if ui_token:
+                bot_token = ui_token
+            if ui_chat and not chat_id:
+                chat_id = ui_chat
+        except:
+            pass
+    
+    # Check UI enabled flags
+    try:
+        # If entry alert disabled, block entry messages
+        msg_lower = message.lower()
+        if 'entry' in msg_lower or 'confirm call' in msg_lower:
+            if 'tg_entry_enabled' in st.session_state and not st.session_state['tg_entry_enabled']:
+                print(f"Entry alert disabled by user")
+                return False, "Entry alerts disabled"
+        if 'exit' in msg_lower or 'sl hit' in msg_lower or 'target' in msg_lower:
+            if 'tg_exit_enabled' in st.session_state and not st.session_state['tg_exit_enabled']:
+                print(f"Exit alert disabled")
+                return False, "Exit alerts disabled"
+    except:
+        pass
+    
     try:
         from datetime import datetime
         import pytz
         ist = pytz.timezone('Asia/Kolkata')
         now = datetime.now(ist)
         curr_min = now.hour*60+now.minute
-        # After 15:15 (3:15 PM) - no trade calls
         if curr_min >= (15*60+15):
-            # Check if message is trade call (entry/exit)
             msg_lower = message.lower()
             if any(x in msg_lower for x in ['entry', 'buy', 'sell', 'target', 'sl hit', 'trade', 'confirm call']):
-                # Allow only final P&L and square off messages after 3:15
                 if 'p&l' in msg_lower or 'pnl' in msg_lower or 'square off' in msg_lower or 'day close' in msg_lower or 'final' in msg_lower:
-                    pass  # Allow P&L messages
+                    pass
                 else:
                     print(f"Telegram blocked after 3:15 PM: {message[:50]}")
-                    return False, "Blocked after 3:15 PM - No trade calls"
+                    return False, "Blocked after 3:15 PM"
     except:
         pass
-    # Original function continues
     """Send Telegram message - works for both Entry and Exit"""
     try:
         import requests
