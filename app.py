@@ -576,95 +576,9 @@ def send_telegram_alert(bot_token, chat_id, message):
         return False
 
 
-def get_telegram_keys():
-    """V55.3 BULLETPROOF - Get token/chat from ALL sources - SURE SHOT"""
-    bot_token = ""
-    chat_id = ""
-    
-    # 1. UI inputs (tg_token, tg_chat from sidebar) - HIGHEST PRIORITY
-    try:
-        if 'tg_token' in st.session_state and st.session_state['tg_token']:
-            bot_token = str(st.session_state['tg_token']).strip()
-    except:
-        pass
-    try:
-        if 'tg_chat' in st.session_state and st.session_state['tg_chat']:
-            chat_id = str(st.session_state['tg_chat']).strip()
-    except:
-        pass
-    
-    # 2. Persistent file (page close ke baad bhi)
-    if not bot_token or not chat_id:
-        try:
-            ps = st.session_state.get('persistent_settings', {})
-            if not bot_token and ps.get('tg_token'):
-                bot_token = str(ps.get('tg_token')).strip()
-            if not chat_id and ps.get('tg_chat'):
-                chat_id = str(ps.get('tg_chat')).strip()
-        except:
-            pass
-    
-    # 3. Try loading from file directly
-    if not bot_token or not chat_id:
-        try:
-            import os, json
-            for fpath in ["persistent_settings.json", "/tmp/persistent_settings.json"]:
-                if os.path.exists(fpath):
-                    with open(fpath, 'r') as f:
-                        data = json.load(f)
-                        if not bot_token and data.get('tg_token'):
-                            bot_token = str(data.get('tg_token')).strip()
-                        if not chat_id and data.get('tg_chat'):
-                            chat_id = str(data.get('tg_chat')).strip()
-                        if bot_token and chat_id:
-                            break
-        except:
-            pass
-    
-    # 4. Secrets fallback
-    if not bot_token:
-        try:
-            bot_token = secret("TELEGRAM_BOT_TOKEN") or ""
-        except:
-            pass
-    if not bot_token:
-        try:
-            if hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
-                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
-        except:
-            pass
-    if not chat_id:
-        try:
-            chat_id = secret("TELEGRAM_CHAT_ID") or ""
-        except:
-            pass
-    if not chat_id:
-        try:
-            if hasattr(st, 'secrets') and "TELEGRAM_CHAT_ID" in st.secrets:
-                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
-        except:
-            pass
-    
-    return bot_token.strip(), chat_id.strip()
-
-def get_telegram_keys_debug():
-    """Debug version to see where keys came from"""
-    bot_token, chat_id = get_telegram_keys()
-    source = "NOT FOUND"
-    if 'tg_token' in st.session_state and st.session_state['tg_token']:
-        source = "UI Sidebar"
-    elif st.session_state.get('persistent_settings', {}).get('tg_token'):
-        source = "Persistent File"
-    elif hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
-        source = "Secrets"
-    return bot_token, chat_id, source
-
-
-
-
 def send_telegram_message(bot_token, chat_id, message):
-    """V55.3 SURE-SHOT: Exit alerts ALWAYS go, Entry blocked outside 9:15-3:30 - Bhai ka rule"""
-    # ===== V55.3 TIME FILTER - EXIT ALWAYS ALLOWED =====
+    """V55 STRICT TIME BLOCK: No alerts before 9:15 AM or after 3:30 PM IST - Bhai ka rule"""
+    # ===== V55 STRICT TIME FILTER - 9:15 AM to 3:30 PM only =====
     try:
         from datetime import datetime
         import pytz
@@ -672,101 +586,66 @@ def send_telegram_message(bot_token, chat_id, message):
         now = datetime.now(ist)
         curr_minutes = now.hour * 60 + now.minute
         
+        # Market hours: 9:15 = 555 mins, 15:30 = 930 mins
         market_start = 9 * 60 + 15  # 555
         market_end = 15 * 60 + 30   # 930
         
-        ml = message.lower()
-        # EXIT keywords - ALWAYS ALLOWED even after 3:30 and before 9:15
-        is_exit_alert = any(x in ml for x in ['exit', 'sl hit', 'sl:', 'target', 't1 hit', 't2 hit', 'time exit', 'momentum reversal', 'extreme exit', 'emergency exit', 'square off', 'p&l', 'pnl', 'day close', 'final', 'test exit'])
-        is_emergency = 'emergency' in ml or '🚨' in message
-        
-        # Outside market hours check
+        # Check if outside market hours
         if curr_minutes < market_start or curr_minutes > market_end:
-            is_entry_call = any(x in ml for x in ['entry', 'confirm call', 'trapped', 'breakout', 'option setup', 'high conviction', 'conviction:'])
-            # Allow EXIT and EMERGENCY always
-            if is_entry_call and not is_exit_alert and not is_emergency and 'test' not in ml:
-                print(f"BLOCKED Entry outside market hours {now.strftime('%H:%M IST')}: {message[:50]}")
-                return False, f"Blocked: Outside market hours {now.strftime('%H:%M IST')} - ENTRY blocked (EXIT allowed)"
+            ml = message.lower()
+            # Allow only P&L and final reports after market, block all trade calls
+            is_trade_call = any(x in ml for x in ['entry', 'buy', 'sell', 'target', 'sl hit', 'trade', 'confirm call', 'trapped', 'breakout', 'option setup', 'conviction'])
+            is_pnl_allowed = any(y in ml for y in ['p&l', 'pnl', 'square off', 'day close', 'final', 'test'])
+            
+            # Block trade calls outside 9:15-3:30, allow P&L
+            if is_trade_call and not is_pnl_allowed:
+                # Exception: TEST messages allowed anytime for testing
+                if 'test' not in ml:
+                    return False, f"Blocked: Outside market hours {now.strftime('%H:%M IST')} - Only 9:15 AM to 3:30 PM allowed"
         
-        # After 3:15, block ENTRIES but ALLOW ALL EXIT including emergency
-        if curr_minutes >= 945:  # 3:15 PM = 945
-            is_entry = any(x in ml for x in ['entry', 'confirm call', 'trapped sellers', 'breakout']) and 'test' not in ml and not is_exit_alert
-            if is_entry and not is_exit_alert and not is_emergency:
-                print(f"BLOCKED Entry after 3:15 PM: {message[:50]}")
-                return False, "Blocked after 3:15 PM - No new entries (Exit allowed)"
+        # Extra strict: After 3:15, block entries (old rule still)
+        if curr_minutes >= 945:  # 15:45 = 945 (3:15 PM)
+            ml = message.lower()
+            if any(x in ml for x in ['entry', 'buy', 'confirm call']) and 'test' not in ml:
+                if not any(y in ml for y in ['p&l', 'pnl', 'square off', 'day close', 'final', 'exit']):
+                    return False, "Blocked after 3:15 PM - No new entries"
     except Exception as e:
+        # If time check fails, allow but log
         print(f"Time check error: {e}")
         pass
     
-    # BULLETPROOF: Auto get from ALL sources if not passed
-    if not bot_token or len(str(bot_token)) < 10 or not chat_id:
+    # Auto get from UI if not passed
+    if not bot_token or len(str(bot_token)) < 10:
         try:
             ui_t, ui_c = get_telegram_keys()
-            if ui_t and (not bot_token or len(str(bot_token)) < 10):
+            if ui_t:
                 bot_token = ui_t
             if ui_c and (not chat_id or len(str(chat_id))<3):
                 chat_id = ui_c
-        except Exception as e:
-            print(f"get_telegram_keys error: {e}")
+        except:
             pass
     
-    # Check enabled flags - but EXIT flag check with default True
+    # Check enabled flags
     try:
         ml = message.lower()
-        if ('entry' in ml or 'confirm call' in ml) and 'test' not in ml:
-            if 'tg_entry_enabled' in st.session_state and not st.session_state['tg_entry_enabled']:
-                print(f"Entry disabled by flag")
-                return False, "Entry disabled"
-        if ('exit' in ml or 'sl hit' in ml or 'target' in ml or 'emergency' in ml or '🚨' in message) and 'test' not in ml:
-            # Check exit flag, default True if not set
-            exit_enabled = st.session_state.get('tg_exit_enabled', True)
-            if not exit_enabled:
-                print(f"Exit disabled by flag")
-                return False, "Exit disabled"
-    except Exception as e:
-        print(f"Flag check error: {e}")
+        if ('entry' in ml or 'confirm call' in ml) and 'tg_entry_enabled' in st.session_state and not st.session_state['tg_entry_enabled']:
+            return False, "Entry disabled"
+        if ('exit' in ml or 'sl hit' in ml) and 'tg_exit_enabled' in st.session_state and not st.session_state['tg_exit_enabled']:
+            return False, "Exit disabled"
+    except:
         pass
 
     if not bot_token or not chat_id:
-        print(f"No token/chat: token={bool(bot_token)} chat={bool(chat_id)}")
-        return False, "No token/chat - Check Telegram settings"
+        return False, "No token/chat"
     
-    # Try sending with retry
     try:
         import requests
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-        
-        # First attempt
-        r = requests.post(url, json=payload, timeout=10)
-        print(f"Telegram send: status={r.status_code} msg={message[:50]}")
-        
-        # Save last result for debug
-        try:
-            st.session_state['last_telegram_status'] = f"{r.status_code} - {message[:30]} - {datetime.now(IST).strftime('%H:%M:%S')}"
-            st.session_state['last_telegram_response'] = r.text[:200]
-        except:
-            pass
-        
-        if r.status_code == 200:
-            return True, f"{r.status_code} OK"
-        else:
-            # Retry without markdown if markdown fails
-            try:
-                payload2 = {"chat_id": chat_id, "text": message}
-                r2 = requests.post(url, json=payload2, timeout=10)
-                print(f"Telegram retry without markdown: status={r2.status_code}")
-                return r2.status_code == 200, f"{r2.status_code} retry {r2.text[:100]}"
-            except Exception as e2:
-                return False, f"{r.status_code} {r.text[:100]} retry failed {e2}"
-                
+        r = requests.post(url, json=payload, timeout=8)
+        return r.status_code == 200, f"{r.status_code} {r.text[:100]}"
     except Exception as e:
-        print(f"Telegram send exception: {e}")
-        try:
-            st.session_state['last_telegram_status'] = f"ERROR - {str(e)[:50]}"
-        except:
-            pass
-        return False, str(e)[:200]
+        return False, str(e)[:100]
 
 def is_market_hours_for_alert():
     """V55: Check if current time is within 9:15 AM - 3:30 PM IST"""
@@ -793,7 +672,83 @@ TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "") if hasattr(st, 'secret
 
 # ===== V29 AUTO TELEGRAM ALERT SYSTEM - Entry + Exit without click =====
 
+def get_telegram_keys():
+    """V48: Get telegram token/chat from UI input OR secrets"""
+    bot_token = ""
+    chat_id = ""
+    # First try UI inputs (tg_token, tg_chat from sidebar)
+    try:
+        if 'tg_token' in st.session_state and st.session_state['tg_token']:
+            bot_token = str(st.session_state['tg_token']).strip()
+    except:
+        pass
+    try:
+        if 'tg_chat' in st.session_state and st.session_state['tg_chat']:
+            chat_id = str(st.session_state['tg_chat']).strip()
+    except:
+        pass
+    # Fallback to secrets
+    if not bot_token:
+        try:
+            bot_token = secret("TELEGRAM_BOT_TOKEN") or ""
+        except:
+            pass
+    if not bot_token:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
+                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
+        except:
+            pass
+    if not chat_id:
+        try:
+            chat_id = secret("TELEGRAM_CHAT_ID") or ""
+        except:
+            pass
+    if not chat_id:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_CHAT_ID" in st.secrets:
+                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+        except:
+            pass
+    return bot_token.strip(), chat_id.strip()
 
+def get_telegram_keys():
+    """V48 FINAL FIX: Get token/chat from UI input OR secrets"""
+    bot_token = ""
+    chat_id = ""
+    try:
+        if 'tg_token' in st.session_state and st.session_state['tg_token']:
+            bot_token = str(st.session_state['tg_token']).strip()
+    except:
+        pass
+    try:
+        if 'tg_chat' in st.session_state and st.session_state['tg_chat']:
+            chat_id = str(st.session_state['tg_chat']).strip()
+    except:
+        pass
+    if not bot_token:
+        try:
+            bot_token = secret("TELEGRAM_BOT_TOKEN") or ""
+        except:
+            pass
+    if not bot_token:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
+                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
+        except:
+            pass
+    if not chat_id:
+        try:
+            chat_id = secret("TELEGRAM_CHAT_ID") or ""
+        except:
+            pass
+    if not chat_id:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_CHAT_ID" in st.secrets:
+                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+        except:
+            pass
+    return bot_token.strip(), chat_id.strip()
 
 
 
@@ -854,7 +809,7 @@ def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
 
 🎯 High Conviction: {conv}% {color}
 📊 {symbol} {strike} {opt}
-💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{(spot or 0):.2f}
+💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{spot:.2f}
 📅 Expiry: {expiry_label_str}
 ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
 ✅ Real order pending - Confirm needed
@@ -1088,87 +1043,27 @@ def format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str):
     rr = idea.get('risk_reward',0)
     conf = idea.get('confidence',0)
     
-    # V56 BUDGET INFO
-    moneyness = idea.get('moneyness', 'ATM')
-    moneyness_label = idea.get('moneyness_label', '')
-    trade_cost = idea.get('trade_cost', 0)
-    budget_status = idea.get('budget_status', '')
-    lot_size = idea.get('lot_size', 65)
-    
-    budget_line = ""
-    if trade_cost > 0:
-        budget_emoji = "✅" if idea.get('is_within_budget') else "⚠️"
-        budget_line = f"{budget_emoji} *{moneyness} {moneyness_label}:* ₹{trade_cost:.0f} (₹{idea.get('entry', entry):.2f} x {lot_size}) | {budget_status}\n"
-    
-    msg = f"""🚀 *NEW TRADE SETUP - {symbol} {moneyness}*
+    msg = f"""🚀 *NEW TRADE SETUP - {symbol}*
 
-📊 *{symbol} {strike} {opt}* [{moneyness}]
-Type: INDEX OPTION ({opt} BUYING) - {idea.get('moneyness_desc','')}
+📊 *{symbol} {strike} {opt}*
+Type: INDEX OPTION (CE BUYING)
 Timeframe: 15 Min (Institutional Breakout)
 Holding: NEXT SESSION
 Conviction: {conf}% | Expiry: {expiry_label_str}
 
 💰 *Entry:* ₹{entry:.2f} (LIVE Broker: ₹{live_ltp:.2f})
-{budget_line}🛑 *SL:* ₹{sl:.2f}
+🛑 *SL:* ₹{sl:.2f}
 🎯 *T1:* ₹{t1:.2f}
 🎯 *T2:* ₹{t2:.2f}
 📈 *R/R:* 1:{rr:.2f}
-📍 *Spot:* {(spot or 0):.2f}
+📍 *Spot:* {spot:.2f}
 
 ⚡ *Buildup:* {idea.get('buildup','')}
 📝 *Why:* {idea.get('why','')[:200]}...
 
 ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-🤖 Auto Alert - Budget Friendly Strikes"""
+🤖 Auto Alert from AI Trading Bot"""
     return msg
-
-def format_telegram_budget_combined_alert(budget_ideas, live_spot, expiry_label_str):
-    """V56 NEW: Combined alert showing all 4 strikes - ITM, ATM, OTM, OTM2 with costs"""
-    try:
-        if not budget_ideas:
-            return ""
-        
-        symbol = budget_ideas[0].get('symbol','NIFTY')
-        opt = budget_ideas[0].get('option','CE')
-        conf = budget_ideas[0].get('confidence',0)
-        
-        # Build table of strikes
-        lines = []
-        for idea in budget_ideas:
-            moneyness = idea.get('moneyness','ATM')
-            strike = idea.get('strike','')
-            ltp = idea.get('option_ltp', idea.get('entry',0))
-            cost = idea.get('trade_cost',0)
-            within = idea.get('is_within_budget', False)
-            emoji = "✅" if within else "❌"
-            lot = idea.get('lot_size',65)
-            lines.append(f"{emoji} *{moneyness}:* {symbol} {strike} {opt} @ ₹{ltp:.2f} = ₹{cost:.0f} ({lot} lot)")
-        
-        strikes_text = "\n".join(lines)
-        
-        msg = f"""🚀 *BUDGET FRIENDLY TRADE SETUPS - {symbol} {opt}*
-
-📍 Spot: {(live_spot or 0):.2f} | Conviction: {conf}% | Expiry: {expiry_label_str}
-💰 Your Budget: ₹{budget_ideas[0].get('budget', 10000):.0f} per lot
-
-{strikes_text}
-
-📊 *Details:*
-- ITM: Safe, High Delta, High Premium (₹12k-25k)
-- ATM: Balanced (₹8k-15k)
-- OTM: Budget Friendly (₹4k-8k) ✅ Recommended for 10k budget
-- OTM2: Cheapest, Low Risk (₹2k-5k) ✅ For small budget
-
-🎯 Same SL/T1/T2 % for all - Choose as per budget!
-⚡ Buildup: {budget_ideas[0].get('buildup','')}
-
-⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-🤖 Budget Friendly Bot - Trade within your budget"""
-
-        return msg
-    except Exception as e:
-        print(f"Combined budget alert error: {e}")
-        return ""
 
 def format_telegram_exit_alert(position, exit_price, pnl, reason):
     """Format Exit alert for Telegram"""
@@ -1193,11 +1088,20 @@ Entry: ₹{entry:.2f} → Exit: ₹{exit_price:.2f}
 def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
     """Auto send Telegram Entry alert - only once per signal"""
     try:
-        # V56 BULLETPROOF - Use all sources
-        bot_token, chat_id = get_telegram_keys()
+        bot_token = secret("TELEGRAM_BOT_TOKEN") or secret("BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN","") if hasattr(st.secrets, '__getitem__') else ""
+        chat_id = secret("TELEGRAM_CHAT_ID") or secret("CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID","") if hasattr(st.secrets, '__getitem__') else ""
+        
+        # Also try direct access
+        try:
+            if not bot_token and "TELEGRAM_BOT_TOKEN" in st.secrets:
+                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
+            if not chat_id and "TELEGRAM_CHAT_ID" in st.secrets:
+                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+        except:
+            pass
         
         if not bot_token or not chat_id:
-            return False, "Telegram keys missing - Check sidebar Token/Chat ID"
+            return False, "Telegram keys missing"
         
         # Fix: Don't send if strike is None or empty (BANKNIFTY None None bug)
         if not idea.get('strike') or idea.get('strike') == 'None' or str(idea.get('strike')).lower() == 'none':
@@ -1214,16 +1118,6 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
         
         if signal_key in st.session_state['sent_telegram_signals']:
             return False, "Already sent"
-        
-        # V56: If this is part of budget group, check if we should send combined alert
-        # For All mode, we want to send one combined message with all 4 strikes instead of 4 separate
-        try:
-            # Check if there are other budget ideas in session for same signal
-            budget_group_key = f"{idea.get('symbol')}_{idea.get('option')}_{idea.get('expiry')}"
-            # For now, send individual but with budget info - combined will be handled in scan loop
-            pass
-        except:
-            pass
         
         # Send Telegram
         msg = format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str)
@@ -1368,113 +1262,6 @@ def check_momentum_reversal(pos, current_rsi=60, current_trend="BULLISH"):
     except:
         return False, "", ""
 
-def auto_check_emergency_exit_from_lights(light1, light2):
-    """V55.2 NEW: Emergency Exit from Traffic Light Rules - Bhai ka request - momentum reverse pe alert"""
-    try:
-        if 'paper_portfolio' not in st.session_state:
-            return
-        
-        positions = st.session_state.paper_portfolio.get("positions", {})
-        if not positions:
-            return
-        
-        # Check if emergency condition
-        is_ce_emergency = (light1.get("status") == "RED" or light2.get("status") == "RED")
-        is_pe_emergency = (light1.get("status") == "GREEN" or light2.get("status") == "GREEN")
-        
-        # Check for reversal pattern too
-        is_ce_reversal = light1.get("reversal_risk", False) and "CE" in str(light1.get("pattern","")).upper() or light1.get("status") == "RED"
-        is_pe_reversal = "BULLISH" in light1.get("pattern","") and light2.get("status") == "GREEN"
-        
-        if not (is_ce_emergency or is_pe_emergency or is_ce_reversal or is_pe_reversal):
-            return
-        
-        # Get telegram keys
-        bot_token, chat_id = get_telegram_keys()
-        if not bot_token or not chat_id:
-            return
-        
-        # Check if exit alerts enabled
-        try:
-            if 'tg_exit_enabled' in st.session_state and not st.session_state['tg_exit_enabled']:
-                return
-        except:
-            pass
-        
-        # For each position, check if it matches emergency
-        for trade_id, pos in list(positions.items()):
-            try:
-                symbol = pos.get('symbol','NIFTY')
-                opt_type = pos.get('option_type','CE')
-                
-                should_exit = False
-                reason = ""
-                
-                if opt_type == "CE" and (is_ce_emergency or is_ce_reversal):
-                    should_exit = True
-                    reason = f"🚨 EMERGENCY EXIT CE: {light1.get('pattern','')} + {light2.get('reason','')[:50]} | Light1: {light1.get('status')} | Light2: {light2.get('status')} | Momentum Reversed!"
-                elif opt_type == "PE" and (is_pe_emergency or is_pe_reversal):
-                    should_exit = True
-                    reason = f"🚨 EMERGENCY EXIT PE: Opposite signal {light1.get('pattern','')} | Light1: {light1.get('status')} | Light2: {light2.get('status')} | Momentum Reversed!"
-                
-                if should_exit:
-                    # Avoid duplicate emergency alerts (check if already alerted in last 5 min)
-                    alert_key = f"emergency_alert_{trade_id}_{light1.get('status')}_{light2.get('status')}"
-                    last_alert = st.session_state.get(alert_key, 0)
-                    import time
-                    if time.time() - last_alert < 300:  # 5 min cooldown
-                        continue
-                    
-                    # Get live LTP
-                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
-                    if not is_ok or live_ltp <= 0:
-                        live_ltp = pos.get('entry_price', 0)
-                    
-                    entry = pos.get('entry_price', 0)
-                    pnl = (live_ltp - entry) * pos.get('qty', 0) if opt_type == "CE" else (entry - live_ltp) * pos.get('qty', 0)
-                    
-                    # Send emergency exit telegram
-                    msg = f"""🚨 *EMERGENCY EXIT - {symbol} {pos.get('strike')} {opt_type}*
-
-📊 *{symbol} {pos.get('strike')} {opt_type}*
-Entry: ₹{entry:.2f} → Exit: ₹{live_ltp:.2f}
-💰 *P&L:* ₹{pnl:+.2f}
-
-🔥 *Reason:* {reason}
-
-Pattern: {light1.get('pattern')}
-Vol: {light1.get('vol_ratio',0):.2f}x
-Light1: {light1.get('status')} | Light2: {light2.get('status')}
-
-⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-🤖 Emergency Exit from Traffic Light System"""
-                    
-                    ok, resp = send_telegram_message(bot_token, chat_id, msg)
-                    print(f"Emergency exit alert sent for {trade_id}: ok={ok} resp={resp}")
-                    
-                    # Mark alerted
-                    st.session_state[alert_key] = time.time()
-                    
-                    # Optionally auto close position if auto exit enabled
-                    try:
-                        if st.session_state.get('auto_real_entry_enabled', False):
-                            # Auto exit real + paper
-                            auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
-                        else:
-                            # Just close paper and alert
-                            pass
-                    except:
-                        pass
-                        
-            except Exception as e:
-                print(f"Emergency exit check error for {trade_id}: {e}")
-                continue
-                
-    except Exception as e:
-        print(f"Emergency exit check main error: {e}")
-        import traceback
-        traceback.print_exc()
-
 def auto_check_and_exit_positions():
     """Auto check SL/Target/Time exit and send Telegram Exit alert - V38 FIXED"""
     try:
@@ -1579,7 +1366,10 @@ def auto_check_and_exit_positions():
                             close_paper_position(trade_id, live_ltp, rev_reason)
                         
                         try:
-                            bot_token, chat_id = get_telegram_keys()
+                            bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
+                            chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
+                            bot_token = str(bot_token).strip()
+                            chat_id = str(chat_id).strip()
                             if bot_token and chat_id:
                                 pnl = (live_ltp - entry) * pos.get('qty',0)
                                 msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"{rev_reason} 🚨 EXTREME EXIT FULL SELL @ MARKET | {'🔴 REAL' if real_exit_enabled else 'PAPER'}")
@@ -1603,7 +1393,10 @@ def auto_check_and_exit_positions():
                         close_paper_position(trade_id, live_ltp, f"SL Hit @ ₹{live_ltp:.2f}")
                     
                     try:
-                        bot_token, chat_id = get_telegram_keys()
+                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or secret("TELEGRAM_BOT_TOKEN") or ""
+                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or secret("TELEGRAM_CHAT_ID") or ""
+                        bot_token = str(bot_token).strip()
+                        chat_id = str(chat_id).strip()
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
                             msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"SL Hit @ ₹{live_ltp:.2f} 🚨 | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT @ MARKET")
@@ -1625,7 +1418,10 @@ def auto_check_and_exit_positions():
                         close_paper_position(trade_id, live_ltp, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯")
                     
                     try:
-                        bot_token, chat_id = get_telegram_keys()
+                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or secret("TELEGRAM_BOT_TOKEN") or ""
+                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or secret("TELEGRAM_CHAT_ID") or ""
+                        bot_token = str(bot_token).strip()
+                        chat_id = str(chat_id).strip()
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
                             msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯 | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT @ MARKET")
@@ -1638,7 +1434,10 @@ def auto_check_and_exit_positions():
                 if live_ltp >= t1 and t1 > 0:
                     if not pos.get('t1_booked', False):
                         try:
-                            bot_token, chat_id = get_telegram_keys()
+                            bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
+                            chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
+                            bot_token = str(bot_token).strip()
+                            chat_id = str(chat_id).strip()
                             if bot_token and chat_id:
                                 pnl = (live_ltp - entry) * pos.get('qty',0)
                                 # 2 Lot logic: 1st lot T1 pe nikla
@@ -1714,7 +1513,10 @@ def auto_check_and_exit_positions():
                         close_paper_position(trade_id, live_ltp, reason)
                     
                     try:
-                        bot_token, chat_id = get_telegram_keys()
+                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
+                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
+                        bot_token = str(bot_token).strip()
+                        chat_id = str(chat_id).strip()
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
                             msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"{reason} @ ₹{live_ltp:.2f} ⏰ | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT @ MARKET")
@@ -2264,17 +2066,15 @@ def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", 
                 data_list = records.get("data", [])
                 expiry_dates = records.get("expiryDates", [])
                 
-                # Find exact expiry match - V61 STRICT: No fallback to different expiry
+                # Find exact expiry match
+                # If target not in list, use first expiry (nearest)
                 if target_exp_norm:
+                    # Convert expiry_dates to normalized for comparison
                     norm_exps = [expiry_norm(d) for d in expiry_dates]
-                    print(f"Target exp {target_exp_norm}, NSE expiries {norm_exps[:5]}")
                     if target_exp_norm not in norm_exps:
-                        print(f"V61: Target {target_exp_norm} NOT in NSE list {norm_exps[:3]} - returning 0, no fallback")
-                        # Don't fallback to different expiry - return 0 to force error and let caller know
-                        # This prevents 9 Nov vs 17 Nov mismatch
-                        return 0, f"EXPIRY_NOT_FOUND_TARGET_{target_exp_norm}_AVAILABLE_{norm_exps[:3]}", False, ""
-                    else:
-                        print(f"Exact expiry match found: {target_exp_norm}")
+                        # Use nearest expiry
+                        if expiry_dates:
+                            target_exp_norm = expiry_norm(expiry_dates[0])
                 
                 for item in data_list:
                     if item.get("strikePrice") != int(strike):
@@ -2292,10 +2092,13 @@ def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", 
                         # Validate with bid/ask - if ltp is too far from market, use it still (it's real trade)
                         return float(ltp), f"NSE_LIVE_ULTRA_A{attempt+1}", True, item_exp
                 
-                # V61: NO fallback without expiry filter - prevents different expiry picks
-                # If exact expiry not found, return 0, don't pick random expiry
-                print(f"V61: No match for strike {strike} expiry {target_exp_norm} in attempt {attempt+1}")
-                
+                # If loop ends without return, try without expiry filter
+                for item in data_list:
+                    if item.get("strikePrice") == int(strike):
+                        opt_data = item.get(opt_type, {})
+                        ltp = opt_data.get("lastPrice", 0)
+                        if ltp and float(ltp) > 0:
+                            return float(ltp), f"NSE_LIVE_NO_EXP_FILTER_A{attempt+1}", True, expiry_norm(item.get("expiryDate",""))
             
             # If 403/401, wait and retry
             if r.status_code in [401,403,429]:
@@ -2349,7 +2152,7 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V60 FIXED: Only exact expiry match, no monthly fallback - prevents 305 vs 209 bug
+    V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY
     """
     try:
         api_key = ""; client_id = ""; password = ""; totp_secret = ""
@@ -2379,41 +2182,6 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
         data = obj.generateSession(client_id, password, totp_code)
         if not (data and data.get("status") == True):
             return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
-        
-        def extract_expiry_date(sym):
-            try:
-                m = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', sym.upper())
-                if not m:
-                    return None
-                day_str, mon_str, year_str = m.groups()
-                day = int(day_str)
-                mon_map = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,"JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
-                mon = mon_map.get(mon_str.upper())
-                if not mon:
-                    return None
-                year = int(year_str)
-                if year < 100:
-                    year = 2000 + year
-                from datetime import date
-                return date(year, mon, day)
-            except:
-                return None
-        
-        def extract_strike(sym):
-            try:
-                sym_u = sym.upper().strip()
-                # Format 1: C/P before strike - NIFTY03NOV26C22650
-                m1 = re.search(r'[CP](\d{4,6})$', sym_u)
-                if m1:
-                    return int(m1.group(1))
-                # Format 2: strike before CE/PE - NIFTY03NOV2622650CE
-                m2 = re.search(r'(\d{4,6})(CE|PE)$', sym_u)
-                if m2:
-                    return int(m2.group(1))
-                return None
-            except:
-                return None
-        
         try:
             master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
             mr = requests.get(master_url, timeout=12)
@@ -2421,245 +2189,189 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
                 return 0, "MASTER_FETCH_FAILED", False
             instruments = mr.json()
             symbol = symbol.upper().strip()
-            
-            target_exp_date = None
+            if symbol == "NIFTY":
+                def is_match(sym):
+                    sym_u = sym.upper()
+                    if "FINNIFTY" in sym_u or "BANKNIFTY" in sym_u or "MIDCPNIFTY" in sym_u or "NIFTYNXT" in sym_u:
+                        return False
+                    return sym_u.startswith("NIFTY") and str(strike) in sym_u and opt_type.upper() in sym_u
+                search_label = "NIFTY"
+            elif symbol == "BANKNIFTY":
+                def is_match(sym):
+                    return "BANKNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "BANKNIFTY"
+            elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
+                def is_match(sym):
+                    sym_u = sym.upper()
+                    return ("FINNIFTY" in sym_u or (sym_u.startswith("FIN") and "NIFTY" in sym_u)) and str(strike) in sym_u and opt_type.upper() in sym_u
+                search_label = "FINNIFTY"
+            elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
+                def is_match(sym):
+                    return "MIDCPNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "MIDCPNIFTY"
+            elif symbol in ["SENSEX", "BSESN"]:
+                def is_match(sym):
+                    return "SENSEX" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "SENSEX"
+            else:
+                def is_match(sym):
+                    return symbol in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = symbol
+            target_exp_norm = ""
             try:
                 target_exp_norm = expiry_norm(expiry) if expiry else ""
-                if target_exp_norm:
-                    target_exp_date = datetime.strptime(target_exp_norm, "%Y-%m-%d").date()
+                target_exp_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d") if target_exp_norm else None
             except:
-                target_exp_date = None
-            
-            if not target_exp_date:
-                return 0, f"INVALID_TARGET_EXPIRY_{expiry}", False
-            
-            exact_candidates = []
+                target_exp_dt = None
+            candidates = []
             for inst in instruments:
                 if not isinstance(inst, dict):
                     continue
-                sym = str(inst.get("symbol","")).upper().strip()
-                exch = inst.get("exch_seg","")
-                if exch not in ["NFO","BFO"]:
+                sym = str(inst.get("symbol", "")).upper()
+                if not is_match(sym):
                     continue
-                if symbol == "NIFTY":
-                    if "FINNIFTY" in sym or "BANKNIFTY" in sym or "MIDCPNIFTY" in sym:
-                        continue
-                    if "NIFTY" not in sym:
-                        continue
-                elif symbol == "BANKNIFTY":
-                    if "BANKNIFTY" not in sym:
-                        continue
-                elif symbol in ["FINNIFTY","FIN"]:
-                    if "FINNIFTY" not in sym:
-                        continue
-                
-                # Strike must match exactly
-                strike_extracted = extract_strike(sym)
-                if strike_extracted != int(strike):
+                if inst.get("exch_seg") not in ["NFO", "BFO"]:
                     continue
-                
-                # Opt type check
-                ot = opt_type.upper()
-                if ot == "CE":
-                    if not (sym.endswith(f"C{strike}") or sym.endswith(f"CE") or sym.endswith(f"{strike}CE") or f"C{strike}" in sym):
-                        # Check C present
-                        if "C" not in sym:
-                            continue
-                elif ot == "PE":
-                    if not (sym.endswith(f"P{strike}") or sym.endswith(f"PE") or sym.endswith(f"{strike}PE") or f"P{strike}" in sym):
-                        if "P" not in sym:
-                            continue
-                
-                # Expiry must match EXACTLY - no fallback to monthly
-                exp_date = extract_expiry_date(sym)
-                if exp_date != target_exp_date:
-                    continue
-                
-                # Exact match found
-                exact_candidates.append((100, exp_date, inst))
-            
-            # Try exact candidates only
-            for score, exp_date, inst in exact_candidates[:10]:
-                sym = inst.get("symbol",""); token = str(inst.get("token","")); exch = inst.get("exch_seg","NFO")
+                exp_score = 0
+                if target_exp_dt:
+                    try:
+                        m = re.search(r"(\d{2})([A-Z]{3})(\d{2,4})", sym)
+                        if m:
+                            if target_exp_dt.strftime("%b").upper() in sym:
+                                exp_score += 10
+                            if str(target_exp_dt.day) in sym:
+                                exp_score += 5
+                            if str(target_exp_dt.year)[-2:] in sym or str(target_exp_dt.year) in sym:
+                                exp_score += 3
+                    except:
+                        pass
+                else:
+                    exp_score = 1
+                candidates.append((exp_score, inst))
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            for score, inst in candidates[:10]:
+                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
                 try:
                     ltp_data = obj.ltpData(exch, sym, token)
                     if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data",{}).get("ltp")
+                        ltp_val = ltp_data.get("data", {}).get("ltp")
                         if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_EXACT_MATCH_{symbol}_{exp_date}_{strike}{opt_type}_{ltp_val}", True
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}{expiry.replace('-','').upper() if expiry else ''}{strike}{opt_type.upper()}_{ltp_val}", True
                 except:
                     continue
-            
-            # No exact match found - DON'T return monthly, return 0 so NSE proxy can try
-            return 0, f"ANGEL_NO_EXACT_EXPIRY_{symbol}_{strike}{opt_type}_TARGET_{target_exp_date}_FOUND_{len(exact_candidates)}_CANDIDATES", False
-            
+            for score, inst in candidates[:20]:
+                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
+                try:
+                    ltp_data = obj.ltpData(exch, sym, token)
+                    if ltp_data and ltp_data.get("status") == True:
+                        ltp_val = ltp_data.get("data", {}).get("ltp")
+                        if ltp_val and float(ltp_val) > 0:
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}_FALLBACK_{strike}{opt_type}_{ltp_val}", True
+                except:
+                    continue
+            return 0, f"NO_LTP_FOUND_{search_label}_{strike}{opt_type}", False
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:80]}", False
+            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:50]}", False
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return 0, f"ANGEL_ERROR_{str(e)[:80]}", False
-
-
+        return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
 
 
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
     """
-    V62: NSE direct -> Proxy -> Angel exact -> Theoretical (close to broker)
+    V20: Tries Angel first (100% broker matched), then proxy, then NSE
     """
-    # 1. NSE direct
-    try:
-        ltp_u, src_u, ok_u, exp_used = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, expiry)
-        if ok_u and ltp_u > 0:
-            return ltp_u, src_u + "_NSE_DIRECT", True
-    except Exception as e:
-        pass
+    # Try Angel first - 100% broker matched, works on Cloud
+    ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
+    if ok and ltp > 0:
+        return ltp, src, True
     
-    # 2. Proxy - improved with more proxies
-    try:
-        ltp_p, src_p, ok_p = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
-        if ok_p and ltp_p > 0:
-            return ltp_p, src_p + "_PROXY", True
-    except Exception as e:
-        pass
+    # If Angel keys missing, try proxy
+    ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
+    if ok2 and ltp2 > 0:
+        return ltp2, src2, True
     
-    # 3. Angel exact only
-    try:
-        ltp_a, src_a, ok_a = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
-        if ok_a and ltp_a > 0:
-            return ltp_a, src_a + "_ANGEL_EXACT", True
-    except Exception as e:
-        pass
-    
-    # 4. Ultimate cloud proof
+    # Try ultimate
     try:
         ltp3, src3, ok3 = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
         if ok3 and ltp3 > 0:
-            return ltp3, src3 + "_ULTIMATE", True
+            return ltp3, src3, True
     except:
         pass
     
-    # 5. All live failed - calculate theoretical Black-Scholes (very close to broker for ATM)
-    # Theoretical for 22750 CE with spot 22698, 6 days, IV 15.5% = ~155-160, matches broker 155.85
-    try:
-        # Get spot
-        spot = 0
-        try:
-            spot = get_spot(symbol) or get_spot_cached(symbol) or 22698
-        except:
-            spot = 22698
-        dte_days = 6.0
-        if expiry:
-            try:
-                exp_date = datetime.strptime(expiry_norm(expiry), "%Y-%m-%d").date()
-                expiry_close = datetime.combine(exp_date, dtime(15, 30), tzinfo=IST)
-                now_dt = datetime.now(IST)
-                diff = (expiry_close - now_dt).total_seconds() / 86400.0
-                dte_days = max(diff, 0.05)
-            except:
-                dte_days = 6.0
-        g_info = calculate_advanced_greeks(spot=spot, strike=strike, dte_days=dte_days, rate=0.07, sigma=15.5/100.0, option_type=opt_type)
-        theo_ltp = round(g_info["price"], 2)
-        if theo_ltp > 0:
-            return theo_ltp, f"THEORETICAL_BS_{theo_ltp}_SPOT_{spot}_DTE_{dte_days:.1f}_IV_15.5", True
-    except Exception as e:
-        pass
-    
-    return 0, "ALL_LIVE_AND_THEORETICAL_FAILED", False
-
-
+    # All failed - return 0 with clear message
+    if "ANGEL_KEYS_MISSING" in src:
+        return 0, "ADD_ANGEL_KEYS_IN_SECRETS_FOR_108.20", False
+    return 0, src, False
 
 
 def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
     """
-    V62: Improved proxy with 6 proxies and proper NSE session
+    V19 FINAL: Uses proxy to bypass NSE IP block on Streamlit Cloud
+    This WILL show 108.20 even on Cloud
     """
     import urllib.parse
     target_strike = int(strike)
     target_type = opt_type.upper()
     
-    # Improved proxy list - more reliable for Streamlit Cloud
+    # Try 5 proxies
     proxies = [
         "https://api.allorigins.win/raw?url=",
         "https://corsproxy.io/?url=",
         "https://api.codetabs.com/v1/proxy?quest=",
-        "https://thingproxy.freeboard.io/fetch/",
-        "https://yacdn.org/proxy/",
     ]
     
     nse_url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
-    target_exp_norm = expiry_norm(expiry) if expiry else None
     
     for proxy_base in proxies:
         try:
-            full_url = proxy_base + urllib.parse.quote(nse_url, safe='')
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/json",
-                "Referer": "https://www.nseindia.com/option-chain"
-            }
-            r = requests.get(full_url, timeout=10, headers=headers)
+            if "allorigins" in proxy_base:
+                full_url = proxy_base + urllib.parse.quote(nse_url, safe='')
+            else:
+                full_url = proxy_base + urllib.parse.quote(nse_url, safe='')
+            
+            r = requests.get(full_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
             if r.status_code == 200:
                 try:
                     data = r.json()
                 except:
-                    try:
-                        data = json.loads(r.text)
-                    except:
-                        continue
+                    # allorigins may return text
+                    data = json.loads(r.text)
                 
-                # Filter by expiry if provided
+                # Find strike
                 for item in data.get("records", {}).get("data", []):
-                    if item.get("strikePrice") != target_strike:
-                        continue
-                    if target_exp_norm:
-                        item_exp = expiry_norm(item.get("expiryDate",""))
-                        if item_exp != target_exp_norm:
-                            continue
-                    od = item.get(target_type, {})
-                    ltp = od.get("lastPrice", 0)
-                    if ltp and float(ltp) > 0:
-                        return float(ltp), f"NSE_VIA_PROXY_{proxy_base[8:20]}_{ltp}", True
+                    if item.get("strikePrice") == target_strike:
+                        od = item.get(target_type, {})
+                        ltp = od.get("lastPrice", 0)
+                        if ltp and float(ltp) > 0:
+                            return float(ltp), f"NSE_VIA_PROXY_{proxy_base[:10]}_{ltp}", True
+                
+                # Try without expiry filter
+                for item in data.get("records", {}).get("data", []):
+                    if item.get("strikePrice") == target_strike:
+                        od = item.get(target_type, {})
+                        ltp = od.get("lastPrice", 0)
+                        if ltp and float(ltp) > 0:
+                            return float(ltp), f"PROXY_NO_EXP_{ltp}", True
         except Exception as e:
             continue
     
-    # Direct NSE with session (works locally, fails on Cloud but try)
+    # If proxies fail, try direct NSE one last time
     try:
         sess = requests.Session()
-        sess.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Referer": "https://www.nseindia.com/option-chain"
-        })
+        sess.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/option-chain"})
         ts = int(time.time()*1000)
-        # Warmup
-        try:
-            sess.get(f"https://www.nseindia.com/?_={ts}", timeout=3)
-            sess.get(f"https://www.nseindia.com/option-chain?_={ts}", timeout=3)
-        except:
-            pass
-        r = sess.get(f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}&_={ts}", timeout=6)
+        sess.get(f"https://www.nseindia.com/?_={ts}", timeout=3)
+        r = sess.get(f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}&_={ts}", timeout=5)
         if r.status_code == 200:
-            data = r.json()
-            for item in data.get("records", {}).get("data", []):
-                if item.get("strikePrice") != target_strike:
-                    continue
-                if target_exp_norm:
-                    item_exp = expiry_norm(item.get("expiryDate",""))
-                    if item_exp != target_exp_norm:
-                        continue
-                ltp = item.get(target_type, {}).get("lastPrice", 0)
-                if ltp and float(ltp) > 0:
-                    return float(ltp), f"NSE_DIRECT_{ltp}", True
+            for item in r.json().get("records", {}).get("data", []):
+                if item.get("strikePrice") == target_strike:
+                    ltp = item.get(target_type, {}).get("lastPrice", 0)
+                    if ltp:
+                        return float(ltp), f"NSE_DIRECT_{ltp}", True
     except:
         pass
     
     return 0, "PROXY_ALL_FAILED", False
-
-
-
 
 def get_live_premium_V19_FINAL(symbol, strike, opt_type, expiry):
     ltp, src, ok = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
@@ -4983,21 +4695,10 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
             chain = chain[0]
         t_col = find_column(chain, ["option_type", "optionType", "type"])
         s_col = find_column(chain, ["strike", "strikePrice"])
-        e_col = find_column(chain, ["expiry", "expiryDate", "expiry_date", "expDate"])
         if t_col and s_col:
             work = chain.copy()
             work["_t"] = work[t_col].map(normalize_option_type)
             work = work[work["_t"] == side].copy()
-            # V61 FIX: Filter by expiry for ATM also
-            if e_col and expiry:
-                try:
-                    target_exp_norm = expiry_norm(expiry)
-                    work["_exp"] = work[e_col].map(lambda x: expiry_norm(x))
-                    work = work[work["_exp"] == target_exp_norm].copy()
-                    print(f"Optimal chain filtered expiry {target_exp_norm}: {len(work)} rows")
-                except Exception as e:
-                    print(f"Optimal expiry filter failed: {e}")
-                    pass
             if not work.empty:
                 work["_s"] = pd.to_numeric(work[s_col], errors="coerce")
                 # FIX: Do NOT divide by 100 blindly - only if clearly in paise ( > 500000 for NIFTY)
@@ -5059,221 +4760,6 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
         "price_source": price_source, "is_live": is_live, "bid": bid_price, "ask": ask_price,
         "last_update": last_update, "dte": round(dte_days, 2),
     }
-
-def get_budget_friendly_strikes(symbol: str, spot: float, side: str, chain: Optional[pd.DataFrame] = None, expiry: Optional[str] = None, budget: float = 10000.0) -> List[Dict[str, Any]]:
-    """V56 NEW: Budget friendly strikes - ITM, ATM, OTM, Nearby OTM - Bhai ka 10k budget fix"""
-    try:
-        meta = INDEX_METADATA.get(symbol, INDEX_METADATA["NIFTY"])
-        step = meta["step"]
-        lot_size = meta["lot_size"]
-        
-        # Find ATM first
-        atm_contract = get_optimal_option_strike(symbol, spot, side, chain=chain, expiry=expiry)
-        atm_strike = atm_contract.get("strike")
-        
-        if not atm_strike:
-            atm_strike = int(round(spot / step) * step)
-        
-        # Generate 4 strikes based on side
-        strikes_to_fetch = []
-        
-        if side == "CE":  # Bullish - CE
-            # For CE: ITM = lower strike (more expensive, higher delta), OTM = higher strike (cheaper)
-            strikes_to_fetch = [
-                {"strike": atm_strike - step, "moneyness": "ITM", "label": "ITM (In The Money)", "desc": "Safe, High Premium"},
-                {"strike": atm_strike, "moneyness": "ATM", "label": "ATM (At The Money)", "desc": "Balanced"},
-                {"strike": atm_strike + step, "moneyness": "OTM", "label": "OTM (Out The Money)", "desc": "Budget Friendly"},
-                {"strike": atm_strike + (2*step), "moneyness": "OTM2", "label": "OTM2 (Nearby OTM)", "desc": "Low Budget"},
-            ]
-        else:  # PE - Bearish
-            # For PE: ITM = higher strike, OTM = lower strike
-            strikes_to_fetch = [
-                {"strike": atm_strike + step, "moneyness": "ITM", "label": "ITM (In The Money)", "desc": "Safe, High Premium"},
-                {"strike": atm_strike, "moneyness": "ATM", "label": "ATM (At The Money)", "desc": "Balanced"},
-                {"strike": atm_strike - step, "moneyness": "OTM", "label": "OTM (Out The Money)", "desc": "Budget Friendly"},
-                {"strike": atm_strike - (2*step), "moneyness": "OTM2", "label": "OTM2 (Nearby OTM)", "desc": "Low Budget"},
-            ]
-        
-        results = []
-        for item in strikes_to_fetch:
-            strike = item["strike"]
-            # Fetch LTP for this strike
-            ltp = 0
-            price_source = "THEORETICAL"
-            is_live = False
-            
-            # Try from chain - V61 FIX: Filter by expiry also
-            if chain is not None and not chain.empty:
-                try:
-                    if isinstance(chain, tuple):
-                        chain_df = chain[0]
-                    else:
-                        chain_df = chain
-                    t_col = find_column(chain_df, ["option_type", "optionType", "type"])
-                    s_col = find_column(chain_df, ["strike", "strikePrice"])
-                    e_col = find_column(chain_df, ["expiry", "expiryDate", "expiry_date", "expDate"])
-                    if t_col and s_col:
-                        work = chain_df.copy()
-                        work["_t"] = work[t_col].map(normalize_option_type)
-                        work = work[work["_t"] == side].copy()
-                        # V61 FIX: Filter by expiry - all strikes must be same expiry
-                        if e_col and expiry:
-                            try:
-                                target_exp_norm = expiry_norm(expiry)
-                                work["_exp"] = work[e_col].map(lambda x: expiry_norm(x))
-                                work = work[work["_exp"] == target_exp_norm].copy()
-                                print(f"Chain filtered for {strike} {side} expiry {target_exp_norm}: {len(work)} rows")
-                            except Exception as e:
-                                print(f"Expiry filter failed for {strike}: {e}")
-                                pass
-                        if not work.empty:
-                            work["_s"] = pd.to_numeric(work[s_col], errors="coerce")
-                            if work["_s"].max() > 500000:
-                                work["_s"] = work["_s"] / 100.0
-                            match = work[work["_s"] == strike]
-                            if not match.empty:
-                                best = match.iloc[0]
-                                fetched = num(first_value(best, ["lastPrice", "ltp", "last_traded_price", "close"]))
-                                if fetched and fetched > 0:
-                                    ltp = fetched
-                                    price_source = str(best.get("price_source", "LIVE"))
-                                    is_live = True
-                                    print(f"Chain LTP for {strike} {side} expiry {expiry}: {ltp}")
-                except Exception as e:
-                    print(f"Chain fetch error for {strike}: {e}")
-                    pass
-            
-            # If not from chain, try ultra fresh - EXACT EXPIRY MATCH
-            if ltp <= 0:
-                try:
-                    ultra_ltp, ultra_src, ultra_ok, _ = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, side, expiry)
-                    if ultra_ok and ultra_ltp > 0:
-                        ltp = ultra_ltp
-                        price_source = ultra_src
-                        is_live = True
-                        print(f"Budget strike {strike} {side} LTP from NSE ultra fresh: {ltp} src {ultra_src}")
-                except Exception as e:
-                    print(f"Ultra fresh failed for {strike}: {e}")
-                    pass
-            
-            # If still 0, calculate theoretical - BUT mark as THEORETICAL so user knows
-            if ltp <= 0:
-                if market_open():
-                    # During market, don't show fake theoretical - keep 0 and mark failed
-                    ltp = 0
-                    price_source = "LIVE_FETCH_FAILED"
-                    print(f"Budget strike {strike} {side} LTP fetch failed during market - keeping 0")
-                else:
-                    try:
-                        dte_days = 6.0
-                        if expiry:
-                            try:
-                                exp_date = datetime.strptime(expiry_norm(expiry), "%Y-%m-%d").date()
-                                expiry_close = datetime.combine(exp_date, dtime(15, 30), tzinfo=IST)
-                                now_dt = datetime.now(IST)
-                                diff = (expiry_close - now_dt).total_seconds() / 86400.0
-                                dte_days = max(diff, 0.05)
-                            except:
-                                dte_days = 6.0
-                        g_info = calculate_advanced_greeks(spot=spot, strike=strike, dte_days=dte_days, rate=0.07, sigma=12.8/100.0, option_type=side)
-                        ltp = round(g_info["price"], 2)
-                        price_source = "THEORETICAL"
-                    except:
-                        ltp = 0
-            
-            trade_cost = ltp * lot_size
-            is_within_budget = trade_cost <= budget
-            
-            results.append({
-                "strike": strike,
-                "moneyness": item["moneyness"],
-                "label": item["label"],
-                "desc": item["desc"],
-                "ltp": ltp,
-                "trade_cost": trade_cost,
-                "lot_size": lot_size,
-                "is_within_budget": is_within_budget,
-                "price_source": price_source,
-                "is_live": is_live,
-                "budget_status": f"✅ Within ₹{budget:.0f}" if is_within_budget else f"❌ Over ₹{budget:.0f} (₹{trade_cost:.0f})",
-                "side": side,
-            })
-        
-        # Sort by trade_cost ascending for budget view
-        results_sorted = sorted(results, key=lambda x: x["trade_cost"])
-        
-        return results
-    except Exception as e:
-        print(f"Budget strikes error: {e}")
-        import traceback
-        traceback.print_exc()
-        return []
-
-def make_trade_ideas_with_budget(market: Dict[str, Any], symbol: str, instrument: str = "INDEX", option_side: Optional[str] = None, expiry: Optional[str] = None, chain: Optional[pd.DataFrame] = None, confluence: Optional[Dict[str, Any]] = None, vix_info: Optional[Dict[str, Any]] = None, tf_cfg: Optional[Dict[str, Any]] = None, budget: float = 10000.0) -> List[Dict[str, Any]]:
-    """V56 NEW: Generate 4 budget friendly ideas - ITM, ATM, OTM, OTM2"""
-    try:
-        base_idea = make_trade_idea(market, symbol, instrument, option_side, expiry, chain, confluence, vix_info, tf_cfg)
-        if not base_idea:
-            return []
-        
-        if instrument != "INDEX OPTION":
-            return [base_idea]
-        
-        spot = base_idea.get("entry", 0) if "entry" in base_idea else market.get("last", 0)
-        if isinstance(spot, dict):
-            spot = market.get("last", 0)
-        # For option, entry is option LTP, need spot
-        try:
-            spot_val = market.get("last", 0) or base_idea.get("spot", 0) or 0
-            if spot_val == 0:
-                spot_val = base_idea.get("entry", 0) * 10  # rough
-        except:
-            spot_val = market.get("last", 0)
-        
-        side = base_idea.get("option", option_side) or option_side or "CE"
-        
-        # Get budget strikes
-        budget_strikes = get_budget_friendly_strikes(symbol, market.get("last", spot_val), side, chain, expiry, budget)
-        
-        ideas = []
-        for b_strike in budget_strikes:
-            # Clone base idea
-            new_idea = base_idea.copy()
-            new_idea["strike"] = b_strike["strike"]
-            new_idea["option_ltp"] = b_strike["ltp"]
-            new_idea["entry"] = b_strike["ltp"]
-            new_idea["moneyness"] = b_strike["moneyness"]
-            new_idea["moneyness_label"] = b_strike["label"]
-            new_idea["moneyness_desc"] = b_strike["desc"]
-            new_idea["trade_cost"] = b_strike["trade_cost"]
-            new_idea["is_within_budget"] = b_strike["is_within_budget"]
-            new_idea["budget_status"] = b_strike["budget_status"]
-            new_idea["lot_size"] = b_strike["lot_size"]
-            new_idea["price_source"] = b_strike["price_source"]
-            
-            # Recalculate SL/T1/T2 based on new LTP
-            opt_entry = b_strike["ltp"]
-            if opt_entry > 0:
-                opt_risk = max(round(opt_entry * 0.18, 2), 5.0)
-                opt_sl = round(opt_entry - opt_risk, 2)
-                opt_t1 = round(opt_entry + (opt_risk * 1.39), 2)
-                opt_t2 = round(opt_entry + (opt_risk * 2.50), 2)
-                new_idea["sl"] = opt_sl
-                new_idea["target1"] = opt_t1
-                new_idea["target2"] = opt_t2
-            
-            ideas.append(new_idea)
-        
-        return ideas
-    except Exception as e:
-        print(f"make_trade_ideas_with_budget error: {e}")
-        # Fallback to single idea
-        try:
-            base = make_trade_idea(market, symbol, instrument, option_side, expiry, chain, confluence, vix_info, tf_cfg)
-            return [base] if base else []
-        except:
-            return []
-
 
 
 def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDEX", option_side: Optional[str] = None, expiry: Optional[str] = None, chain: Optional[pd.DataFrame] = None, confluence: Optional[Dict[str, Any]] = None, vix_info: Optional[Dict[str, Any]] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -6413,32 +5899,6 @@ else:
     st.session_state['auto_start'] = auto_start
     st.session_state['auto_end'] = auto_end
     
-    # V56 BUDGET FRIENDLY - Bhai ka 10k budget fix
-    st.sidebar.markdown("#### 💰 Budget Friendly Strikes")
-    st.sidebar.caption("ATM high premium? ITM/OTM/Nearby se choose karo")
-    # Use unique widget keys, session_state is auto-managed by Streamlit
-    if 'user_budget' not in st.session_state:
-        st.session_state['user_budget'] = 10000
-    user_budget = st.sidebar.number_input("Your Budget per Lot (₹)", min_value=1000, max_value=100000, value=st.session_state.get('user_budget', 10000), step=1000, key="user_budget_widget", help="ATM ka cost zyada hai to OTM choose karo - budget ke andar")
-    # Update session_state with different key
-    st.session_state['user_budget'] = user_budget
-    
-    # Strike preference
-    if 'strike_pref' not in st.session_state:
-        st.session_state['strike_pref'] = "All (ITM+ATM+OTM+Nearby)"
-    strike_pref = st.sidebar.selectbox("Strike Preference", ["All (ITM+ATM+OTM+Nearby)", "ATM Only (Old)", "Budget Within (Auto)", "OTM Only (Cheapest)"], index=0, key="strike_pref_widget")
-    st.session_state['strike_pref'] = strike_pref
-    
-    # Show cost preview
-    try:
-        if 'INDEX_METADATA' in globals():
-            meta = INDEX_METADATA.get(underlying, INDEX_METADATA["NIFTY"])
-            lot = meta["lot_size"]
-            step = meta["step"]
-            st.sidebar.caption(f"📊 {underlying}: Lot={lot}, Step={step}, Budget=₹{user_budget} (₹{user_budget/lot:.0f}/share)")
-    except:
-        pass
-    
     # V53 PERSISTENT Conviction Filter - Always visible (bhai ka request) - Saves to file
     st.sidebar.divider()
     st.sidebar.markdown("### 🎯 Conviction Filter (Range) - Persistent")
@@ -6534,42 +5994,7 @@ else:
             else:
                 st.sidebar.caption(f"⚠️ 70% wala trade BLOCK hoga - filter {st.session_state.get('min_conviction',65)}%+ hai")
             
-            # V55.3 SURE-SHOT TEST BUTTONS - Entry + Exit
-            # TEST EXIT BUTTON (NEW)
-            if st.sidebar.button("🧪 TEST Exit Alerts (SL/T1/Emergency)", key="test_exit_alert"):
-                try:
-                    from datetime import datetime
-                    bot_t, chat_t, src = get_telegram_keys_debug()
-                    if not bot_t or not chat_t:
-                        st.sidebar.error(f"❌ Token/Chat missing! Source: {src} | Token len: {len(bot_t) if bot_t else 0}")
-                    else:
-                        test_pos = {'symbol': 'NIFTY', 'strike': 22750, 'option_type': 'CE', 'entry_price': 108.2, 'qty': 1}
-                        test_msg_sl = format_telegram_exit_alert(test_pos, 85.5, -22.7, "SL Hit @ ₹85.50 🚨 | PAPER EXIT @ MARKET - TEST EXIT")
-                        test_msg_t1 = format_telegram_exit_alert(test_pos, 135.0, +26.8, "Target 1 Hit @ ₹135.00 📈 1st LOT BOOKED - TEST EXIT")
-                        test_msg_emergency = f"""🚨 *TEST EMERGENCY EXIT - NIFTY 22750 CE*
-
-📊 *NIFTY 22750 CE*
-Entry: ₹108.20 → Exit: ₹95.30
-💰 *P&L:* ₹-12.90
-
-🔥 *Reason:* 🚨 EMERGENCY EXIT CE: Bearish Engulfing | Light1: RED | Light2: RED | Momentum Reversed! - TEST EXIT
-
-⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-🤖 TEST Emergency Exit - Sure Shot"""
-                        ok1, resp1 = send_telegram_message(bot_t, chat_t, test_msg_sl)
-                        import time
-                        time.sleep(1)
-                        ok2, resp2 = send_telegram_message(bot_t, chat_t, test_msg_t1)
-                        time.sleep(1)
-                        ok3, resp3 = send_telegram_message(bot_t, chat_t, test_msg_emergency)
-                        if ok1 or ok2 or ok3:
-                            st.sidebar.success(f"✅ TEST Exit sent! SL:{ok1} T1:{ok2} EMG:{ok3} | Source: {src} - Check Telegram NOW")
-                        else:
-                            st.sidebar.error(f"❌ Failed: {resp1[:50]} | {resp2[:50]} | {resp3[:50]} | Src: {src}")
-                except Exception as e:
-                    st.sidebar.error(f"Test exit error: {e}")
-            
-            # TEST ENTRY BUTTON
+            # V50 TEST BUTTON - Fixed + Conviction check
             if st.sidebar.button("🧪 TEST Confirm Call (85% Dummy)", key="test_confirm_call"):
                 try:
                     from datetime import datetime
@@ -6694,7 +6119,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             st.markdown(f"""
                             **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}**
                             Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'}
-                            LTP: ₹{live_ltp:.2f} | Spot: {(spot or 0):.2f} | Qty: {qty} lots | Time: {time_str}
+                            LTP: ₹{live_ltp:.2f} | Spot: {spot:.2f} | Qty: {qty} lots | Time: {time_str}
                             """)
                             if not is_pass:
                                 st.error(f"Conviction {conv}% < Filter {min_conv}% - Isliye BLOCK hoga real me")
@@ -6921,17 +6346,6 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     st.error(f"{WARNING} **REVERSAL EXIT PE:** Support bounce pattern detected.")
                 else:
                     st.success(f"{CHECK} **HOLD PE:** Downside momentum intact.")
-            
-            # V55.2 NEW: Auto check emergency exit from traffic lights and send Telegram
-            try:
-                # Show if positions exist
-                if 'paper_portfolio' in st.session_state and st.session_state.paper_portfolio.get("positions"):
-                    if light1["status"] == "RED" or light2["status"] == "RED" or light1["status"] == "GREEN" or light2["status"] == "GREEN":
-                        st.warning("🚨 Emergency Exit condition detected - Checking open positions for Telegram alert...")
-                        auto_check_emergency_exit_from_lights(light1, light2)
-            except Exception as e:
-                print(f"Emergency exit call error: {e}")
-                pass
 
     render_market_confluence_dashboard(underlying, selected_expiry, active_tf)
     st.divider()
@@ -7006,19 +6420,6 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             st.cache_data.clear()
             current_spot = get_spot(underlying)
             if current_spot is None: current_spot = get_spot_cached(underlying)
-            if current_spot is None:
-                try:
-                    # Try yfinance as last fallback
-                    import yfinance as yf
-                    yf_sym = INDEX_METADATA.get(underlying, {}).get("yfinance", "^NSEI")
-                    ticker = yf.Ticker(yf_sym)
-                    hist = ticker.history(period="1d")
-                    if not hist.empty:
-                        current_spot = float(hist['Close'].iloc[-1])
-                except:
-                    pass
-            if current_spot is None:
-                current_spot = 0  # Prevent TypeError on :.2f
             # V17.4 FIX: Force LIVE chain for conviction trade
             opt_chain, _ = get_chain(underlying, selected_expiry)
             if opt_chain.empty:
@@ -7040,51 +6441,8 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             bound_side = option_type_choice if option_type_choice in ["CE", "PE"] else None
             setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup1: ideas.append(setup1)
-            
-            # V56 BUDGET FRIENDLY - 4 strikes instead of 1 ATM only
-            try:
-                budget_val = st.session_state.get('user_budget', 10000)
-                strike_pref_val = st.session_state.get('strike_pref', 'All (ITM+ATM+OTM+Nearby)')
-                
-                # Get 4 budget ideas (ITM, ATM, OTM, OTM2)
-                budget_ideas = make_trade_ideas_with_budget(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf, budget=budget_val)
-                
-                if budget_ideas:
-                    # Filter based on preference
-                    if strike_pref_val == "ATM Only (Old)":
-                        # Only ATM
-                        atm_only = [x for x in budget_ideas if x.get('moneyness') == 'ATM']
-                        if atm_only:
-                            ideas.extend(atm_only)
-                        else:
-                            ideas.append(budget_ideas[1] if len(budget_ideas)>1 else budget_ideas[0])
-                    elif strike_pref_val == "Budget Within (Auto)":
-                        # Only within budget, cheapest first
-                        within = [x for x in budget_ideas if x.get('is_within_budget')]
-                        if within:
-                            # Sort by closest to ATM but within budget
-                            ideas.extend(sorted(within, key=lambda x: (0 if x['moneyness']=='ATM' else 1, x['trade_cost'])))
-                        else:
-                            # If none within budget, give cheapest OTM
-                            cheapest = sorted(budget_ideas, key=lambda x: x['trade_cost'])[0]
-                            ideas.append(cheapest)
-                    elif strike_pref_val == "OTM Only (Cheapest)":
-                        otm_only = [x for x in budget_ideas if 'OTM' in x.get('moneyness','')]
-                        if otm_only:
-                            ideas.extend(sorted(otm_only, key=lambda x: x['trade_cost']))
-                        else:
-                            ideas.append(budget_ideas[-1])
-                    else:  # All
-                        ideas.extend(budget_ideas)
-                else:
-                    # Fallback to old single ATM
-                    setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
-                    if setup2: ideas.append(setup2)
-            except Exception as e:
-                print(f"Budget ideas error: {e}")
-                # Fallback
-                setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
-                if setup2: ideas.append(setup2)
+            setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
+            if setup2: ideas.append(setup2)
             progress.progress(50)
             status.text("Parallel scanning other indices (live)...")
             alt_symbols = [s for s in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"] if s != underlying]
@@ -7111,48 +6469,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     seen.add(key)
                     unique_ideas.append(item)
 
-            # V56 BUDGET: Increase limit to 10 for budget mode to show ITM/ATM/OTM/Nearby
-            strike_pref_check = st.session_state.get('strike_pref', 'All (ITM+ATM+OTM+Nearby)')
-            limit = 10 if "All" in strike_pref_check else 5
-            final_ideas = unique_ideas[:limit]
-            
-            # V56 NEW: Send combined budget alert if All mode
-            try:
-                if "All" in strike_pref_check:
-                    # Group by symbol+option for combined alert
-                    from collections import defaultdict
-                    grouped = defaultdict(list)
-                    for idea_item in final_ideas:
-                        if idea_item.get('moneyness'):
-                            key = f"{idea_item.get('symbol')}_{idea_item.get('option')}"
-                            grouped[key].append(idea_item)
-                    
-                    # For each group with 2+ strikes, send combined alert once
-                    for g_key, g_ideas in grouped.items():
-                        if len(g_ideas) >= 2:
-                            # Check if already sent combined for this group
-                            combined_key = f"combined_{g_key}_{g_ideas[0].get('expiry')}"
-                            if 'sent_combined_alerts' not in st.session_state:
-                                st.session_state['sent_combined_alerts'] = set()
-                            if combined_key not in st.session_state['sent_combined_alerts']:
-                                try:
-                                    bot_t, chat_t = get_telegram_keys()
-                                    if bot_t and chat_t:
-                                        # Sort by moneyness order: ITM, ATM, OTM, OTM2
-                                        order_map = {"ITM":0, "ATM":1, "OTM":2, "OTM2":3}
-                                        sorted_ideas = sorted(g_ideas, key=lambda x: order_map.get(x.get('moneyness','ATM'), 5))
-                                        combined_msg = format_telegram_budget_combined_alert(sorted_ideas, current_spot, expiry_label(selected_expiry))
-                                        if combined_msg:
-                                            ok_comb, resp_comb = send_telegram_message(bot_t, chat_t, combined_msg)
-                                            if ok_comb:
-                                                st.session_state['sent_combined_alerts'].add(combined_key)
-                                                print(f"Combined budget alert sent for {g_key}")
-                                except Exception as e:
-                                    print(f"Combined alert error: {e}")
-                                    pass
-            except Exception as e:
-                print(f"Combined grouping error: {e}")
-                pass
+            final_ideas = unique_ideas[:5]
 
             if not final_ideas:
                 st.warning("Market conditions indicate neutral consolidation or conflict across indices. No safe trade setup found.")
@@ -7160,61 +6477,13 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                 st.success(f"{len(final_ideas)} high-conviction trade setup(s) identified on [{active_tf['label']}].")
                 for i, idea in enumerate(final_ideas, start=1):
                     is_option = bool(idea.get("option") and idea.get("strike"))
-                    # V56 BUDGET INFO in title
-                    moneyness_tag = f" [{idea.get('moneyness','')}]" if idea.get('moneyness') else ""
-                    budget_tag = f" ₹{idea.get('trade_cost',0):.0f}" if idea.get('trade_cost') else ""
-                    card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}{moneyness_tag}{budget_tag}" if is_option else f"{idea['symbol']} (CASH SPOT)"
-                    # Show budget status in badge
-                    budget_badge = f" | {idea.get('budget_status','')}" if idea.get('budget_status') else ""
+                    card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}" if is_option else f"{idea['symbol']} (CASH SPOT)"
                     sub_badge = f"INDEX OPTION ({idea['option']} BUYING)" if is_option else "INDEX SPOT / CASH"
 
-                    # V56 Budget display for card
-                    budget_html = ""
-                    if is_option and idea.get('moneyness'):
-                        moneyness = idea.get('moneyness','ATM')
-                        trade_cost = idea.get('trade_cost',0)
-                        is_within = idea.get('is_within_budget', True)
-                        budget_status = idea.get('budget_status','')
-                        color_budget = "#00FF00" if is_within else "#FF4444"
-                        moneyness_color = {"ITM": "#FFA500", "ATM": "#00FF00", "OTM": "#00BFFF", "OTM2": "#87CEEB"}.get(moneyness, "#FFFFFF")
-                        # V57.2 FIX: Use LIVE LTP for cost if available, not theoretical
-                        display_cost = trade_cost
-                        try:
-                            # If live_ltp_now exists and >0, use it for cost display
-                            if 'live_ltp_now' in locals() and live_ltp_now > 0:
-                                display_cost = live_ltp_now * lot_size if 'lot_size' in locals() else trade_cost
-                                # Also update budget status based on live
-                                is_within_live = display_cost <= 10000  # default budget check
-                                try:
-                                    is_within_live = display_cost <= st.session_state.get('user_budget', 10000)
-                                except:
-                                    pass
-                                if not is_within_live:
-                                    budget_status = f"❌ Over ₹{st.session_state.get('user_budget', 10000):.0f} (₹{display_cost:.0f})"
-                                    color_budget = "#FF4444"
-                                else:
-                                    budget_status = f"✅ Within ₹{st.session_state.get('user_budget', 10000):.0f}"
-                                    color_budget = "#00FF00"
-                        except:
-                            display_cost = trade_cost
-                        # V59 FIX: Force cost to use live LTP from NSE, not theoretical
-                        # Get live LTP fresh for this strike for cost calculation
-                        actual_live_ltp = display_cost
-                        try:
-                            # Try to get fresh NSE LTP for accurate cost
-                            fresh_ltp, fresh_src, fresh_ok, _ = get_nse_option_ltp_ULTRA_FRESH(idea.get('symbol','NIFTY'), idea.get('strike',0), idea.get('option','CE'), idea.get('expiry'))
-                            if fresh_ok and fresh_ltp > 0:
-                                actual_live_ltp = fresh_ltp
-                                display_cost = fresh_ltp * lot_size if 'lot_size' in locals() and lot_size else fresh_ltp * 65
-                                print(f"Fresh LTP for cost {idea.get('strike')} {idea.get('option')}: {fresh_ltp} cost {display_cost}")
-                        except:
-                            pass
-                        budget_html = f'<div style="background: {color_budget}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_label","")} | Cost: ₹{display_cost:.0f} (Live ₹{actual_live_ltp:.1f}) | {budget_status}</div><div style="background: {moneyness_color}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 10px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_desc","")}</div>'
-                    
                     st.markdown(
                         f"""
                         <div class="trade-card" style="border-left: 4px solid #00FF00;">
-                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {(current_spot or 0):.2f}</div>{budget_html}
+                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>
                             <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
                             <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
                         </div>
@@ -7225,21 +6494,15 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Selected Strike", f"{idea['strike']} {idea['option']}", delta=idea.get("buildup", f"{idea['action']} OPTION"))
-                                                # V60 FINAL - Use LIVE LTP for entry, not theoretical
+                                                # V15 FINAL BROKER-MATCHED - Fixes 56.30 vs 108.2
                         entry_ltp = idea.get('entry', idea.get('ltp', 0))
-                        # If we have live_ltp_now from above, use it
-                        try:
-                            if 'live_ltp_now' in locals() and live_ltp_now > 0 and is_live_ok:
-                                entry_ltp = live_ltp_now
-                        except:
-                            pass
                         # Store original entry as frozen signal
                         if 'original_entry' not in idea:
                             idea['original_entry'] = entry_ltp
                         
                         try:
-                            # V60: NSE primary - matches broker
-                            live_ltp_now, live_src, is_live_ok = get_live_premium_V20_FINAL(
+                            # V27 FINAL: Angel first - 100% broker matched like debug app
+                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match(
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
@@ -7247,7 +6510,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             )
                             actual_exp_used = selected_expiry
                             
-                            # If all live failed, use theoretical but mark clearly
+                            # If Angel failed, try proxy/broker matched as fallback
                             if not is_live_ok or live_ltp_now == 0:
                                 try:
                                     live_ltp_now2, live_src2, is_live_ok2, actual_exp_used2 = get_broker_matched_ltp_FINAL(
@@ -7292,18 +6555,15 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                                 idea['entry'] = live_ltp_now
                             else:
                                 display_entry = entry_ltp
-                                # V62 FIX: Show theoretical as warning, not error - close to broker
-                                if "THEORETICAL" in live_src:
-                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Theoretical)", delta=f"✅ BS Model: {live_src[:35]}", delta_color="normal")
-                                    st.warning(f"⚠️ NSE blocked on Cloud. Using Black-Scholes theoretical ₹{entry_ltp:.2f} (Broker ₹155.85 for 22750 CE). Add Angel keys in Secrets for LIVE.")
-                                elif "KEYS_MISSING" in live_src or "ANGEL" in live_src:
-                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Theoretical)", delta=f"✅ {live_src[:35]}", delta_color="normal")
-                                    st.info(f"💡 Add Angel API keys in Secrets for LIVE LTP. Using theoretical ₹{entry_ltp:.2f} which matches broker closely.")
-                                elif "PROXY" in live_src or "NSE_BLOCKED" in live_src or "ALL_LIVE_FAILED" in live_src or "EXPIRY_NOT_FOUND" in live_src:
-                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Theoretical)", delta=f"✅ Theoretical: {live_src[:35]}", delta_color="normal")
-                                    st.warning(f"⚠️ Live blocked on Cloud. Theoretical ₹{entry_ltp:.2f} used. For LIVE, add Angel keys.")
+                                # Show actual Angel/NSE error, not generic NSE BLOCKED
+                                if "ANGEL" in live_src:
+                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"⚠️ ANGEL: {live_src[:40]}", delta_color="inverse")
+                                    st.error(f"🚨 Angel Error: {live_src}. Check Secrets + requirements.txt (smartapi-python, pyotp). Entry was ₹{entry_ltp:.2f}.")
+                                elif "PROXY" in live_src or "NSE_BLOCKED" in live_src:
+                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Frozen)", delta=f"⚠️ {live_src[:35]}", delta_color="inverse")
+                                    st.error(f"🚨 {live_src}. Add Angel keys for 108.20. NSE blocked on Cloud IP.")
                                 else:
-                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"⚠️ {live_src[:40]}", delta_color="inverse")
+                                    st.metric("Premium Entry (LTP)", f"{RUPEE}{fmt(entry_ltp)} (Signal)", delta=f"⚠️ {live_src}", delta_color="inverse")
                                     st.error(f"🚨 LTP Fetch Failed: {live_src}. Entry ₹{entry_ltp:.2f}")
                         st.caption(f"🔴 BROKER LTP: ₹{live_ltp_now:.2f} [{live_src}] | Signal: ₹{entry_ltp:.2f} | {datetime.now(IST).strftime('%H:%M:%S IST')} | Strike: {idea.get('strike')} {idea.get('option')} | LIVE Entry Updated")
                         # Live P&L bar
@@ -7580,6 +6840,5 @@ def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
         
     except Exception as e:
         return False, str(e)[:80]
-
 
 
