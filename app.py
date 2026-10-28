@@ -1088,16 +1088,28 @@ def format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str):
     rr = idea.get('risk_reward',0)
     conf = idea.get('confidence',0)
     
-    msg = f"""🚀 *NEW TRADE SETUP - {symbol}*
+    # V56 BUDGET INFO
+    moneyness = idea.get('moneyness', 'ATM')
+    moneyness_label = idea.get('moneyness_label', '')
+    trade_cost = idea.get('trade_cost', 0)
+    budget_status = idea.get('budget_status', '')
+    lot_size = idea.get('lot_size', 65)
+    
+    budget_line = ""
+    if trade_cost > 0:
+        budget_emoji = "✅" if idea.get('is_within_budget') else "⚠️"
+        budget_line = f"{budget_emoji} *{moneyness} {moneyness_label}:* ₹{trade_cost:.0f} (₹{idea.get('entry', entry):.2f} x {lot_size}) | {budget_status}\n"
+    
+    msg = f"""🚀 *NEW TRADE SETUP - {symbol} {moneyness}*
 
-📊 *{symbol} {strike} {opt}*
-Type: INDEX OPTION (CE BUYING)
+📊 *{symbol} {strike} {opt}* [{moneyness}]
+Type: INDEX OPTION ({opt} BUYING) - {idea.get('moneyness_desc','')}
 Timeframe: 15 Min (Institutional Breakout)
 Holding: NEXT SESSION
 Conviction: {conf}% | Expiry: {expiry_label_str}
 
 💰 *Entry:* ₹{entry:.2f} (LIVE Broker: ₹{live_ltp:.2f})
-🛑 *SL:* ₹{sl:.2f}
+{budget_line}🛑 *SL:* ₹{sl:.2f}
 🎯 *T1:* ₹{t1:.2f}
 🎯 *T2:* ₹{t2:.2f}
 📈 *R/R:* 1:{rr:.2f}
@@ -1107,8 +1119,56 @@ Conviction: {conf}% | Expiry: {expiry_label_str}
 📝 *Why:* {idea.get('why','')[:200]}...
 
 ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-🤖 Auto Alert from AI Trading Bot"""
+🤖 Auto Alert - Budget Friendly Strikes"""
     return msg
+
+def format_telegram_budget_combined_alert(budget_ideas, live_spot, expiry_label_str):
+    """V56 NEW: Combined alert showing all 4 strikes - ITM, ATM, OTM, OTM2 with costs"""
+    try:
+        if not budget_ideas:
+            return ""
+        
+        symbol = budget_ideas[0].get('symbol','NIFTY')
+        opt = budget_ideas[0].get('option','CE')
+        conf = budget_ideas[0].get('confidence',0)
+        
+        # Build table of strikes
+        lines = []
+        for idea in budget_ideas:
+            moneyness = idea.get('moneyness','ATM')
+            strike = idea.get('strike','')
+            ltp = idea.get('option_ltp', idea.get('entry',0))
+            cost = idea.get('trade_cost',0)
+            within = idea.get('is_within_budget', False)
+            emoji = "✅" if within else "❌"
+            lot = idea.get('lot_size',65)
+            lines.append(f"{emoji} *{moneyness}:* {symbol} {strike} {opt} @ ₹{ltp:.2f} = ₹{cost:.0f} ({lot} lot)")
+        
+        strikes_text = "\n".join(lines)
+        
+        msg = f"""🚀 *BUDGET FRIENDLY TRADE SETUPS - {symbol} {opt}*
+
+📍 Spot: {live_spot:.2f} | Conviction: {conf}% | Expiry: {expiry_label_str}
+💰 Your Budget: ₹{budget_ideas[0].get('budget', 10000):.0f} per lot
+
+{strikes_text}
+
+📊 *Details:*
+- ITM: Safe, High Delta, High Premium (₹12k-25k)
+- ATM: Balanced (₹8k-15k)
+- OTM: Budget Friendly (₹4k-8k) ✅ Recommended for 10k budget
+- OTM2: Cheapest, Low Risk (₹2k-5k) ✅ For small budget
+
+🎯 Same SL/T1/T2 % for all - Choose as per budget!
+⚡ Buildup: {budget_ideas[0].get('buildup','')}
+
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+🤖 Budget Friendly Bot - Trade within your budget"""
+
+        return msg
+    except Exception as e:
+        print(f"Combined budget alert error: {e}")
+        return ""
 
 def format_telegram_exit_alert(position, exit_price, pnl, reason):
     """Format Exit alert for Telegram"""
@@ -1133,20 +1193,11 @@ Entry: ₹{entry:.2f} → Exit: ₹{exit_price:.2f}
 def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
     """Auto send Telegram Entry alert - only once per signal"""
     try:
-        bot_token = secret("TELEGRAM_BOT_TOKEN") or secret("BOT_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN","") if hasattr(st.secrets, '__getitem__') else ""
-        chat_id = secret("TELEGRAM_CHAT_ID") or secret("CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID","") if hasattr(st.secrets, '__getitem__') else ""
-        
-        # Also try direct access
-        try:
-            if not bot_token and "TELEGRAM_BOT_TOKEN" in st.secrets:
-                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
-            if not chat_id and "TELEGRAM_CHAT_ID" in st.secrets:
-                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
-        except:
-            pass
+        # V56 BULLETPROOF - Use all sources
+        bot_token, chat_id = get_telegram_keys()
         
         if not bot_token or not chat_id:
-            return False, "Telegram keys missing"
+            return False, "Telegram keys missing - Check sidebar Token/Chat ID"
         
         # Fix: Don't send if strike is None or empty (BANKNIFTY None None bug)
         if not idea.get('strike') or idea.get('strike') == 'None' or str(idea.get('strike')).lower() == 'none':
@@ -1163,6 +1214,16 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
         
         if signal_key in st.session_state['sent_telegram_signals']:
             return False, "Already sent"
+        
+        # V56: If this is part of budget group, check if we should send combined alert
+        # For All mode, we want to send one combined message with all 4 strikes instead of 4 separate
+        try:
+            # Check if there are other budget ideas in session for same signal
+            budget_group_key = f"{idea.get('symbol')}_{idea.get('option')}_{idea.get('expiry')}"
+            # For now, send individual but with budget info - combined will be handled in scan loop
+            pass
+        except:
+            pass
         
         # Send Telegram
         msg = format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str)
@@ -4898,6 +4959,201 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
         "last_update": last_update, "dte": round(dte_days, 2),
     }
 
+def get_budget_friendly_strikes(symbol: str, spot: float, side: str, chain: Optional[pd.DataFrame] = None, expiry: Optional[str] = None, budget: float = 10000.0) -> List[Dict[str, Any]]:
+    """V56 NEW: Budget friendly strikes - ITM, ATM, OTM, Nearby OTM - Bhai ka 10k budget fix"""
+    try:
+        meta = INDEX_METADATA.get(symbol, INDEX_METADATA["NIFTY"])
+        step = meta["step"]
+        lot_size = meta["lot_size"]
+        
+        # Find ATM first
+        atm_contract = get_optimal_option_strike(symbol, spot, side, chain=chain, expiry=expiry)
+        atm_strike = atm_contract.get("strike")
+        
+        if not atm_strike:
+            atm_strike = int(round(spot / step) * step)
+        
+        # Generate 4 strikes based on side
+        strikes_to_fetch = []
+        
+        if side == "CE":  # Bullish - CE
+            # For CE: ITM = lower strike (more expensive, higher delta), OTM = higher strike (cheaper)
+            strikes_to_fetch = [
+                {"strike": atm_strike - step, "moneyness": "ITM", "label": "ITM (In The Money)", "desc": "Safe, High Premium"},
+                {"strike": atm_strike, "moneyness": "ATM", "label": "ATM (At The Money)", "desc": "Balanced"},
+                {"strike": atm_strike + step, "moneyness": "OTM", "label": "OTM (Out The Money)", "desc": "Budget Friendly"},
+                {"strike": atm_strike + (2*step), "moneyness": "OTM2", "label": "OTM2 (Nearby OTM)", "desc": "Low Budget"},
+            ]
+        else:  # PE - Bearish
+            # For PE: ITM = higher strike, OTM = lower strike
+            strikes_to_fetch = [
+                {"strike": atm_strike + step, "moneyness": "ITM", "label": "ITM (In The Money)", "desc": "Safe, High Premium"},
+                {"strike": atm_strike, "moneyness": "ATM", "label": "ATM (At The Money)", "desc": "Balanced"},
+                {"strike": atm_strike - step, "moneyness": "OTM", "label": "OTM (Out The Money)", "desc": "Budget Friendly"},
+                {"strike": atm_strike - (2*step), "moneyness": "OTM2", "label": "OTM2 (Nearby OTM)", "desc": "Low Budget"},
+            ]
+        
+        results = []
+        for item in strikes_to_fetch:
+            strike = item["strike"]
+            # Fetch LTP for this strike
+            ltp = 0
+            price_source = "THEORETICAL"
+            is_live = False
+            
+            # Try from chain
+            if chain is not None and not chain.empty:
+                try:
+                    if isinstance(chain, tuple):
+                        chain_df = chain[0]
+                    else:
+                        chain_df = chain
+                    t_col = find_column(chain_df, ["option_type", "optionType", "type"])
+                    s_col = find_column(chain_df, ["strike", "strikePrice"])
+                    if t_col and s_col:
+                        work = chain_df.copy()
+                        work["_t"] = work[t_col].map(normalize_option_type)
+                        work = work[work["_t"] == side].copy()
+                        if not work.empty:
+                            work["_s"] = pd.to_numeric(work[s_col], errors="coerce")
+                            if work["_s"].max() > 500000:
+                                work["_s"] = work["_s"] / 100.0
+                            match = work[work["_s"] == strike]
+                            if not match.empty:
+                                best = match.iloc[0]
+                                fetched = num(first_value(best, ["lastPrice", "ltp", "last_traded_price", "close"]))
+                                if fetched and fetched > 0:
+                                    ltp = fetched
+                                    price_source = str(best.get("price_source", "LIVE"))
+                                    is_live = True
+                except Exception as e:
+                    print(f"Chain fetch error for {strike}: {e}")
+                    pass
+            
+            # If not from chain, try ultra fresh
+            if ltp <= 0:
+                try:
+                    ultra_ltp, ultra_src, ultra_ok, _ = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, side, expiry)
+                    if ultra_ok and ultra_ltp > 0:
+                        ltp = ultra_ltp
+                        price_source = ultra_src
+                        is_live = True
+                except:
+                    pass
+            
+            # If still 0, calculate theoretical
+            if ltp <= 0:
+                try:
+                    dte_days = 6.0
+                    if expiry:
+                        try:
+                            exp_date = datetime.strptime(expiry_norm(expiry), "%Y-%m-%d").date()
+                            expiry_close = datetime.combine(exp_date, dtime(15, 30), tzinfo=IST)
+                            now_dt = datetime.now(IST)
+                            diff = (expiry_close - now_dt).total_seconds() / 86400.0
+                            dte_days = max(diff, 0.05)
+                        except:
+                            dte_days = 6.0
+                    g_info = calculate_advanced_greeks(spot=spot, strike=strike, dte_days=dte_days, rate=0.07, sigma=12.8/100.0, option_type=side)
+                    ltp = round(g_info["price"], 2)
+                    price_source = "THEORETICAL"
+                except:
+                    ltp = 0
+            
+            trade_cost = ltp * lot_size
+            is_within_budget = trade_cost <= budget
+            
+            results.append({
+                "strike": strike,
+                "moneyness": item["moneyness"],
+                "label": item["label"],
+                "desc": item["desc"],
+                "ltp": ltp,
+                "trade_cost": trade_cost,
+                "lot_size": lot_size,
+                "is_within_budget": is_within_budget,
+                "price_source": price_source,
+                "is_live": is_live,
+                "budget_status": f"✅ Within ₹{budget:.0f}" if is_within_budget else f"❌ Over ₹{budget:.0f} (₹{trade_cost:.0f})",
+                "side": side,
+            })
+        
+        # Sort by trade_cost ascending for budget view
+        results_sorted = sorted(results, key=lambda x: x["trade_cost"])
+        
+        return results
+    except Exception as e:
+        print(f"Budget strikes error: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+def make_trade_ideas_with_budget(market: Dict[str, Any], symbol: str, instrument: str = "INDEX", option_side: Optional[str] = None, expiry: Optional[str] = None, chain: Optional[pd.DataFrame] = None, confluence: Optional[Dict[str, Any]] = None, vix_info: Optional[Dict[str, Any]] = None, tf_cfg: Optional[Dict[str, Any]] = None, budget: float = 10000.0) -> List[Dict[str, Any]]:
+    """V56 NEW: Generate 4 budget friendly ideas - ITM, ATM, OTM, OTM2"""
+    try:
+        base_idea = make_trade_idea(market, symbol, instrument, option_side, expiry, chain, confluence, vix_info, tf_cfg)
+        if not base_idea:
+            return []
+        
+        if instrument != "INDEX OPTION":
+            return [base_idea]
+        
+        spot = base_idea.get("entry", 0) if "entry" in base_idea else market.get("last", 0)
+        if isinstance(spot, dict):
+            spot = market.get("last", 0)
+        # For option, entry is option LTP, need spot
+        try:
+            spot_val = market.get("last", 0) or base_idea.get("spot", 0) or 0
+            if spot_val == 0:
+                spot_val = base_idea.get("entry", 0) * 10  # rough
+        except:
+            spot_val = market.get("last", 0)
+        
+        side = base_idea.get("option", option_side) or option_side or "CE"
+        
+        # Get budget strikes
+        budget_strikes = get_budget_friendly_strikes(symbol, market.get("last", spot_val), side, chain, expiry, budget)
+        
+        ideas = []
+        for b_strike in budget_strikes:
+            # Clone base idea
+            new_idea = base_idea.copy()
+            new_idea["strike"] = b_strike["strike"]
+            new_idea["option_ltp"] = b_strike["ltp"]
+            new_idea["entry"] = b_strike["ltp"]
+            new_idea["moneyness"] = b_strike["moneyness"]
+            new_idea["moneyness_label"] = b_strike["label"]
+            new_idea["moneyness_desc"] = b_strike["desc"]
+            new_idea["trade_cost"] = b_strike["trade_cost"]
+            new_idea["is_within_budget"] = b_strike["is_within_budget"]
+            new_idea["budget_status"] = b_strike["budget_status"]
+            new_idea["lot_size"] = b_strike["lot_size"]
+            new_idea["price_source"] = b_strike["price_source"]
+            
+            # Recalculate SL/T1/T2 based on new LTP
+            opt_entry = b_strike["ltp"]
+            if opt_entry > 0:
+                opt_risk = max(round(opt_entry * 0.18, 2), 5.0)
+                opt_sl = round(opt_entry - opt_risk, 2)
+                opt_t1 = round(opt_entry + (opt_risk * 1.39), 2)
+                opt_t2 = round(opt_entry + (opt_risk * 2.50), 2)
+                new_idea["sl"] = opt_sl
+                new_idea["target1"] = opt_t1
+                new_idea["target2"] = opt_t2
+            
+            ideas.append(new_idea)
+        
+        return ideas
+    except Exception as e:
+        print(f"make_trade_ideas_with_budget error: {e}")
+        # Fallback to single idea
+        try:
+            base = make_trade_idea(market, symbol, instrument, option_side, expiry, chain, confluence, vix_info, tf_cfg)
+            return [base] if base else []
+        except:
+            return []
+
+
 
 def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDEX", option_side: Optional[str] = None, expiry: Optional[str] = None, chain: Optional[pd.DataFrame] = None, confluence: Optional[Dict[str, Any]] = None, vix_info: Optional[Dict[str, Any]] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
@@ -6036,6 +6292,26 @@ else:
     st.session_state['auto_start'] = auto_start
     st.session_state['auto_end'] = auto_end
     
+    # V56 BUDGET FRIENDLY - Bhai ka 10k budget fix
+    st.sidebar.markdown("#### 💰 Budget Friendly Strikes")
+    st.sidebar.caption("ATM high premium? ITM/OTM/Nearby se choose karo")
+    user_budget = st.sidebar.number_input("Your Budget per Lot (₹)", min_value=1000, max_value=100000, value=10000, step=1000, key="user_budget", help="ATM ka cost zyada hai to OTM choose karo - budget ke andar")
+    st.session_state['user_budget'] = user_budget
+    
+    # Strike preference
+    strike_pref = st.sidebar.selectbox("Strike Preference", ["All (ITM+ATM+OTM+Nearby)", "ATM Only (Old)", "Budget Within (Auto)", "OTM Only (Cheapest)"], index=0, key="strike_pref")
+    st.session_state['strike_pref'] = strike_pref
+    
+    # Show cost preview
+    try:
+        if 'INDEX_METADATA' in globals():
+            meta = INDEX_METADATA.get(underlying, INDEX_METADATA["NIFTY"])
+            lot = meta["lot_size"]
+            step = meta["step"]
+            st.sidebar.caption(f"📊 {underlying}: Lot={lot}, Step={step}, Budget=₹{user_budget} (₹{user_budget/lot:.0f}/share)")
+    except:
+        pass
+    
     # V53 PERSISTENT Conviction Filter - Always visible (bhai ka request) - Saves to file
     st.sidebar.divider()
     st.sidebar.markdown("### 🎯 Conviction Filter (Range) - Persistent")
@@ -6624,8 +6900,51 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             bound_side = option_type_choice if option_type_choice in ["CE", "PE"] else None
             setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup1: ideas.append(setup1)
-            setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
-            if setup2: ideas.append(setup2)
+            
+            # V56 BUDGET FRIENDLY - 4 strikes instead of 1 ATM only
+            try:
+                budget_val = st.session_state.get('user_budget', 10000)
+                strike_pref_val = st.session_state.get('strike_pref', 'All (ITM+ATM+OTM+Nearby)')
+                
+                # Get 4 budget ideas (ITM, ATM, OTM, OTM2)
+                budget_ideas = make_trade_ideas_with_budget(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf, budget=budget_val)
+                
+                if budget_ideas:
+                    # Filter based on preference
+                    if strike_pref_val == "ATM Only (Old)":
+                        # Only ATM
+                        atm_only = [x for x in budget_ideas if x.get('moneyness') == 'ATM']
+                        if atm_only:
+                            ideas.extend(atm_only)
+                        else:
+                            ideas.append(budget_ideas[1] if len(budget_ideas)>1 else budget_ideas[0])
+                    elif strike_pref_val == "Budget Within (Auto)":
+                        # Only within budget, cheapest first
+                        within = [x for x in budget_ideas if x.get('is_within_budget')]
+                        if within:
+                            # Sort by closest to ATM but within budget
+                            ideas.extend(sorted(within, key=lambda x: (0 if x['moneyness']=='ATM' else 1, x['trade_cost'])))
+                        else:
+                            # If none within budget, give cheapest OTM
+                            cheapest = sorted(budget_ideas, key=lambda x: x['trade_cost'])[0]
+                            ideas.append(cheapest)
+                    elif strike_pref_val == "OTM Only (Cheapest)":
+                        otm_only = [x for x in budget_ideas if 'OTM' in x.get('moneyness','')]
+                        if otm_only:
+                            ideas.extend(sorted(otm_only, key=lambda x: x['trade_cost']))
+                        else:
+                            ideas.append(budget_ideas[-1])
+                    else:  # All
+                        ideas.extend(budget_ideas)
+                else:
+                    # Fallback to old single ATM
+                    setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
+                    if setup2: ideas.append(setup2)
+            except Exception as e:
+                print(f"Budget ideas error: {e}")
+                # Fallback
+                setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
+                if setup2: ideas.append(setup2)
             progress.progress(50)
             status.text("Parallel scanning other indices (live)...")
             alt_symbols = [s for s in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"] if s != underlying]
@@ -6652,7 +6971,48 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     seen.add(key)
                     unique_ideas.append(item)
 
-            final_ideas = unique_ideas[:5]
+            # V56 BUDGET: Increase limit to 10 for budget mode to show ITM/ATM/OTM/Nearby
+            strike_pref_check = st.session_state.get('strike_pref', 'All (ITM+ATM+OTM+Nearby)')
+            limit = 10 if "All" in strike_pref_check else 5
+            final_ideas = unique_ideas[:limit]
+            
+            # V56 NEW: Send combined budget alert if All mode
+            try:
+                if "All" in strike_pref_check:
+                    # Group by symbol+option for combined alert
+                    from collections import defaultdict
+                    grouped = defaultdict(list)
+                    for idea_item in final_ideas:
+                        if idea_item.get('moneyness'):
+                            key = f"{idea_item.get('symbol')}_{idea_item.get('option')}"
+                            grouped[key].append(idea_item)
+                    
+                    # For each group with 2+ strikes, send combined alert once
+                    for g_key, g_ideas in grouped.items():
+                        if len(g_ideas) >= 2:
+                            # Check if already sent combined for this group
+                            combined_key = f"combined_{g_key}_{g_ideas[0].get('expiry')}"
+                            if 'sent_combined_alerts' not in st.session_state:
+                                st.session_state['sent_combined_alerts'] = set()
+                            if combined_key not in st.session_state['sent_combined_alerts']:
+                                try:
+                                    bot_t, chat_t = get_telegram_keys()
+                                    if bot_t and chat_t:
+                                        # Sort by moneyness order: ITM, ATM, OTM, OTM2
+                                        order_map = {"ITM":0, "ATM":1, "OTM":2, "OTM2":3}
+                                        sorted_ideas = sorted(g_ideas, key=lambda x: order_map.get(x.get('moneyness','ATM'), 5))
+                                        combined_msg = format_telegram_budget_combined_alert(sorted_ideas, current_spot, expiry_label(selected_expiry))
+                                        if combined_msg:
+                                            ok_comb, resp_comb = send_telegram_message(bot_t, chat_t, combined_msg)
+                                            if ok_comb:
+                                                st.session_state['sent_combined_alerts'].add(combined_key)
+                                                print(f"Combined budget alert sent for {g_key}")
+                                except Exception as e:
+                                    print(f"Combined alert error: {e}")
+                                    pass
+            except Exception as e:
+                print(f"Combined grouping error: {e}")
+                pass
 
             if not final_ideas:
                 st.warning("Market conditions indicate neutral consolidation or conflict across indices. No safe trade setup found.")
@@ -6660,13 +7020,29 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                 st.success(f"{len(final_ideas)} high-conviction trade setup(s) identified on [{active_tf['label']}].")
                 for i, idea in enumerate(final_ideas, start=1):
                     is_option = bool(idea.get("option") and idea.get("strike"))
-                    card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}" if is_option else f"{idea['symbol']} (CASH SPOT)"
+                    # V56 BUDGET INFO in title
+                    moneyness_tag = f" [{idea.get('moneyness','')}]" if idea.get('moneyness') else ""
+                    budget_tag = f" ₹{idea.get('trade_cost',0):.0f}" if idea.get('trade_cost') else ""
+                    card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}{moneyness_tag}{budget_tag}" if is_option else f"{idea['symbol']} (CASH SPOT)"
+                    # Show budget status in badge
+                    budget_badge = f" | {idea.get('budget_status','')}" if idea.get('budget_status') else ""
                     sub_badge = f"INDEX OPTION ({idea['option']} BUYING)" if is_option else "INDEX SPOT / CASH"
 
+                    # V56 Budget display for card
+                    budget_html = ""
+                    if is_option and idea.get('moneyness'):
+                        moneyness = idea.get('moneyness','ATM')
+                        trade_cost = idea.get('trade_cost',0)
+                        is_within = idea.get('is_within_budget', True)
+                        budget_status = idea.get('budget_status','')
+                        color_budget = "#00FF00" if is_within else "#FF4444"
+                        moneyness_color = {"ITM": "#FFA500", "ATM": "#00FF00", "OTM": "#00BFFF", "OTM2": "#87CEEB"}.get(moneyness, "#FFFFFF")
+                        budget_html = f'<div style="background: {color_budget}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_label","")} | Cost: ₹{trade_cost:.0f} | {budget_status}</div><div style="background: {moneyness_color}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 10px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_desc","")}</div>'
+                    
                     st.markdown(
                         f"""
                         <div class="trade-card" style="border-left: 4px solid #00FF00;">
-                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>
+                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>{budget_html}
                             <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
                             <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
                         </div>
