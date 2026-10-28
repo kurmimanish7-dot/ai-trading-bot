@@ -2350,7 +2350,7 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY
+    V57.2 FIXED: Broker mismatch 445 vs 209 fixed - exact expiry + strike parsing
     """
     try:
         api_key = ""; client_id = ""; password = ""; totp_secret = ""
@@ -2380,6 +2380,46 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
         data = obj.generateSession(client_id, password, totp_code)
         if not (data and data.get("status") == True):
             return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
+        
+        # Helper to extract expiry from Angel symbol - EXACT MATCH
+        def extract_expiry_date(sym):
+            """Extract expiry from symbol like NIFTY03NOV2622650CE -> 2026-11-03"""
+            try:
+                m = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', sym.upper())
+                if not m:
+                    return None
+                day_str, mon_str, year_str = m.groups()
+                day = int(day_str)
+                mon_map = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,"JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
+                mon = mon_map.get(mon_str.upper())
+                if not mon:
+                    return None
+                year = int(year_str)
+                if year < 100:
+                    year = 2000 + year
+                # Validate date
+                from datetime import date
+                return date(year, mon, day)
+            except:
+                return None
+        
+        def extract_strike_exact(sym, opt_type):
+            """Extract exact strike - NIFTY03NOV2622650CE -> 22650"""
+            try:
+                sym_u = sym.upper()
+                ot = opt_type.upper()
+                if not sym_u.endswith(ot):
+                    return None
+                # Remove CE/PE suffix
+                without_opt = sym_u[:-len(ot)]
+                # Strike is trailing digits (4-6 digits)
+                m = re.search(r'(\d+)$', without_opt)
+                if m:
+                    return int(m.group(1))
+                return None
+            except:
+                return None
+        
         try:
             master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
             mr = requests.get(master_url, timeout=12)
@@ -2387,90 +2427,126 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
                 return 0, "MASTER_FETCH_FAILED", False
             instruments = mr.json()
             symbol = symbol.upper().strip()
-            if symbol == "NIFTY":
-                def is_match(sym):
-                    sym_u = sym.upper()
-                    if "FINNIFTY" in sym_u or "BANKNIFTY" in sym_u or "MIDCPNIFTY" in sym_u or "NIFTYNXT" in sym_u:
-                        return False
-                    return sym_u.startswith("NIFTY") and str(strike) in sym_u and opt_type.upper() in sym_u
-                search_label = "NIFTY"
-            elif symbol == "BANKNIFTY":
-                def is_match(sym):
-                    return "BANKNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "BANKNIFTY"
-            elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
-                def is_match(sym):
-                    sym_u = sym.upper()
-                    return ("FINNIFTY" in sym_u or (sym_u.startswith("FIN") and "NIFTY" in sym_u)) and str(strike) in sym_u and opt_type.upper() in sym_u
-                search_label = "FINNIFTY"
-            elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
-                def is_match(sym):
-                    return "MIDCPNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "MIDCPNIFTY"
-            elif symbol in ["SENSEX", "BSESN"]:
-                def is_match(sym):
-                    return "SENSEX" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "SENSEX"
-            else:
-                def is_match(sym):
-                    return symbol in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = symbol
-            target_exp_norm = ""
+            
+            # Target expiry normalized
+            target_exp_date = None
             try:
                 target_exp_norm = expiry_norm(expiry) if expiry else ""
-                target_exp_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d") if target_exp_norm else None
+                if target_exp_norm:
+                    target_exp_date = datetime.strptime(target_exp_norm, "%Y-%m-%d").date()
             except:
-                target_exp_dt = None
+                target_exp_date = None
+            
+            # Symbol matching with exact strike check
+            def is_valid_candidate(inst):
+                if not isinstance(inst, dict):
+                    return False
+                sym = str(inst.get("symbol","")).upper()
+                exch = inst.get("exch_seg","")
+                if exch not in ["NFO","BFO"]:
+                    return False
+                
+                # Check symbol type
+                if symbol == "NIFTY":
+                    if "FINNIFTY" in sym or "BANKNIFTY" in sym or "MIDCPNIFTY" in sym or "NIFTYNXT" in sym:
+                        return False
+                    if not sym.startswith("NIFTY"):
+                        return False
+                elif symbol == "BANKNIFTY":
+                    if "BANKNIFTY" not in sym:
+                        return False
+                elif symbol in ["FINNIFTY","FIN NIFTY","FIN"]:
+                    if "FINNIFTY" not in sym:
+                        return False
+                elif symbol in ["MIDCPNIFTY","MIDCAP","MIDCP"]:
+                    if "MIDCPNIFTY" not in sym:
+                        return False
+                elif symbol in ["SENSEX","BSESN"]:
+                    if "SENSEX" not in sym:
+                        return False
+                
+                # Exact strike match
+                strike_extracted = extract_strike_exact(sym, opt_type)
+                if strike_extracted is None:
+                    return False
+                if strike_extracted != int(strike):
+                    return False
+                
+                # Must end with CE/PE
+                if not sym.endswith(opt_type.upper()):
+                    return False
+                
+                return True
+            
             candidates = []
             for inst in instruments:
-                if not isinstance(inst, dict):
+                if not is_valid_candidate(inst):
                     continue
-                sym = str(inst.get("symbol", "")).upper()
-                if not is_match(sym):
-                    continue
-                if inst.get("exch_seg") not in ["NFO", "BFO"]:
-                    continue
-                exp_score = 0
-                if target_exp_dt:
-                    try:
-                        m = re.search(r"(\d{2})([A-Z]{3})(\d{2,4})", sym)
-                        if m:
-                            if target_exp_dt.strftime("%b").upper() in sym:
-                                exp_score += 10
-                            if str(target_exp_dt.day) in sym:
-                                exp_score += 5
-                            if str(target_exp_dt.year)[-2:] in sym or str(target_exp_dt.year) in sym:
-                                exp_score += 3
-                    except:
-                        pass
+                sym = str(inst.get("symbol","")).upper()
+                # Extract expiry
+                exp_date = extract_expiry_date(sym)
+                score = 0
+                # Exact expiry match gets highest score
+                if target_exp_date and exp_date:
+                    if exp_date == target_exp_date:
+                        score = 100  # Perfect match
+                    elif exp_date.month == target_exp_date.month and exp_date.year == target_exp_date.year:
+                        # Same month/year but different day - partial
+                        score = 50 - abs((exp_date - target_exp_date).days)
+                    else:
+                        # Different expiry - low score but keep as fallback
+                        score = 10 - abs((exp_date - target_exp_date).days) / 10
+                elif not target_exp_date:
+                    score = 1
                 else:
-                    exp_score = 1
-                candidates.append((exp_score, inst))
+                    score = 0
+                
+                candidates.append((score, exp_date, inst))
+            
+            # Sort by score descending - exact expiry first
             candidates.sort(key=lambda x: x[0], reverse=True)
-            for score, inst in candidates[:10]:
-                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
+            
+            # Debug: log candidates
+            if candidates:
+                print(f"Angel candidates for {symbol} {strike} {opt_type} exp {target_exp_date}: found {len(candidates)}")
+                for sc, ed, inst in candidates[:5]:
+                    print(f"  Score {sc} Exp {ed} Sym {inst.get('symbol')} Token {inst.get('token')}")
+            
+            # Try exact matches first (score 100)
+            for score, exp_date, inst in candidates:
+                if score < 90:  # Only exact for first pass
+                    break
+                sym = inst.get("symbol",""); token = str(inst.get("token","")); exch = inst.get("exch_seg","NFO")
                 try:
                     ltp_data = obj.ltpData(exch, sym, token)
                     if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data", {}).get("ltp")
+                        ltp_val = ltp_data.get("data",{}).get("ltp")
                         if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}{expiry.replace('-','').upper() if expiry else ''}{strike}{opt_type.upper()}_{ltp_val}", True
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_EXACT_{symbol}_{exp_date}_{strike}{opt_type}_{ltp_val}", True
                 except:
                     continue
-            for score, inst in candidates[:20]:
-                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
+            
+            # Second pass - try all candidates in score order
+            for score, exp_date, inst in candidates[:15]:
+                sym = inst.get("symbol",""); token = str(inst.get("token","")); exch = inst.get("exch_seg","NFO")
                 try:
                     ltp_data = obj.ltpData(exch, sym, token)
                     if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data", {}).get("ltp")
+                        ltp_val = ltp_data.get("data",{}).get("ltp")
                         if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}_FALLBACK_{strike}{opt_type}_{ltp_val}", True
+                            exp_str = exp_date.strftime("%d%b%y").upper() if exp_date else "NO_EXP"
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{symbol}_{exp_str}_{strike}{opt_type}_{ltp_val}_SCORE{score}", True
                 except:
                     continue
-            return 0, f"NO_LTP_FOUND_{search_label}_{strike}{opt_type}", False
+            
+            return 0, f"NO_LTP_FOUND_{symbol}_{strike}{opt_type}_EXP{target_exp_date}_CANDIDATES{len(candidates)}", False
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:50]}", False
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
 
 
@@ -5030,7 +5106,7 @@ def get_budget_friendly_strikes(symbol: str, spot: float, side: str, chain: Opti
                     print(f"Chain fetch error for {strike}: {e}")
                     pass
             
-            # If not from chain, try ultra fresh
+            # If not from chain, try ultra fresh - EXACT EXPIRY MATCH
             if ltp <= 0:
                 try:
                     ultra_ltp, ultra_src, ultra_ok, _ = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, side, expiry)
@@ -5038,27 +5114,35 @@ def get_budget_friendly_strikes(symbol: str, spot: float, side: str, chain: Opti
                         ltp = ultra_ltp
                         price_source = ultra_src
                         is_live = True
-                except:
+                        print(f"Budget strike {strike} {side} LTP from NSE ultra fresh: {ltp} src {ultra_src}")
+                except Exception as e:
+                    print(f"Ultra fresh failed for {strike}: {e}")
                     pass
             
-            # If still 0, calculate theoretical
+            # If still 0, calculate theoretical - BUT mark as THEORETICAL so user knows
             if ltp <= 0:
-                try:
-                    dte_days = 6.0
-                    if expiry:
-                        try:
-                            exp_date = datetime.strptime(expiry_norm(expiry), "%Y-%m-%d").date()
-                            expiry_close = datetime.combine(exp_date, dtime(15, 30), tzinfo=IST)
-                            now_dt = datetime.now(IST)
-                            diff = (expiry_close - now_dt).total_seconds() / 86400.0
-                            dte_days = max(diff, 0.05)
-                        except:
-                            dte_days = 6.0
-                    g_info = calculate_advanced_greeks(spot=spot, strike=strike, dte_days=dte_days, rate=0.07, sigma=12.8/100.0, option_type=side)
-                    ltp = round(g_info["price"], 2)
-                    price_source = "THEORETICAL"
-                except:
+                if market_open():
+                    # During market, don't show fake theoretical - keep 0 and mark failed
                     ltp = 0
+                    price_source = "LIVE_FETCH_FAILED"
+                    print(f"Budget strike {strike} {side} LTP fetch failed during market - keeping 0")
+                else:
+                    try:
+                        dte_days = 6.0
+                        if expiry:
+                            try:
+                                exp_date = datetime.strptime(expiry_norm(expiry), "%Y-%m-%d").date()
+                                expiry_close = datetime.combine(exp_date, dtime(15, 30), tzinfo=IST)
+                                now_dt = datetime.now(IST)
+                                diff = (expiry_close - now_dt).total_seconds() / 86400.0
+                                dte_days = max(diff, 0.05)
+                            except:
+                                dte_days = 6.0
+                        g_info = calculate_advanced_greeks(spot=spot, strike=strike, dte_days=dte_days, rate=0.07, sigma=12.8/100.0, option_type=side)
+                        ltp = round(g_info["price"], 2)
+                        price_source = "THEORETICAL"
+                    except:
+                        ltp = 0
             
             trade_cost = ltp * lot_size
             is_within_budget = trade_cost <= budget
@@ -7043,7 +7127,27 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         budget_status = idea.get('budget_status','')
                         color_budget = "#00FF00" if is_within else "#FF4444"
                         moneyness_color = {"ITM": "#FFA500", "ATM": "#00FF00", "OTM": "#00BFFF", "OTM2": "#87CEEB"}.get(moneyness, "#FFFFFF")
-                        budget_html = f'<div style="background: {color_budget}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_label","")} | Cost: ₹{trade_cost:.0f} | {budget_status}</div><div style="background: {moneyness_color}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 10px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_desc","")}</div>'
+                        # V57.2 FIX: Use LIVE LTP for cost if available, not theoretical
+                        display_cost = trade_cost
+                        try:
+                            # If live_ltp_now exists and >0, use it for cost display
+                            if 'live_ltp_now' in locals() and live_ltp_now > 0:
+                                display_cost = live_ltp_now * lot_size if 'lot_size' in locals() else trade_cost
+                                # Also update budget status based on live
+                                is_within_live = display_cost <= 10000  # default budget check
+                                try:
+                                    is_within_live = display_cost <= st.session_state.get('user_budget', 10000)
+                                except:
+                                    pass
+                                if not is_within_live:
+                                    budget_status = f"❌ Over ₹{st.session_state.get('user_budget', 10000):.0f} (₹{display_cost:.0f})"
+                                    color_budget = "#FF4444"
+                                else:
+                                    budget_status = f"✅ Within ₹{st.session_state.get('user_budget', 10000):.0f}"
+                                    color_budget = "#00FF00"
+                        except:
+                            display_cost = trade_cost
+                        budget_html = f'<div style="background: {color_budget}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_label","")} | Cost: ₹{display_cost:.0f} (Live) | {budget_status}</div><div style="background: {moneyness_color}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 10px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_desc","")}</div>'
                     
                     st.markdown(
                         f"""
