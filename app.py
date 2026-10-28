@@ -2264,32 +2264,15 @@ def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", 
                 data_list = records.get("data", [])
                 expiry_dates = records.get("expiryDates", [])
                 
-                # Find exact expiry match - FIXED for 03 Nov vs monthly
-                # If target not in list, use nearest but LOG it
+                # Find exact expiry match - V61 STRICT: No fallback to different expiry
                 if target_exp_norm:
                     norm_exps = [expiry_norm(d) for d in expiry_dates]
-                    print(f"Target exp {target_exp_norm}, NSE expiries {norm_exps[:3]}")
+                    print(f"Target exp {target_exp_norm}, NSE expiries {norm_exps[:5]}")
                     if target_exp_norm not in norm_exps:
-                        # Target not in NSE list - maybe format mismatch, try to find same day/month
-                        # Look for expiry with same day
-                        found_same_day = False
-                        for exp_str in expiry_dates:
-                            try:
-                                exp_dt = datetime.strptime(expiry_norm(exp_str), "%Y-%m-%d").date()
-                                target_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d").date()
-                                if exp_dt.day == target_dt.day and exp_dt.month == target_dt.month:
-                                    target_exp_norm = expiry_norm(exp_str)
-                                    found_same_day = True
-                                    print(f"Found same day expiry {exp_str} for target {target_exp_norm}")
-                                    break
-                            except:
-                                continue
-                        if not found_same_day:
-                            # Use nearest expiry but warn
-                            if expiry_dates:
-                                old_target = target_exp_norm
-                                target_exp_norm = expiry_norm(expiry_dates[0])
-                                print(f"Target {old_target} not in NSE list, using nearest {target_exp_norm}")
+                        print(f"V61: Target {target_exp_norm} NOT in NSE list {norm_exps[:3]} - returning 0, no fallback")
+                        # Don't fallback to different expiry - return 0 to force error and let caller know
+                        # This prevents 9 Nov vs 17 Nov mismatch
+                        return 0, f"EXPIRY_NOT_FOUND_TARGET_{target_exp_norm}_AVAILABLE_{norm_exps[:3]}", False, ""
                     else:
                         print(f"Exact expiry match found: {target_exp_norm}")
                 
@@ -2309,13 +2292,10 @@ def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", 
                         # Validate with bid/ask - if ltp is too far from market, use it still (it's real trade)
                         return float(ltp), f"NSE_LIVE_ULTRA_A{attempt+1}", True, item_exp
                 
-                # If loop ends without return, try without expiry filter
-                for item in data_list:
-                    if item.get("strikePrice") == int(strike):
-                        opt_data = item.get(opt_type, {})
-                        ltp = opt_data.get("lastPrice", 0)
-                        if ltp and float(ltp) > 0:
-                            return float(ltp), f"NSE_LIVE_NO_EXP_FILTER_A{attempt+1}", True, expiry_norm(item.get("expiryDate",""))
+                # V61: NO fallback without expiry filter - prevents different expiry picks
+                # If exact expiry not found, return 0, don't pick random expiry
+                print(f"V61: No match for strike {strike} expiry {target_exp_norm} in attempt {attempt+1}")
+                
             
             # If 403/401, wait and retry
             if r.status_code in [401,403,429]:
@@ -2369,7 +2349,7 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V58 FIXED: CANDIDATES0 bug - now supports both Angel formats C22650 and 22650CE
+    V60 FIXED: Only exact expiry match, no monthly fallback - prevents 305 vs 209 bug
     """
     try:
         api_key = ""; client_id = ""; password = ""; totp_secret = ""
@@ -2401,7 +2381,6 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
         
         def extract_expiry_date(sym):
-            """Extract expiry from symbol like NIFTY03NOV22C22650 or NIFTY03NOV2622650CE -> 2022-11-03"""
             try:
                 m = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', sym.upper())
                 if not m:
@@ -2420,44 +2399,17 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             except:
                 return None
         
-        def extract_strike_both_formats(sym, opt_type):
-            """
-            Angel has 2 formats:
-            Format 1: NIFTY03NOV22C22650 -> C/P before strike
-            Format 2: NIFTY03NOV2622650CE -> CE/PE after strike
-            """
+        def extract_strike(sym):
             try:
                 sym_u = sym.upper().strip()
-                target_strike = int(strike)
-                # Try Format 1: C/P + strike at end - e.g., ...C22650 or ...P22650
+                # Format 1: C/P before strike - NIFTY03NOV26C22650
                 m1 = re.search(r'[CP](\d{4,6})$', sym_u)
                 if m1:
-                    try:
-                        s = int(m1.group(1))
-                        if s == target_strike:
-                            return s
-                    except:
-                        pass
-                # Try Format 2: strike + CE/PE at end - e.g., ...22650CE
+                    return int(m1.group(1))
+                # Format 2: strike before CE/PE - NIFTY03NOV2622650CE
                 m2 = re.search(r'(\d{4,6})(CE|PE)$', sym_u)
                 if m2:
-                    try:
-                        s = int(m2.group(1))
-                        if s == target_strike:
-                            return s
-                    except:
-                        pass
-                # Try Format 3: strike anywhere with CE/PE nearby - loose but verify exact
-                # Extract all numbers 4-6 digits
-                all_nums = re.findall(r'\d{4,6}', sym_u)
-                for num_str in all_nums:
-                    try:
-                        if int(num_str) == target_strike:
-                            # Also check opt type present
-                            if opt_type.upper() in sym_u or opt_type.upper()[0] in sym_u:
-                                return target_strike
-                    except:
-                        continue
+                    return int(m2.group(1))
                 return None
             except:
                 return None
@@ -2478,144 +2430,69 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             except:
                 target_exp_date = None
             
-            def is_valid_candidate(inst):
+            if not target_exp_date:
+                return 0, f"INVALID_TARGET_EXPIRY_{expiry}", False
+            
+            exact_candidates = []
+            for inst in instruments:
                 if not isinstance(inst, dict):
-                    return False
+                    continue
                 sym = str(inst.get("symbol","")).upper().strip()
                 exch = inst.get("exch_seg","")
                 if exch not in ["NFO","BFO"]:
-                    return False
-                # Symbol type check - loose
+                    continue
                 if symbol == "NIFTY":
-                    if "FINNIFTY" in sym or "BANKNIFTY" in sym or "MIDCPNIFTY" in sym or "NIFTYNXT" in sym:
-                        return False
+                    if "FINNIFTY" in sym or "BANKNIFTY" in sym or "MIDCPNIFTY" in sym:
+                        continue
                     if "NIFTY" not in sym:
-                        return False
+                        continue
                 elif symbol == "BANKNIFTY":
                     if "BANKNIFTY" not in sym:
-                        return False
-                elif symbol in ["FINNIFTY","FIN NIFTY","FIN"]:
+                        continue
+                elif symbol in ["FINNIFTY","FIN"]:
                     if "FINNIFTY" not in sym:
-                        return False
-                elif symbol in ["MIDCPNIFTY","MIDCAP","MIDCP"]:
-                    if "MIDCPNIFTY" not in sym:
-                        return False
-                elif symbol in ["SENSEX","BSESN"]:
-                    if "SENSEX" not in sym:
-                        return False
+                        continue
                 
-                # Strike check - must contain target strike digits
-                if str(strike) not in sym:
-                    return False
+                # Strike must match exactly
+                strike_extracted = extract_strike(sym)
+                if strike_extracted != int(strike):
+                    continue
                 
-                # Exact strike extraction
-                strike_extracted = extract_strike_both_formats(sym, opt_type)
-                if strike_extracted is None:
-                    return False
-                
-                # Opt type check - CE/PE or C/P
+                # Opt type check
                 ot = opt_type.upper()
-                # For CE, symbol should have C or CE, for PE, P or PE
                 if ot == "CE":
-                    if "CE" not in sym and not re.search(r'C\d+$', sym):
-                        # Check if ends with C+strike
-                        if not re.search(r'C' + str(strike) + r'$', sym):
-                            # Allow if contains C
-                            if "C" not in sym:
-                                return False
+                    if not (sym.endswith(f"C{strike}") or sym.endswith(f"CE") or sym.endswith(f"{strike}CE") or f"C{strike}" in sym):
+                        # Check C present
+                        if "C" not in sym:
+                            continue
                 elif ot == "PE":
-                    if "PE" not in sym and not re.search(r'P\d+$', sym):
-                        if not re.search(r'P' + str(strike) + r'$', sym):
-                            if "P" not in sym:
-                                return False
+                    if not (sym.endswith(f"P{strike}") or sym.endswith(f"PE") or sym.endswith(f"{strike}PE") or f"P{strike}" in sym):
+                        if "P" not in sym:
+                            continue
                 
-                return True
-            
-            candidates = []
-            for inst in instruments:
-                if not is_valid_candidate(inst):
-                    continue
-                sym = str(inst.get("symbol","")).upper()
+                # Expiry must match EXACTLY - no fallback to monthly
                 exp_date = extract_expiry_date(sym)
-                score = 0
-                if target_exp_date and exp_date:
-                    if exp_date == target_exp_date:
-                        score = 100
-                    elif exp_date.month == target_exp_date.month and exp_date.year == target_exp_date.year:
-                        # Same month/year, calculate day diff
-                        try:
-                            day_diff = abs((exp_date - target_exp_date).days)
-                            score = 80 - day_diff
-                        except:
-                            score = 50
-                    else:
-                        # Different month/year - lower score
-                        try:
-                            month_diff = abs((exp_date.year - target_exp_date.year)*12 + (exp_date.month - target_exp_date.month))
-                            score = 20 - month_diff
-                        except:
-                            score = 10
-                elif not target_exp_date:
-                    score = 1
-                else:
-                    score = 0
-                candidates.append((score, exp_date, inst))
+                if exp_date != target_exp_date:
+                    continue
+                
+                # Exact match found
+                exact_candidates.append((100, exp_date, inst))
             
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            
-            # Try candidates in score order
-            for score, exp_date, inst in candidates[:20]:
+            # Try exact candidates only
+            for score, exp_date, inst in exact_candidates[:10]:
                 sym = inst.get("symbol",""); token = str(inst.get("token","")); exch = inst.get("exch_seg","NFO")
                 try:
                     ltp_data = obj.ltpData(exch, sym, token)
                     if ltp_data and ltp_data.get("status") == True:
                         ltp_val = ltp_data.get("data",{}).get("ltp")
                         if ltp_val and float(ltp_val) > 0:
-                            exp_str = exp_date.strftime("%d%b%y").upper() if exp_date else "NO_EXP"
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{symbol}_{exp_str}_{strike}{opt_type}_{ltp_val}_SCORE{score}", True
-                except Exception as e:
-                    continue
-            
-            # If still not found, try fallback with just strike match (old logic but with better expiry scoring)
-            # This handles cases where exact extraction failed but strike is present
-            fallback_candidates = []
-            for inst in instruments:
-                if not isinstance(inst, dict):
-                    continue
-                sym = str(inst.get("symbol","")).upper()
-                exch = inst.get("exch_seg","")
-                if exch not in ["NFO","BFO"]:
-                    continue
-                if symbol == "NIFTY" and ("FINNIFTY" in sym or "BANKNIFTY" in sym):
-                    continue
-                if symbol not in sym:
-                    continue
-                if str(strike) not in sym:
-                    continue
-                if opt_type.upper() not in sym and opt_type.upper()[0] not in sym:
-                    continue
-                exp_date = extract_expiry_date(sym)
-                score = 0
-                if target_exp_date and exp_date:
-                    if exp_date == target_exp_date:
-                        score = 90
-                    else:
-                        score = 10
-                fallback_candidates.append((score, exp_date, inst))
-            
-            fallback_candidates.sort(key=lambda x: x[0], reverse=True)
-            for score, exp_date, inst in fallback_candidates[:10]:
-                sym = inst.get("symbol",""); token = str(inst.get("token","")); exch = inst.get("exch_seg","NFO")
-                try:
-                    ltp_data = obj.ltpData(exch, sym, token)
-                    if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data",{}).get("ltp")
-                        if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_FALLBACK_{symbol}_{strike}{opt_type}_{ltp_val}", True
+                            return float(ltp_val), f"ANGEL_EXACT_MATCH_{symbol}_{exp_date}_{strike}{opt_type}_{ltp_val}", True
                 except:
                     continue
             
-            return 0, f"NO_LTP_FOUND_{symbol}_{strike}{opt_type}_EXP{target_exp_date}_CANDIDATES{len(candidates)}_FALLBACK{len(fallback_candidates)}", False
+            # No exact match found - DON'T return monthly, return 0 so NSE proxy can try
+            return 0, f"ANGEL_NO_EXACT_EXPIRY_{symbol}_{strike}{opt_type}_TARGET_{target_exp_date}_FOUND_{len(exact_candidates)}_CANDIDATES", False
+            
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -2626,96 +2503,46 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
         return 0, f"ANGEL_ERROR_{str(e)[:80]}", False
 
 
+
+
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
     """
-    V59.1 FIXED: NSE direct -> Proxy -> Angel, NSE is source of truth
-    Fixes 305 vs 209 - NSE primary, not Angel
+    V60: NSE direct -> Proxy -> Angel exact only -> Theoretical (marked)
     """
-    nse_ltp = 0
-    nse_src = ""
-    nse_ok = False
-    proxy_ltp = 0
-    proxy_src = ""
-    proxy_ok = False
-    angel_ltp = 0
-    angel_src = ""
-    angel_ok = False
-    
-    # 1. Try NSE ultra fresh FIRST - most reliable, matches broker exactly
+    # 1. NSE direct
     try:
         ltp_u, src_u, ok_u, exp_used = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, expiry)
         if ok_u and ltp_u > 0:
-            nse_ltp = ltp_u
-            nse_src = src_u
-            nse_ok = True
-            print(f"NSE LTP for {symbol} {strike} {opt_type}: {ltp_u} src {src_u}")
+            return ltp_u, src_u + "_NSE_DIRECT", True
     except Exception as e:
-        print(f"NSE ultra fresh failed: {e}")
+        pass
     
-    # 2. Try Proxy bypass SECOND - works on Streamlit Cloud when NSE direct blocked
-    if not nse_ok:
-        try:
-            ltp_p, src_p, ok_p = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
-            if ok_p and ltp_p > 0:
-                proxy_ltp = ltp_p
-                proxy_src = src_p
-                proxy_ok = True
-                print(f"Proxy LTP for {symbol} {strike} {opt_type}: {ltp_p} src {src_p}")
-        except Exception as e:
-            print(f"Proxy LTP failed: {e}")
+    # 2. Proxy - tries multiple proxies with session
+    try:
+        ltp_p, src_p, ok_p = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
+        if ok_p and ltp_p > 0:
+            return ltp_p, src_p + "_PROXY", True
+    except Exception as e:
+        pass
     
-    # 3. Try Angel THIRD - fallback, but can pick wrong expiry
+    # 3. Angel exact only (no monthly fallback)
     try:
         ltp_a, src_a, ok_a = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
         if ok_a and ltp_a > 0:
-            angel_ltp = ltp_a
-            angel_src = src_a
-            angel_ok = True
-            print(f"Angel LTP for {symbol} {strike} {opt_type}: {ltp_a} src {src_a}")
+            return ltp_a, src_a + "_ANGEL_EXACT", True
     except Exception as e:
-        print(f"Angel LTP failed: {e}")
+        pass
     
-    # Decision logic: Prefer NSE > Proxy > Angel, with cross-validation
-    # If we have NSE and Angel and big diff, NSE wins (weekly vs monthly)
-    if nse_ok and angel_ok:
-        diff_pct = abs(nse_ltp - angel_ltp) / max(nse_ltp, 1) * 100
-        if diff_pct > 35:
-            print(f"Big diff NSE {nse_ltp} vs Angel {angel_ltp} ({diff_pct:.0f}%) - NSE weekly vs Angel monthly, using NSE")
-            return nse_ltp, f"{nse_src}_NSE_WINS_DIFF_{diff_pct:.0f}pct_ANGEL_{angel_ltp}", True
-        else:
-            return nse_ltp, f"{nse_src}_NSE_ANGEL_BOTH_{angel_ltp}", True
-    elif proxy_ok and angel_ok:
-        diff_pct = abs(proxy_ltp - angel_ltp) / max(proxy_ltp, 1) * 100
-        if diff_pct > 35:
-            print(f"Big diff Proxy {proxy_ltp} vs Angel {angel_ltp} ({diff_pct:.0f}%) - using Proxy")
-            return proxy_ltp, f"{proxy_src}_PROXY_WINS_DIFF_{diff_pct:.0f}pct_ANGEL_{angel_ltp}", True
-        else:
-            return proxy_ltp, f"{proxy_src}_PROXY_ANGEL_BOTH_{angel_ltp}", True
-    elif nse_ok:
-        return nse_ltp, nse_src + "_NSE_ONLY", True
-    elif proxy_ok:
-        return proxy_ltp, proxy_src + "_PROXY_ONLY", True
-    elif angel_ok:
-        # Only Angel available - use it but warn it might be monthly
-        # Try to validate if Angel LTP seems too high for weekly
-        # For NIFTY 22650 CE with spot 22698, weekly 6 days should be ~200-250, not 300+
-        # If Angel > 300 for ATM/ITM weekly, likely monthly
-        if symbol == "NIFTY" and abs(int(strike) - 22700) < 200 and angel_ltp > 280 and "FALLBACK" in angel_src:
-            print(f"Angel LTP {angel_ltp} suspicious high for NIFTY {strike} weekly, likely monthly expiry")
-            # Still return but mark as suspicious
-            return angel_ltp, angel_src + "_SUSPICIOUS_MONTHLY", True
-        return angel_ltp, angel_src + "_ANGEL_ONLY", True
-    
-    # All failed, try ultimate
+    # 4. Ultimate cloud proof
     try:
         ltp3, src3, ok3 = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
         if ok3 and ltp3 > 0:
-            return ltp3, src3, True
+            return ltp3, src3 + "_ULTIMATE", True
     except:
         pass
     
-    # All failed
-    return 0, f"BOTH_FAILED_NSE_{nse_src}_PROXY_{proxy_src}_ANGEL_{angel_src}", False
+    # All live methods failed - return 0, will use theoretical with warning
+    return 0, "ALL_LIVE_FAILED_USE_THEORETICAL", False
 
 
 
@@ -5111,10 +4938,21 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
             chain = chain[0]
         t_col = find_column(chain, ["option_type", "optionType", "type"])
         s_col = find_column(chain, ["strike", "strikePrice"])
+        e_col = find_column(chain, ["expiry", "expiryDate", "expiry_date", "expDate"])
         if t_col and s_col:
             work = chain.copy()
             work["_t"] = work[t_col].map(normalize_option_type)
             work = work[work["_t"] == side].copy()
+            # V61 FIX: Filter by expiry for ATM also
+            if e_col and expiry:
+                try:
+                    target_exp_norm = expiry_norm(expiry)
+                    work["_exp"] = work[e_col].map(lambda x: expiry_norm(x))
+                    work = work[work["_exp"] == target_exp_norm].copy()
+                    print(f"Optimal chain filtered expiry {target_exp_norm}: {len(work)} rows")
+                except Exception as e:
+                    print(f"Optimal expiry filter failed: {e}")
+                    pass
             if not work.empty:
                 work["_s"] = pd.to_numeric(work[s_col], errors="coerce")
                 # FIX: Do NOT divide by 100 blindly - only if clearly in paise ( > 500000 for NIFTY)
@@ -5219,7 +5057,7 @@ def get_budget_friendly_strikes(symbol: str, spot: float, side: str, chain: Opti
             price_source = "THEORETICAL"
             is_live = False
             
-            # Try from chain
+            # Try from chain - V61 FIX: Filter by expiry also
             if chain is not None and not chain.empty:
                 try:
                     if isinstance(chain, tuple):
@@ -5228,10 +5066,21 @@ def get_budget_friendly_strikes(symbol: str, spot: float, side: str, chain: Opti
                         chain_df = chain
                     t_col = find_column(chain_df, ["option_type", "optionType", "type"])
                     s_col = find_column(chain_df, ["strike", "strikePrice"])
+                    e_col = find_column(chain_df, ["expiry", "expiryDate", "expiry_date", "expDate"])
                     if t_col and s_col:
                         work = chain_df.copy()
                         work["_t"] = work[t_col].map(normalize_option_type)
                         work = work[work["_t"] == side].copy()
+                        # V61 FIX: Filter by expiry - all strikes must be same expiry
+                        if e_col and expiry:
+                            try:
+                                target_exp_norm = expiry_norm(expiry)
+                                work["_exp"] = work[e_col].map(lambda x: expiry_norm(x))
+                                work = work[work["_exp"] == target_exp_norm].copy()
+                                print(f"Chain filtered for {strike} {side} expiry {target_exp_norm}: {len(work)} rows")
+                            except Exception as e:
+                                print(f"Expiry filter failed for {strike}: {e}")
+                                pass
                         if not work.empty:
                             work["_s"] = pd.to_numeric(work[s_col], errors="coerce")
                             if work["_s"].max() > 500000:
@@ -5244,6 +5093,7 @@ def get_budget_friendly_strikes(symbol: str, spot: float, side: str, chain: Opti
                                     ltp = fetched
                                     price_source = str(best.get("price_source", "LIVE"))
                                     is_live = True
+                                    print(f"Chain LTP for {strike} {side} expiry {expiry}: {ltp}")
                 except Exception as e:
                     print(f"Chain fetch error for {strike}: {e}")
                     pass
@@ -7330,15 +7180,21 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Selected Strike", f"{idea['strike']} {idea['option']}", delta=idea.get("buildup", f"{idea['action']} OPTION"))
-                                                # V15 FINAL BROKER-MATCHED - Fixes 56.30 vs 108.2
+                                                # V60 FINAL - Use LIVE LTP for entry, not theoretical
                         entry_ltp = idea.get('entry', idea.get('ltp', 0))
+                        # If we have live_ltp_now from above, use it
+                        try:
+                            if 'live_ltp_now' in locals() and live_ltp_now > 0 and is_live_ok:
+                                entry_ltp = live_ltp_now
+                        except:
+                            pass
                         # Store original entry as frozen signal
                         if 'original_entry' not in idea:
                             idea['original_entry'] = entry_ltp
                         
                         try:
-                            # V27 FINAL: Angel first - 100% broker matched like debug app
-                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match(
+                            # V60: NSE primary - matches broker
+                            live_ltp_now, live_src, is_live_ok = get_live_premium_V20_FINAL(
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
@@ -7346,7 +7202,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             )
                             actual_exp_used = selected_expiry
                             
-                            # If Angel failed, try proxy/broker matched as fallback
+                            # If all live failed, use theoretical but mark clearly
                             if not is_live_ok or live_ltp_now == 0:
                                 try:
                                     live_ltp_now2, live_src2, is_live_ok2, actual_exp_used2 = get_broker_matched_ltp_FINAL(
