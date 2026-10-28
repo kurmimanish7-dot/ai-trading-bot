@@ -425,12 +425,106 @@ st.set_page_config(
     layout="wide",
 )
 
+# ================= V53 PERSISTENT SETTINGS - Fix reset after page close =================
+import os
+import json
+
+PERSISTENT_FILE = "persistent_settings.json"
+PERSISTENT_FILE_TMP = "/tmp/persistent_settings.json"
+
+def load_persistent_settings():
+    """Load settings from file - survives page refresh"""
+    settings = {}
+    for fpath in [PERSISTENT_FILE, PERSISTENT_FILE_TMP]:
+        try:
+            if os.path.exists(fpath):
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict) and data:
+                        settings.update(data)
+                        # print(f"Loaded settings from {fpath}")
+                        break
+        except Exception as e:
+            # print(f"Load failed {fpath}: {e}")
+            pass
+    return settings
+
+def save_persistent_settings(settings_dict):
+    """Save settings to file - persists after page close"""
+    try:
+        # Merge with existing to avoid overwriting
+        existing = {}
+        if os.path.exists(PERSISTENT_FILE):
+            try:
+                with open(PERSISTENT_FILE, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+            except:
+                existing = {}
+        existing.update(settings_dict)
+        with open(PERSISTENT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(existing, f, indent=2)
+        # Also save to tmp as backup
+        try:
+            with open(PERSISTENT_FILE_TMP, 'w', encoding='utf-8') as f:
+                json.dump(existing, f, indent=2)
+        except:
+            pass
+        return True
+    except Exception as e:
+        # print(f"Save failed: {e}")
+        return False
+
+# Load on startup
+if 'persistent_loaded' not in st.session_state:
+    loaded = load_persistent_settings()
+    st.session_state['persistent_settings'] = loaded
+    st.session_state['persistent_loaded'] = True
+    # Pre-populate session_state keys from file if not already set
+    for k, v in loaded.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+else:
+    loaded = st.session_state.get('persistent_settings', {})
+
+# Helper to get persistent value with default
+def get_persist(key, default):
+    """Get from session_state or persistent file"""
+    if key in st.session_state:
+        return st.session_state[key]
+    ps = st.session_state.get('persistent_settings', {})
+    if key in ps:
+        st.session_state[key] = ps[key]
+        return ps[key]
+    return default
+
 # V17.3 STABLE - No auto-refresh to prevent buffering
 if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
 st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
+
+# V53 BACKGROUND KEEP-ALIVE - Fix page close band ho jata hai - Auto-refresh
+try:
+    if st.session_state.get('auto_alert_enabled', False):
+        if HAS_AUTOREFRESH:
+            interval_ms = st.session_state.get('auto_scan_interval', 5) * 60 * 1000
+            st_autorefresh(interval=interval_ms, key="keep_alive_refresh")
+            st.sidebar.caption("🔄 Auto-refresh ON - Background me chalta rahega")
+except Exception:
+    pass
+
+
+# Show persistent status
+try:
+    ps_count = len(st.session_state.get('persistent_settings', {}))
+    if ps_count > 0:
+        st.sidebar.success(f"💾 Settings Loaded: {ps_count} saved | Page close ke baad bhi rahega")
+    else:
+        st.sidebar.info("💾 First run - Settings ab save honge, page close ke baad bhi rahenge")
+except:
+    pass
+
 
 
 # ================= V17.8 TELEGRAM EMERGENCY EXIT ALERT =================
@@ -2477,14 +2571,30 @@ def render_market_status_banner_v183():
 
 PAPER_TRADING = True
 
-# Telegram Alert Settings
+# Telegram Alert Settings - PERSISTENT V53
 with st.sidebar.expander("📱 Telegram EMERGENCY EXIT Alert", expanded=False):
     st.caption("BotFather se bot banao, token + chat ID daalo")
-    tg_token = st.text_input("Bot Token", value=TELEGRAM_BOT_TOKEN, type="password", key="tg_token")
-    tg_chat = st.text_input("Chat ID", value=TELEGRAM_CHAT_ID, key="tg_chat")
-    tg_enabled = st.checkbox("Enable EMERGENCY EXIT Telegram Alert", value=False, key="tg_enabled")
-    tg_entry_enabled = st.checkbox("Enable ENTRY Alert (3 Light + Confidence)", value=True, key="tg_entry_enabled")
-    tg_exit_enabled = st.checkbox("Enable EXIT Alert (All Exits)", value=True, key="tg_exit_enabled")
+    # Load persistent values
+    ps = st.session_state.get('persistent_settings', {})
+    default_token = ps.get('tg_token', TELEGRAM_BOT_TOKEN)
+    default_chat = ps.get('tg_chat', TELEGRAM_CHAT_ID)
+    default_enabled = ps.get('tg_enabled', False)
+    default_entry = ps.get('tg_entry_enabled', True)
+    default_exit = ps.get('tg_exit_enabled', True)
+    
+    tg_token = st.text_input("Bot Token", value=default_token, type="password", key="tg_token")
+    tg_chat = st.text_input("Chat ID", value=default_chat, key="tg_chat")
+    tg_enabled = st.checkbox("Enable EMERGENCY EXIT Telegram Alert", value=default_enabled, key="tg_enabled")
+    tg_entry_enabled = st.checkbox("Enable ENTRY Alert (3 Light + Confidence)", value=default_entry, key="tg_entry_enabled")
+    tg_exit_enabled = st.checkbox("Enable EXIT Alert (All Exits)", value=default_exit, key="tg_exit_enabled")
+    
+    # Auto-save telegram settings whenever changed
+    try:
+        if tg_token != ps.get('tg_token') or tg_chat != ps.get('tg_chat'):
+            save_persistent_settings({'tg_token': tg_token, 'tg_chat': tg_chat, 'tg_enabled': tg_enabled, 'tg_entry_enabled': tg_entry_enabled, 'tg_exit_enabled': tg_exit_enabled})
+            st.session_state['persistent_settings'].update({'tg_token': tg_token, 'tg_chat': tg_chat})
+    except:
+        pass
     
     if st.button("Test Telegram Alert", key="tg_test"):
         if tg_token and tg_chat:
@@ -5523,8 +5633,21 @@ if "Universal 5,000+" in segment_mode:
 else:
     # V32 AUTO ALERT MODE - No manual scan needed + Time filter
     st.sidebar.markdown("### 🤖 Auto Alert Mode")
-    auto_alert_enabled = st.sidebar.checkbox("✅ Enable Auto Entry/Exit Alerts (No Scan Click)", value=True, help="When ON, scans every 5 min and sends Telegram automatically without clicking SCAN ALL")
-    auto_scan_interval = st.sidebar.slider("Auto Scan Interval (min)", 1, 15, 5, help="How often to auto scan for new setups")
+    # Load persistent for auto settings
+    ps_auto = st.session_state.get('persistent_settings', {})
+    default_auto_enabled = ps_auto.get('auto_alert_enabled', True)
+    default_scan_interval = ps_auto.get('auto_scan_interval', 5)
+    default_time_mode = ps_auto.get('auto_time_mode', "Full Day (9:15-15:30)")
+    
+    auto_alert_enabled = st.sidebar.checkbox("✅ Enable Auto Entry/Exit Alerts (No Scan Click)", value=default_auto_enabled, help="When ON, scans every 5 min and sends Telegram automatically without clicking SCAN ALL")
+    auto_scan_interval = st.sidebar.slider("Auto Scan Interval (min)", 1, 15, default_scan_interval, help="How often to auto scan for new setups")
+    
+    # Save auto settings
+    try:
+        save_persistent_settings({'auto_alert_enabled': auto_alert_enabled, 'auto_scan_interval': auto_scan_interval})
+        st.session_state['persistent_settings'].update({'auto_alert_enabled': auto_alert_enabled, 'auto_scan_interval': auto_scan_interval})
+    except:
+        pass
     
     # Time filter for auto trading - Morning/Afternoon
     st.sidebar.markdown("#### ⏰ Auto Trading Time")
@@ -5553,14 +5676,23 @@ else:
     st.session_state['auto_start'] = auto_start
     st.session_state['auto_end'] = auto_end
     
-    # V52 GLOBAL Conviction Filter - Always visible (bhai ka request)
+    # V53 PERSISTENT Conviction Filter - Always visible (bhai ka request) - Saves to file
     st.sidebar.divider()
-    st.sidebar.markdown("### 🎯 Conviction Filter (Range)")
+    st.sidebar.markdown("### 🎯 Conviction Filter (Range) - Persistent")
+    ps_conv = st.session_state.get('persistent_settings', {})
+    default_min_conv = ps_conv.get('min_conviction', ps_conv.get('global_min_conv', 65))
     if 'min_conviction' not in st.session_state:
-        st.session_state['min_conviction'] = 65
-    global_min = st.sidebar.slider("Global Min Conviction %", min_value=50, max_value=90, value=st.session_state.get('min_conviction',65), step=5, key="global_min_conv_slider", help="Yeh filter har trade pe lagega - dummy pe bhi check hota hai")
+        st.session_state['min_conviction'] = default_min_conv
+    global_min = st.sidebar.slider("Global Min Conviction %", min_value=50, max_value=90, value=st.session_state.get('min_conviction', default_min_conv), step=5, key="global_min_conv_slider", help="Yeh filter har trade pe lagega - dummy pe bhi check hota hai. Page close ke baad bhi save rahega!")
     st.session_state['min_conviction'] = global_min
-    st.sidebar.caption(f"Current: {global_min}%+ = Trade AYEGA, <{global_min}% = SKIP")
+    # Save immediately
+    try:
+        save_persistent_settings({'min_conviction': global_min, 'global_min_conv': global_min})
+        st.session_state['persistent_settings']['min_conviction'] = global_min
+        st.session_state['persistent_settings']['global_min_conv'] = global_min
+    except:
+        pass
+    st.sidebar.caption(f"Current: {global_min}%+ = Trade AYEGA, <{global_min}% = SKIP | 💾 Saved")
     
     # Check if current time is within auto trading window
     from datetime import datetime
@@ -5591,14 +5723,27 @@ else:
     
     st.sidebar.divider()
     st.sidebar.markdown("### 🔴 REAL TRADING (Angel One)")
-    enable_real_trading = st.sidebar.checkbox("⚠️ Enable REAL Money Trading", value=False, help="WARNING: Places REAL orders with REAL money on Angel One!")
-    real_trading_qty = st.sidebar.number_input("Real Trading Qty (Lots)", min_value=1, max_value=10, value=1, help="Number of lots for REAL trading")
+    enable_real_trading = st.sidebar.checkbox("⚠️ Enable REAL Money Trading", value=default_enable_real, help="WARNING: Places REAL orders with REAL money on Angel One! - Persistent, save hoga")
+    # Save real trading settings
+    try:
+        save_persistent_settings({'enable_real_trading': enable_real_trading, 'real_trading_qty_lots': real_trading_qty, 'real_trading_qty': real_trading_qty})
+        st.session_state['persistent_settings'].update({'enable_real_trading': enable_real_trading, 'real_trading_qty_lots': real_trading_qty})
+    except:
+        pass
+    ps_real = st.session_state.get('persistent_settings', {})
+    default_qty = ps_real.get('real_trading_qty_lots', ps_real.get('real_trading_qty', 1))
+    default_enable_real = ps_real.get('enable_real_trading', False)
+    real_trading_qty = st.sidebar.number_input("Real Trading Qty (Lots)", min_value=1, max_value=10, value=default_qty, help="Number of lots for REAL trading - Persistent")
     
     # V34 FULL AUTO ENTRY/EXIT AT MARKET
     auto_real_entry = False
     if enable_real_trading:
         st.sidebar.markdown("#### 🤖 Full Auto Mode")
-        auto_real_entry = st.sidebar.checkbox("🚀 Auto Entry @ MARKET on Setup", value=False, help="When ON: Auto BUY at market price when entry setup comes - no click needed!")
+        ps_auto_real = st.session_state.get('persistent_settings', {})
+        default_auto_entry = ps_auto_real.get('auto_real_entry_enabled', ps_auto_real.get('auto_real_entry', False))
+        default_auto_exit = ps_auto_real.get('auto_real_exit', False)
+        default_require_confirm = ps_auto_real.get('require_confirm_call', True)
+        auto_real_entry = st.sidebar.checkbox("🚀 Auto Entry @ MARKET on Setup", value=default_auto_entry, help="When ON: Auto BUY at market price when entry setup comes - no click needed! - Persistent")
         auto_real_exit = st.sidebar.checkbox("🎯 Auto Exit @ MARKET on SL/Target", value=False, help="When ON: Auto SELL at market price when SL or Target hits!")
         
         # V43 CONFIRM CALL - Safety for real money
