@@ -5554,7 +5554,7 @@ else:
             st.sidebar.success("📞 Confirm Call ON - Pehle call ayega fir entry")
             st.sidebar.caption("Telegram: High Conviction 78% - Reply YES to confirm entry, 60 sec me auto cancel")
             
-            # V49 TEST BUTTON - Immediate test
+            # V50 TEST BUTTON - Fixed - no function dependency
             if st.sidebar.button("🧪 TEST Confirm Call (85% Dummy)", key="test_confirm_call"):
                 try:
                     from datetime import datetime
@@ -5580,14 +5580,36 @@ else:
                         'conviction': 85,
                         'is_warmup': False
                     }
-                    ok_t, resp_t = send_confirm_call_telegram(dummy_idea, 108.2, 22800, '03 Nov 2026')
-                    if ok_t:
-                        st.sidebar.success(f"✅ TEST Confirm Call sent to Telegram! Check Telegram & below for YES/NO")
-                    else:
-                        st.sidebar.error(f"❌ Test failed: {resp_t} - Check Bot Token + Chat ID")
+                    # Direct telegram send - no function dependency
+                    try:
+                        bot_t, chat_t = get_telegram_keys()
+                        test_msg = f"""📞 *TEST CONFIRM CALL - 85% Dummy*
+
+🎯 High Conviction: 85% 🟢 GREEN 🔥 85%+ BEST!
+📊 NIFTY 22750 CE
+💰 LTP: ₹108.20 | Spot: ₹22800
+📅 Expiry: 03 Nov 2026
+⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
+✅ TEST - Real order pending
+
+✅ *To CONFIRM:* App me YES button click karo
+❌ *To CANCEL:* NO click ya ignore
+
+Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots
+
+_App me neeche YES/NO button dekho_"""
+                        ok_t, resp_t = send_telegram_message(bot_t, chat_t, test_msg)
+                        if ok_t:
+                            st.sidebar.success(f"✅ TEST Confirm Call sent to Telegram! Check Telegram & neeche YES/NO button")
+                        else:
+                            st.sidebar.error(f"❌ Test failed: {resp_t} - Token/Chat ID check karo")
+                    except Exception as e2:
+                        st.sidebar.error(f"Telegram error: {e2}")
                     st.rerun()
                 except Exception as e:
                     st.sidebar.error(f"Test error: {e}")
+                    import traceback
+                    traceback.print_exc()
         else:
             st.sidebar.warning("⚠️ No Confirm - Direct auto entry @ MARKET")
         
