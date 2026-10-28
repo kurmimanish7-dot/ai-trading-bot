@@ -576,9 +576,95 @@ def send_telegram_alert(bot_token, chat_id, message):
         return False
 
 
+def get_telegram_keys():
+    """V55.3 BULLETPROOF - Get token/chat from ALL sources - SURE SHOT"""
+    bot_token = ""
+    chat_id = ""
+    
+    # 1. UI inputs (tg_token, tg_chat from sidebar) - HIGHEST PRIORITY
+    try:
+        if 'tg_token' in st.session_state and st.session_state['tg_token']:
+            bot_token = str(st.session_state['tg_token']).strip()
+    except:
+        pass
+    try:
+        if 'tg_chat' in st.session_state and st.session_state['tg_chat']:
+            chat_id = str(st.session_state['tg_chat']).strip()
+    except:
+        pass
+    
+    # 2. Persistent file (page close ke baad bhi)
+    if not bot_token or not chat_id:
+        try:
+            ps = st.session_state.get('persistent_settings', {})
+            if not bot_token and ps.get('tg_token'):
+                bot_token = str(ps.get('tg_token')).strip()
+            if not chat_id and ps.get('tg_chat'):
+                chat_id = str(ps.get('tg_chat')).strip()
+        except:
+            pass
+    
+    # 3. Try loading from file directly
+    if not bot_token or not chat_id:
+        try:
+            import os, json
+            for fpath in ["persistent_settings.json", "/tmp/persistent_settings.json"]:
+                if os.path.exists(fpath):
+                    with open(fpath, 'r') as f:
+                        data = json.load(f)
+                        if not bot_token and data.get('tg_token'):
+                            bot_token = str(data.get('tg_token')).strip()
+                        if not chat_id and data.get('tg_chat'):
+                            chat_id = str(data.get('tg_chat')).strip()
+                        if bot_token and chat_id:
+                            break
+        except:
+            pass
+    
+    # 4. Secrets fallback
+    if not bot_token:
+        try:
+            bot_token = secret("TELEGRAM_BOT_TOKEN") or ""
+        except:
+            pass
+    if not bot_token:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
+                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
+        except:
+            pass
+    if not chat_id:
+        try:
+            chat_id = secret("TELEGRAM_CHAT_ID") or ""
+        except:
+            pass
+    if not chat_id:
+        try:
+            if hasattr(st, 'secrets') and "TELEGRAM_CHAT_ID" in st.secrets:
+                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
+        except:
+            pass
+    
+    return bot_token.strip(), chat_id.strip()
+
+def get_telegram_keys_debug():
+    """Debug version to see where keys came from"""
+    bot_token, chat_id = get_telegram_keys()
+    source = "NOT FOUND"
+    if 'tg_token' in st.session_state and st.session_state['tg_token']:
+        source = "UI Sidebar"
+    elif st.session_state.get('persistent_settings', {}).get('tg_token'):
+        source = "Persistent File"
+    elif hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
+        source = "Secrets"
+    return bot_token, chat_id, source
+
+
+
+
 def send_telegram_message(bot_token, chat_id, message):
-    """V55 STRICT TIME BLOCK: No alerts before 9:15 AM or after 3:30 PM IST - Bhai ka rule"""
-    # ===== V55 STRICT TIME FILTER - 9:15 AM to 3:30 PM only =====
+    """V55.3 SURE-SHOT: Exit alerts ALWAYS go, Entry blocked outside 9:15-3:30 - Bhai ka rule"""
+    # ===== V55.3 TIME FILTER - EXIT ALWAYS ALLOWED =====
     try:
         from datetime import datetime
         import pytz
@@ -586,66 +672,101 @@ def send_telegram_message(bot_token, chat_id, message):
         now = datetime.now(ist)
         curr_minutes = now.hour * 60 + now.minute
         
-        # Market hours: 9:15 = 555 mins, 15:30 = 930 mins
         market_start = 9 * 60 + 15  # 555
         market_end = 15 * 60 + 30   # 930
         
-        # Check if outside market hours
-        if curr_minutes < market_start or curr_minutes > market_end:
-            ml = message.lower()
-            # Allow only P&L and final reports after market, block all trade calls
-            is_trade_call = any(x in ml for x in ['entry', 'buy', 'sell', 'target', 'sl hit', 'trade', 'confirm call', 'trapped', 'breakout', 'option setup', 'conviction'])
-            is_pnl_allowed = any(y in ml for y in ['p&l', 'pnl', 'square off', 'day close', 'final', 'test'])
-            
-            # Block trade calls outside 9:15-3:30, allow P&L
-            if is_trade_call and not is_pnl_allowed:
-                # Exception: TEST messages allowed anytime for testing
-                if 'test' not in ml:
-                    return False, f"Blocked: Outside market hours {now.strftime('%H:%M IST')} - Only 9:15 AM to 3:30 PM allowed"
+        ml = message.lower()
+        # EXIT keywords - ALWAYS ALLOWED even after 3:30 and before 9:15
+        is_exit_alert = any(x in ml for x in ['exit', 'sl hit', 'sl:', 'target', 't1 hit', 't2 hit', 'time exit', 'momentum reversal', 'extreme exit', 'emergency exit', 'square off', 'p&l', 'pnl', 'day close', 'final', 'test exit'])
+        is_emergency = 'emergency' in ml or '🚨' in message
         
-        # Extra strict: After 3:15, block entries (old rule still)
-        if curr_minutes >= 945:  # 15:45 = 945 (3:15 PM)
-            ml = message.lower()
-            if any(x in ml for x in ['entry', 'buy', 'confirm call']) and 'test' not in ml:
-                if not any(y in ml for y in ['p&l', 'pnl', 'square off', 'day close', 'final', 'exit']):
-                    return False, "Blocked after 3:15 PM - No new entries"
+        # Outside market hours check
+        if curr_minutes < market_start or curr_minutes > market_end:
+            is_entry_call = any(x in ml for x in ['entry', 'confirm call', 'trapped', 'breakout', 'option setup', 'high conviction', 'conviction:'])
+            # Allow EXIT and EMERGENCY always
+            if is_entry_call and not is_exit_alert and not is_emergency and 'test' not in ml:
+                print(f"BLOCKED Entry outside market hours {now.strftime('%H:%M IST')}: {message[:50]}")
+                return False, f"Blocked: Outside market hours {now.strftime('%H:%M IST')} - ENTRY blocked (EXIT allowed)"
+        
+        # After 3:15, block ENTRIES but ALLOW ALL EXIT including emergency
+        if curr_minutes >= 945:  # 3:15 PM = 945
+            is_entry = any(x in ml for x in ['entry', 'confirm call', 'trapped sellers', 'breakout']) and 'test' not in ml and not is_exit_alert
+            if is_entry and not is_exit_alert and not is_emergency:
+                print(f"BLOCKED Entry after 3:15 PM: {message[:50]}")
+                return False, "Blocked after 3:15 PM - No new entries (Exit allowed)"
     except Exception as e:
-        # If time check fails, allow but log
         print(f"Time check error: {e}")
         pass
     
-    # Auto get from UI if not passed
-    if not bot_token or len(str(bot_token)) < 10:
+    # BULLETPROOF: Auto get from ALL sources if not passed
+    if not bot_token or len(str(bot_token)) < 10 or not chat_id:
         try:
             ui_t, ui_c = get_telegram_keys()
-            if ui_t:
+            if ui_t and (not bot_token or len(str(bot_token)) < 10):
                 bot_token = ui_t
             if ui_c and (not chat_id or len(str(chat_id))<3):
                 chat_id = ui_c
-        except:
+        except Exception as e:
+            print(f"get_telegram_keys error: {e}")
             pass
     
-    # Check enabled flags
+    # Check enabled flags - but EXIT flag check with default True
     try:
         ml = message.lower()
-        if ('entry' in ml or 'confirm call' in ml) and 'tg_entry_enabled' in st.session_state and not st.session_state['tg_entry_enabled']:
-            return False, "Entry disabled"
-        if ('exit' in ml or 'sl hit' in ml) and 'tg_exit_enabled' in st.session_state and not st.session_state['tg_exit_enabled']:
-            return False, "Exit disabled"
-    except:
+        if ('entry' in ml or 'confirm call' in ml) and 'test' not in ml:
+            if 'tg_entry_enabled' in st.session_state and not st.session_state['tg_entry_enabled']:
+                print(f"Entry disabled by flag")
+                return False, "Entry disabled"
+        if ('exit' in ml or 'sl hit' in ml or 'target' in ml or 'emergency' in ml or '🚨' in message) and 'test' not in ml:
+            # Check exit flag, default True if not set
+            exit_enabled = st.session_state.get('tg_exit_enabled', True)
+            if not exit_enabled:
+                print(f"Exit disabled by flag")
+                return False, "Exit disabled"
+    except Exception as e:
+        print(f"Flag check error: {e}")
         pass
 
     if not bot_token or not chat_id:
-        return False, "No token/chat"
+        print(f"No token/chat: token={bool(bot_token)} chat={bool(chat_id)}")
+        return False, "No token/chat - Check Telegram settings"
     
+    # Try sending with retry
     try:
         import requests
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-        r = requests.post(url, json=payload, timeout=8)
-        return r.status_code == 200, f"{r.status_code} {r.text[:100]}"
+        
+        # First attempt
+        r = requests.post(url, json=payload, timeout=10)
+        print(f"Telegram send: status={r.status_code} msg={message[:50]}")
+        
+        # Save last result for debug
+        try:
+            st.session_state['last_telegram_status'] = f"{r.status_code} - {message[:30]} - {datetime.now(IST).strftime('%H:%M:%S')}"
+            st.session_state['last_telegram_response'] = r.text[:200]
+        except:
+            pass
+        
+        if r.status_code == 200:
+            return True, f"{r.status_code} OK"
+        else:
+            # Retry without markdown if markdown fails
+            try:
+                payload2 = {"chat_id": chat_id, "text": message}
+                r2 = requests.post(url, json=payload2, timeout=10)
+                print(f"Telegram retry without markdown: status={r2.status_code}")
+                return r2.status_code == 200, f"{r2.status_code} retry {r2.text[:100]}"
+            except Exception as e2:
+                return False, f"{r.status_code} {r.text[:100]} retry failed {e2}"
+                
     except Exception as e:
-        return False, str(e)[:100]
+        print(f"Telegram send exception: {e}")
+        try:
+            st.session_state['last_telegram_status'] = f"ERROR - {str(e)[:50]}"
+        except:
+            pass
+        return False, str(e)[:200]
 
 def is_market_hours_for_alert():
     """V55: Check if current time is within 9:15 AM - 3:30 PM IST"""
@@ -672,83 +793,7 @@ TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "") if hasattr(st, 'secret
 
 # ===== V29 AUTO TELEGRAM ALERT SYSTEM - Entry + Exit without click =====
 
-def get_telegram_keys():
-    """V48: Get telegram token/chat from UI input OR secrets"""
-    bot_token = ""
-    chat_id = ""
-    # First try UI inputs (tg_token, tg_chat from sidebar)
-    try:
-        if 'tg_token' in st.session_state and st.session_state['tg_token']:
-            bot_token = str(st.session_state['tg_token']).strip()
-    except:
-        pass
-    try:
-        if 'tg_chat' in st.session_state and st.session_state['tg_chat']:
-            chat_id = str(st.session_state['tg_chat']).strip()
-    except:
-        pass
-    # Fallback to secrets
-    if not bot_token:
-        try:
-            bot_token = secret("TELEGRAM_BOT_TOKEN") or ""
-        except:
-            pass
-    if not bot_token:
-        try:
-            if hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
-                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
-        except:
-            pass
-    if not chat_id:
-        try:
-            chat_id = secret("TELEGRAM_CHAT_ID") or ""
-        except:
-            pass
-    if not chat_id:
-        try:
-            if hasattr(st, 'secrets') and "TELEGRAM_CHAT_ID" in st.secrets:
-                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
-        except:
-            pass
-    return bot_token.strip(), chat_id.strip()
 
-def get_telegram_keys():
-    """V48 FINAL FIX: Get token/chat from UI input OR secrets"""
-    bot_token = ""
-    chat_id = ""
-    try:
-        if 'tg_token' in st.session_state and st.session_state['tg_token']:
-            bot_token = str(st.session_state['tg_token']).strip()
-    except:
-        pass
-    try:
-        if 'tg_chat' in st.session_state and st.session_state['tg_chat']:
-            chat_id = str(st.session_state['tg_chat']).strip()
-    except:
-        pass
-    if not bot_token:
-        try:
-            bot_token = secret("TELEGRAM_BOT_TOKEN") or ""
-        except:
-            pass
-    if not bot_token:
-        try:
-            if hasattr(st, 'secrets') and "TELEGRAM_BOT_TOKEN" in st.secrets:
-                bot_token = str(st.secrets["TELEGRAM_BOT_TOKEN"]).strip()
-        except:
-            pass
-    if not chat_id:
-        try:
-            chat_id = secret("TELEGRAM_CHAT_ID") or ""
-        except:
-            pass
-    if not chat_id:
-        try:
-            if hasattr(st, 'secrets') and "TELEGRAM_CHAT_ID" in st.secrets:
-                chat_id = str(st.secrets["TELEGRAM_CHAT_ID"]).strip()
-        except:
-            pass
-    return bot_token.strip(), chat_id.strip()
 
 
 
@@ -1262,6 +1307,113 @@ def check_momentum_reversal(pos, current_rsi=60, current_trend="BULLISH"):
     except:
         return False, "", ""
 
+def auto_check_emergency_exit_from_lights(light1, light2):
+    """V55.2 NEW: Emergency Exit from Traffic Light Rules - Bhai ka request - momentum reverse pe alert"""
+    try:
+        if 'paper_portfolio' not in st.session_state:
+            return
+        
+        positions = st.session_state.paper_portfolio.get("positions", {})
+        if not positions:
+            return
+        
+        # Check if emergency condition
+        is_ce_emergency = (light1.get("status") == "RED" or light2.get("status") == "RED")
+        is_pe_emergency = (light1.get("status") == "GREEN" or light2.get("status") == "GREEN")
+        
+        # Check for reversal pattern too
+        is_ce_reversal = light1.get("reversal_risk", False) and "CE" in str(light1.get("pattern","")).upper() or light1.get("status") == "RED"
+        is_pe_reversal = "BULLISH" in light1.get("pattern","") and light2.get("status") == "GREEN"
+        
+        if not (is_ce_emergency or is_pe_emergency or is_ce_reversal or is_pe_reversal):
+            return
+        
+        # Get telegram keys
+        bot_token, chat_id = get_telegram_keys()
+        if not bot_token or not chat_id:
+            return
+        
+        # Check if exit alerts enabled
+        try:
+            if 'tg_exit_enabled' in st.session_state and not st.session_state['tg_exit_enabled']:
+                return
+        except:
+            pass
+        
+        # For each position, check if it matches emergency
+        for trade_id, pos in list(positions.items()):
+            try:
+                symbol = pos.get('symbol','NIFTY')
+                opt_type = pos.get('option_type','CE')
+                
+                should_exit = False
+                reason = ""
+                
+                if opt_type == "CE" and (is_ce_emergency or is_ce_reversal):
+                    should_exit = True
+                    reason = f"🚨 EMERGENCY EXIT CE: {light1.get('pattern','')} + {light2.get('reason','')[:50]} | Light1: {light1.get('status')} | Light2: {light2.get('status')} | Momentum Reversed!"
+                elif opt_type == "PE" and (is_pe_emergency or is_pe_reversal):
+                    should_exit = True
+                    reason = f"🚨 EMERGENCY EXIT PE: Opposite signal {light1.get('pattern','')} | Light1: {light1.get('status')} | Light2: {light2.get('status')} | Momentum Reversed!"
+                
+                if should_exit:
+                    # Avoid duplicate emergency alerts (check if already alerted in last 5 min)
+                    alert_key = f"emergency_alert_{trade_id}_{light1.get('status')}_{light2.get('status')}"
+                    last_alert = st.session_state.get(alert_key, 0)
+                    import time
+                    if time.time() - last_alert < 300:  # 5 min cooldown
+                        continue
+                    
+                    # Get live LTP
+                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
+                    if not is_ok or live_ltp <= 0:
+                        live_ltp = pos.get('entry_price', 0)
+                    
+                    entry = pos.get('entry_price', 0)
+                    pnl = (live_ltp - entry) * pos.get('qty', 0) if opt_type == "CE" else (entry - live_ltp) * pos.get('qty', 0)
+                    
+                    # Send emergency exit telegram
+                    msg = f"""🚨 *EMERGENCY EXIT - {symbol} {pos.get('strike')} {opt_type}*
+
+📊 *{symbol} {pos.get('strike')} {opt_type}*
+Entry: ₹{entry:.2f} → Exit: ₹{live_ltp:.2f}
+💰 *P&L:* ₹{pnl:+.2f}
+
+🔥 *Reason:* {reason}
+
+Pattern: {light1.get('pattern')}
+Vol: {light1.get('vol_ratio',0):.2f}x
+Light1: {light1.get('status')} | Light2: {light2.get('status')}
+
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+🤖 Emergency Exit from Traffic Light System"""
+                    
+                    ok, resp = send_telegram_message(bot_token, chat_id, msg)
+                    print(f"Emergency exit alert sent for {trade_id}: ok={ok} resp={resp}")
+                    
+                    # Mark alerted
+                    st.session_state[alert_key] = time.time()
+                    
+                    # Optionally auto close position if auto exit enabled
+                    try:
+                        if st.session_state.get('auto_real_entry_enabled', False):
+                            # Auto exit real + paper
+                            auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
+                        else:
+                            # Just close paper and alert
+                            pass
+                    except:
+                        pass
+                        
+            except Exception as e:
+                print(f"Emergency exit check error for {trade_id}: {e}")
+                continue
+                
+    except Exception as e:
+        print(f"Emergency exit check main error: {e}")
+        import traceback
+        traceback.print_exc()
+
 def auto_check_and_exit_positions():
     """Auto check SL/Target/Time exit and send Telegram Exit alert - V38 FIXED"""
     try:
@@ -1366,10 +1518,7 @@ def auto_check_and_exit_positions():
                             close_paper_position(trade_id, live_ltp, rev_reason)
                         
                         try:
-                            bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
-                            chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
-                            bot_token = str(bot_token).strip()
-                            chat_id = str(chat_id).strip()
+                            bot_token, chat_id = get_telegram_keys()
                             if bot_token and chat_id:
                                 pnl = (live_ltp - entry) * pos.get('qty',0)
                                 msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"{rev_reason} 🚨 EXTREME EXIT FULL SELL @ MARKET | {'🔴 REAL' if real_exit_enabled else 'PAPER'}")
@@ -1393,10 +1542,7 @@ def auto_check_and_exit_positions():
                         close_paper_position(trade_id, live_ltp, f"SL Hit @ ₹{live_ltp:.2f}")
                     
                     try:
-                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or secret("TELEGRAM_BOT_TOKEN") or ""
-                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or secret("TELEGRAM_CHAT_ID") or ""
-                        bot_token = str(bot_token).strip()
-                        chat_id = str(chat_id).strip()
+                        bot_token, chat_id = get_telegram_keys()
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
                             msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"SL Hit @ ₹{live_ltp:.2f} 🚨 | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT @ MARKET")
@@ -1418,10 +1564,7 @@ def auto_check_and_exit_positions():
                         close_paper_position(trade_id, live_ltp, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯")
                     
                     try:
-                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or secret("TELEGRAM_BOT_TOKEN") or ""
-                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or secret("TELEGRAM_CHAT_ID") or ""
-                        bot_token = str(bot_token).strip()
-                        chat_id = str(chat_id).strip()
+                        bot_token, chat_id = get_telegram_keys()
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
                             msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"Target 2 Hit @ ₹{live_ltp:.2f} 🎯 | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT @ MARKET")
@@ -1434,10 +1577,7 @@ def auto_check_and_exit_positions():
                 if live_ltp >= t1 and t1 > 0:
                     if not pos.get('t1_booked', False):
                         try:
-                            bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
-                            chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
-                            bot_token = str(bot_token).strip()
-                            chat_id = str(chat_id).strip()
+                            bot_token, chat_id = get_telegram_keys()
                             if bot_token and chat_id:
                                 pnl = (live_ltp - entry) * pos.get('qty',0)
                                 # 2 Lot logic: 1st lot T1 pe nikla
@@ -1513,10 +1653,7 @@ def auto_check_and_exit_positions():
                         close_paper_position(trade_id, live_ltp, reason)
                     
                     try:
-                        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","") or ""
-                        chat_id = st.secrets.get("TELEGRAM_CHAT_ID","") or ""
-                        bot_token = str(bot_token).strip()
-                        chat_id = str(chat_id).strip()
+                        bot_token, chat_id = get_telegram_keys()
                         if bot_token and chat_id:
                             pnl = (live_ltp - entry) * pos.get('qty',0)
                             msg = format_telegram_exit_alert(pos, live_ltp, pnl, f"{reason} @ ₹{live_ltp:.2f} ⏰ | {'🔴 REAL' if real_exit_enabled else 'PAPER'} EXIT @ MARKET")
@@ -5994,7 +6131,42 @@ else:
             else:
                 st.sidebar.caption(f"⚠️ 70% wala trade BLOCK hoga - filter {st.session_state.get('min_conviction',65)}%+ hai")
             
-            # V50 TEST BUTTON - Fixed + Conviction check
+            # V55.3 SURE-SHOT TEST BUTTONS - Entry + Exit
+            # TEST EXIT BUTTON (NEW)
+            if st.sidebar.button("🧪 TEST Exit Alerts (SL/T1/Emergency)", key="test_exit_alert"):
+                try:
+                    from datetime import datetime
+                    bot_t, chat_t, src = get_telegram_keys_debug()
+                    if not bot_t or not chat_t:
+                        st.sidebar.error(f"❌ Token/Chat missing! Source: {src} | Token len: {len(bot_t) if bot_t else 0}")
+                    else:
+                        test_pos = {'symbol': 'NIFTY', 'strike': 22750, 'option_type': 'CE', 'entry_price': 108.2, 'qty': 1}
+                        test_msg_sl = format_telegram_exit_alert(test_pos, 85.5, -22.7, "SL Hit @ ₹85.50 🚨 | PAPER EXIT @ MARKET - TEST EXIT")
+                        test_msg_t1 = format_telegram_exit_alert(test_pos, 135.0, +26.8, "Target 1 Hit @ ₹135.00 📈 1st LOT BOOKED - TEST EXIT")
+                        test_msg_emergency = f"""🚨 *TEST EMERGENCY EXIT - NIFTY 22750 CE*
+
+📊 *NIFTY 22750 CE*
+Entry: ₹108.20 → Exit: ₹95.30
+💰 *P&L:* ₹-12.90
+
+🔥 *Reason:* 🚨 EMERGENCY EXIT CE: Bearish Engulfing | Light1: RED | Light2: RED | Momentum Reversed! - TEST EXIT
+
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+🤖 TEST Emergency Exit - Sure Shot"""
+                        ok1, resp1 = send_telegram_message(bot_t, chat_t, test_msg_sl)
+                        import time
+                        time.sleep(1)
+                        ok2, resp2 = send_telegram_message(bot_t, chat_t, test_msg_t1)
+                        time.sleep(1)
+                        ok3, resp3 = send_telegram_message(bot_t, chat_t, test_msg_emergency)
+                        if ok1 or ok2 or ok3:
+                            st.sidebar.success(f"✅ TEST Exit sent! SL:{ok1} T1:{ok2} EMG:{ok3} | Source: {src} - Check Telegram NOW")
+                        else:
+                            st.sidebar.error(f"❌ Failed: {resp1[:50]} | {resp2[:50]} | {resp3[:50]} | Src: {src}")
+                except Exception as e:
+                    st.sidebar.error(f"Test exit error: {e}")
+            
+            # TEST ENTRY BUTTON
             if st.sidebar.button("🧪 TEST Confirm Call (85% Dummy)", key="test_confirm_call"):
                 try:
                     from datetime import datetime
@@ -6346,6 +6518,17 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     st.error(f"{WARNING} **REVERSAL EXIT PE:** Support bounce pattern detected.")
                 else:
                     st.success(f"{CHECK} **HOLD PE:** Downside momentum intact.")
+            
+            # V55.2 NEW: Auto check emergency exit from traffic lights and send Telegram
+            try:
+                # Show if positions exist
+                if 'paper_portfolio' in st.session_state and st.session_state.paper_portfolio.get("positions"):
+                    if light1["status"] == "RED" or light2["status"] == "RED" or light1["status"] == "GREEN" or light2["status"] == "GREEN":
+                        st.warning("🚨 Emergency Exit condition detected - Checking open positions for Telegram alert...")
+                        auto_check_emergency_exit_from_lights(light1, light2)
+            except Exception as e:
+                print(f"Emergency exit call error: {e}")
+                pass
 
     render_market_confluence_dashboard(underlying, selected_expiry, active_tf)
     st.divider()
