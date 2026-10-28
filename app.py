@@ -6295,11 +6295,17 @@ else:
     # V56 BUDGET FRIENDLY - Bhai ka 10k budget fix
     st.sidebar.markdown("#### 💰 Budget Friendly Strikes")
     st.sidebar.caption("ATM high premium? ITM/OTM/Nearby se choose karo")
-    user_budget = st.sidebar.number_input("Your Budget per Lot (₹)", min_value=1000, max_value=100000, value=10000, step=1000, key="user_budget", help="ATM ka cost zyada hai to OTM choose karo - budget ke andar")
+    # Use unique widget keys, session_state is auto-managed by Streamlit
+    if 'user_budget' not in st.session_state:
+        st.session_state['user_budget'] = 10000
+    user_budget = st.sidebar.number_input("Your Budget per Lot (₹)", min_value=1000, max_value=100000, value=st.session_state.get('user_budget', 10000), step=1000, key="user_budget_widget", help="ATM ka cost zyada hai to OTM choose karo - budget ke andar")
+    # Update session_state with different key
     st.session_state['user_budget'] = user_budget
     
     # Strike preference
-    strike_pref = st.sidebar.selectbox("Strike Preference", ["All (ITM+ATM+OTM+Nearby)", "ATM Only (Old)", "Budget Within (Auto)", "OTM Only (Cheapest)"], index=0, key="strike_pref")
+    if 'strike_pref' not in st.session_state:
+        st.session_state['strike_pref'] = "All (ITM+ATM+OTM+Nearby)"
+    strike_pref = st.sidebar.selectbox("Strike Preference", ["All (ITM+ATM+OTM+Nearby)", "ATM Only (Old)", "Budget Within (Auto)", "OTM Only (Cheapest)"], index=0, key="strike_pref_widget")
     st.session_state['strike_pref'] = strike_pref
     
     # Show cost preview
