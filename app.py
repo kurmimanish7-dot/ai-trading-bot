@@ -2264,15 +2264,34 @@ def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", 
                 data_list = records.get("data", [])
                 expiry_dates = records.get("expiryDates", [])
                 
-                # Find exact expiry match
-                # If target not in list, use first expiry (nearest)
+                # Find exact expiry match - FIXED for 03 Nov vs monthly
+                # If target not in list, use nearest but LOG it
                 if target_exp_norm:
-                    # Convert expiry_dates to normalized for comparison
                     norm_exps = [expiry_norm(d) for d in expiry_dates]
+                    print(f"Target exp {target_exp_norm}, NSE expiries {norm_exps[:3]}")
                     if target_exp_norm not in norm_exps:
-                        # Use nearest expiry
-                        if expiry_dates:
-                            target_exp_norm = expiry_norm(expiry_dates[0])
+                        # Target not in NSE list - maybe format mismatch, try to find same day/month
+                        # Look for expiry with same day
+                        found_same_day = False
+                        for exp_str in expiry_dates:
+                            try:
+                                exp_dt = datetime.strptime(expiry_norm(exp_str), "%Y-%m-%d").date()
+                                target_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d").date()
+                                if exp_dt.day == target_dt.day and exp_dt.month == target_dt.month:
+                                    target_exp_norm = expiry_norm(exp_str)
+                                    found_same_day = True
+                                    print(f"Found same day expiry {exp_str} for target {target_exp_norm}")
+                                    break
+                            except:
+                                continue
+                        if not found_same_day:
+                            # Use nearest expiry but warn
+                            if expiry_dates:
+                                old_target = target_exp_norm
+                                target_exp_norm = expiry_norm(expiry_dates[0])
+                                print(f"Target {old_target} not in NSE list, using nearest {target_exp_norm}")
+                    else:
+                        print(f"Exact expiry match found: {target_exp_norm}")
                 
                 for item in data_list:
                     if item.get("strikePrice") != int(strike):
@@ -2609,30 +2628,85 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
 
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
     """
-    V58: Tries Angel first, then NSE ultra fresh, then proxy - 100% broker matched
+    V59.1 FIXED: NSE direct -> Proxy -> Angel, NSE is source of truth
+    Fixes 305 vs 209 - NSE primary, not Angel
     """
-    # Try Angel first - 100% broker matched, works on Cloud
-    ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
-    if ok and ltp > 0:
-        return ltp, src, True
+    nse_ltp = 0
+    nse_src = ""
+    nse_ok = False
+    proxy_ltp = 0
+    proxy_src = ""
+    proxy_ok = False
+    angel_ltp = 0
+    angel_src = ""
+    angel_ok = False
     
-    # Angel failed, try NSE ultra fresh directly (bypasses Cloudflare)
+    # 1. Try NSE ultra fresh FIRST - most reliable, matches broker exactly
     try:
-        ltp_u, src_u, ok_u, _ = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, expiry)
+        ltp_u, src_u, ok_u, exp_used = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, expiry)
         if ok_u and ltp_u > 0:
-            return ltp_u, src_u + "_AFTER_ANGEL_FAIL", True
-    except:
-        pass
+            nse_ltp = ltp_u
+            nse_src = src_u
+            nse_ok = True
+            print(f"NSE LTP for {symbol} {strike} {opt_type}: {ltp_u} src {src_u}")
+    except Exception as e:
+        print(f"NSE ultra fresh failed: {e}")
     
-    # If Angel keys missing, try proxy
+    # 2. Try Proxy bypass SECOND - works on Streamlit Cloud when NSE direct blocked
+    if not nse_ok:
+        try:
+            ltp_p, src_p, ok_p = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
+            if ok_p and ltp_p > 0:
+                proxy_ltp = ltp_p
+                proxy_src = src_p
+                proxy_ok = True
+                print(f"Proxy LTP for {symbol} {strike} {opt_type}: {ltp_p} src {src_p}")
+        except Exception as e:
+            print(f"Proxy LTP failed: {e}")
+    
+    # 3. Try Angel THIRD - fallback, but can pick wrong expiry
     try:
-        ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
-        if ok2 and ltp2 > 0:
-            return ltp2, src2, True
-    except:
-        pass
+        ltp_a, src_a, ok_a = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
+        if ok_a and ltp_a > 0:
+            angel_ltp = ltp_a
+            angel_src = src_a
+            angel_ok = True
+            print(f"Angel LTP for {symbol} {strike} {opt_type}: {ltp_a} src {src_a}")
+    except Exception as e:
+        print(f"Angel LTP failed: {e}")
     
-    # Try ultimate
+    # Decision logic: Prefer NSE > Proxy > Angel, with cross-validation
+    # If we have NSE and Angel and big diff, NSE wins (weekly vs monthly)
+    if nse_ok and angel_ok:
+        diff_pct = abs(nse_ltp - angel_ltp) / max(nse_ltp, 1) * 100
+        if diff_pct > 35:
+            print(f"Big diff NSE {nse_ltp} vs Angel {angel_ltp} ({diff_pct:.0f}%) - NSE weekly vs Angel monthly, using NSE")
+            return nse_ltp, f"{nse_src}_NSE_WINS_DIFF_{diff_pct:.0f}pct_ANGEL_{angel_ltp}", True
+        else:
+            return nse_ltp, f"{nse_src}_NSE_ANGEL_BOTH_{angel_ltp}", True
+    elif proxy_ok and angel_ok:
+        diff_pct = abs(proxy_ltp - angel_ltp) / max(proxy_ltp, 1) * 100
+        if diff_pct > 35:
+            print(f"Big diff Proxy {proxy_ltp} vs Angel {angel_ltp} ({diff_pct:.0f}%) - using Proxy")
+            return proxy_ltp, f"{proxy_src}_PROXY_WINS_DIFF_{diff_pct:.0f}pct_ANGEL_{angel_ltp}", True
+        else:
+            return proxy_ltp, f"{proxy_src}_PROXY_ANGEL_BOTH_{angel_ltp}", True
+    elif nse_ok:
+        return nse_ltp, nse_src + "_NSE_ONLY", True
+    elif proxy_ok:
+        return proxy_ltp, proxy_src + "_PROXY_ONLY", True
+    elif angel_ok:
+        # Only Angel available - use it but warn it might be monthly
+        # Try to validate if Angel LTP seems too high for weekly
+        # For NIFTY 22650 CE with spot 22698, weekly 6 days should be ~200-250, not 300+
+        # If Angel > 300 for ATM/ITM weekly, likely monthly
+        if symbol == "NIFTY" and abs(int(strike) - 22700) < 200 and angel_ltp > 280 and "FALLBACK" in angel_src:
+            print(f"Angel LTP {angel_ltp} suspicious high for NIFTY {strike} weekly, likely monthly expiry")
+            # Still return but mark as suspicious
+            return angel_ltp, angel_src + "_SUSPICIOUS_MONTHLY", True
+        return angel_ltp, angel_src + "_ANGEL_ONLY", True
+    
+    # All failed, try ultimate
     try:
         ltp3, src3, ok3 = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
         if ok3 and ltp3 > 0:
@@ -2640,10 +2714,10 @@ def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
     except:
         pass
     
-    # All failed - return Angel src for debugging, but don't hide NSE
-    if "ANGEL_KEYS_MISSING" in src:
-        return 0, f"ADD_ANGEL_KEYS_IN_SECRETS + NSE_BLOCKED | {src}", False
-    return 0, src + "_NSE_ALSO_FAILED", False
+    # All failed
+    return 0, f"BOTH_FAILED_NSE_{nse_src}_PROXY_{proxy_src}_ANGEL_{angel_src}", False
+
+
 
 
 def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
@@ -7228,7 +7302,19 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                                     color_budget = "#00FF00"
                         except:
                             display_cost = trade_cost
-                        budget_html = f'<div style="background: {color_budget}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_label","")} | Cost: ₹{display_cost:.0f} (Live) | {budget_status}</div><div style="background: {moneyness_color}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 10px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_desc","")}</div>'
+                        # V59 FIX: Force cost to use live LTP from NSE, not theoretical
+                        # Get live LTP fresh for this strike for cost calculation
+                        actual_live_ltp = display_cost
+                        try:
+                            # Try to get fresh NSE LTP for accurate cost
+                            fresh_ltp, fresh_src, fresh_ok, _ = get_nse_option_ltp_ULTRA_FRESH(idea.get('symbol','NIFTY'), idea.get('strike',0), idea.get('option','CE'), idea.get('expiry'))
+                            if fresh_ok and fresh_ltp > 0:
+                                actual_live_ltp = fresh_ltp
+                                display_cost = fresh_ltp * lot_size if 'lot_size' in locals() and lot_size else fresh_ltp * 65
+                                print(f"Fresh LTP for cost {idea.get('strike')} {idea.get('option')}: {fresh_ltp} cost {display_cost}")
+                        except:
+                            pass
+                        budget_html = f'<div style="background: {color_budget}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_label","")} | Cost: ₹{display_cost:.0f} (Live ₹{actual_live_ltp:.1f}) | {budget_status}</div><div style="background: {moneyness_color}; color: black; padding: 2px 8px; border-radius: 4px; font-size: 10px; display: inline-block; margin-bottom: 5px; margin-left: 5px;">{idea.get("moneyness_desc","")}</div>'
                     
                     st.markdown(
                         f"""
