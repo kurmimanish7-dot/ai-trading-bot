@@ -629,6 +629,52 @@ def send_telegram_message(bot_token, chat_id, message):
     except Exception as e:
         return False, str(e)[:100]
 
+def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
+    """V52 FIXED: Confirm Call Telegram - No NameError"""
+    try:
+        from datetime import datetime
+        bot_token, chat_id = get_telegram_keys()
+        if not bot_token or not chat_id:
+            return False, "Telegram keys missing"
+        symbol = idea.get('symbol','NIFTY')
+        strike = idea.get('strike','')
+        opt = idea.get('option','')
+        conv = idea.get('confidence', idea.get('conviction', 0))
+        if conv >= 85:
+            color = "🟢 GREEN 🔥 85%+ BEST!"
+        elif conv >= 75:
+            color = "🟢 GREEN"
+        elif conv >= 65:
+            color = "🟡 YELLOW"
+        else:
+            color = "🔴 LOW"
+        qty = st.session_state.get('real_trading_qty_lots', 1)
+        msg = f"""📞 *CONFIRM CALL - {conv}% {symbol}*
+
+🎯 High Conviction: {conv}% {color}
+📊 {symbol} {strike} {opt}
+💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{spot:.2f}
+📅 Expiry: {expiry_label_str}
+⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
+✅ Real order pending - Confirm needed
+
+✅ *To CONFIRM:* App me YES button click karo
+❌ *To CANCEL:* NO click ya ignore
+
+Qty: {qty} lots
+Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
+
+_App me neeche YES/NO button dekho_"""
+        ok, resp = send_telegram_message(bot_token, chat_id, msg)
+        return ok, resp
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, str(e)[:100]
+
+
+
+
 def format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str):
     """Format Entry alert for Telegram - LIVE 108.20 based FIXED"""
     symbol = idea.get('symbol','NIFTY')
@@ -791,6 +837,7 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
                             # V46: Always create pending confirmation for 65%+ (even during warmup as pre-alert)
                             conviction_for_confirm = idea.get('confidence', idea.get('conviction', 0))
                             min_conv_for_confirm = st.session_state.get('min_conviction', 65)
+                            print(f"V52 Late Check: Conv {conviction_for_confirm}% >= Min {min_conv_for_confirm}% ? {conviction_for_confirm >= min_conv_for_confirm}")
                             if conviction_for_confirm >= min_conv_for_confirm:
                                 pending_key = f"pending_confirm_{idea.get('symbol')}_{idea.get('strike')}_{idea.get('option')}"
                                 # Store pending order for confirmation
@@ -5506,6 +5553,15 @@ else:
     st.session_state['auto_start'] = auto_start
     st.session_state['auto_end'] = auto_end
     
+    # V52 GLOBAL Conviction Filter - Always visible (bhai ka request)
+    st.sidebar.divider()
+    st.sidebar.markdown("### 🎯 Conviction Filter (Range)")
+    if 'min_conviction' not in st.session_state:
+        st.session_state['min_conviction'] = 65
+    global_min = st.sidebar.slider("Global Min Conviction %", min_value=50, max_value=90, value=st.session_state.get('min_conviction',65), step=5, key="global_min_conv_slider", help="Yeh filter har trade pe lagega - dummy pe bhi check hota hai")
+    st.session_state['min_conviction'] = global_min
+    st.sidebar.caption(f"Current: {global_min}%+ = Trade AYEGA, <{global_min}% = SKIP")
+    
     # Check if current time is within auto trading window
     from datetime import datetime
     try:
@@ -5552,9 +5608,24 @@ else:
         
         if require_confirm:
             st.sidebar.success("📞 Confirm Call ON - Pehle call ayega fir entry")
-            st.sidebar.caption("Telegram: High Conviction 78% - Reply YES to confirm entry, 60 sec me auto cancel")
             
-            # V50 TEST BUTTON - Fixed - no function dependency
+            # V52 NEW: Conviction Range Slider - Bhai ka request
+            if 'min_conviction' not in st.session_state:
+                st.session_state['min_conviction'] = 65
+            min_conv = st.sidebar.slider("🎯 Min Conviction % (Filter)", min_value=50, max_value=90, value=st.session_state.get('min_conviction',65), step=5, help="Isse kam conviction wale trades block honge. Eg: 65% set kiya to 65%+ wale hi confirm call ayega")
+            st.session_state['min_conviction'] = min_conv
+            st.sidebar.caption(f"Filter: {min_conv}%+ wale trades hi confirm call me ayenge")
+            st.sidebar.caption(f"Telegram: High Conviction {min_conv}%+ - Reply YES to confirm entry, 60 sec me auto cancel")
+            st.sidebar.info(f"📊 Range: {min_conv}% to 100% = Trade AYEGA | <{min_conv}% = SKIP hoga")
+            
+            # V52 CHECK: Current conviction range display
+            st.sidebar.markdown(f"**Current Filter:** `{st.session_state.get('min_conviction',65)}%+`")
+            if st.session_state.get('min_conviction',65) <= 70:
+                st.sidebar.caption("✅ 70% wala trade (screenshot wala) AYEGA - filter pass")
+            else:
+                st.sidebar.caption(f"⚠️ 70% wala trade BLOCK hoga - filter {st.session_state.get('min_conviction',65)}%+ hai")
+            
+            # V50 TEST BUTTON - Fixed + Conviction check
             if st.sidebar.button("🧪 TEST Confirm Call (85% Dummy)", key="test_confirm_call"):
                 try:
                     from datetime import datetime
@@ -5569,6 +5640,11 @@ else:
                         'target2': 140,
                         'entry': 108.2
                     }
+                    # V52: Check conviction filter for dummy
+                    curr_min = st.session_state.get('min_conviction',65)
+                    if 85 < curr_min:
+                        st.sidebar.warning(f"⚠️ Dummy 85% < Filter {curr_min}% - Real me BLOCK hota, par TEST me dikha raha hu")
+                    
                     pkey = f"pending_confirm_TEST_NIFTY_22750_CE"
                     st.session_state[pkey] = {
                         'idea': dummy_idea,
@@ -5636,6 +5712,77 @@ _App me neeche YES/NO button dekho_"""
         st.session_state['auto_real_entry_enabled'] = False
     
     st.sidebar.divider()
+
+    # V52 NEW: Render Pending Confirmations with YES/NO in MAIN AREA (bhai ka request - dummy click pe aata hai)
+    def render_pending_confirmations_ui():
+        """Show pending confirmations with YES/NO buttons in main area"""
+        try:
+            pending_keys = [k for k in st.session_state.keys() if k.startswith('pending_confirm_')]
+            if not pending_keys:
+                return
+            
+            st.markdown("## 📞 Pending Confirm Calls - Action Required!")
+            st.warning(f"⚠️ {len(pending_keys)} pending confirm call(s) - YES/NO click karo warna 60 sec me auto cancel")
+            
+            for pkey in pending_keys[:5]:  # Show max 5
+                try:
+                    pdata = st.session_state.get(pkey, {})
+                    if not pdata:
+                        continue
+                    idea = pdata.get('idea', {})
+                    conv = pdata.get('conviction', 0)
+                    live_ltp = pdata.get('live_ltp', 0)
+                    spot = pdata.get('spot', 0)
+                    qty = pdata.get('qty', 1)
+                    time_str = pdata.get('time','')
+                    
+                    # Check conviction range
+                    min_conv = st.session_state.get('min_conviction',65)
+                    is_pass = conv >= min_conv
+                    
+                    with st.container():
+                        col1, col2, col3 = st.columns([3,1,1])
+                        with col1:
+                            status_icon = "✅" if is_pass else "❌"
+                            st.markdown(f"""
+                            **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}**
+                            Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'}
+                            LTP: ₹{live_ltp:.2f} | Spot: {spot:.2f} | Qty: {qty} lots | Time: {time_str}
+                            """)
+                            if not is_pass:
+                                st.error(f"Conviction {conv}% < Filter {min_conv}% - Isliye BLOCK hoga real me")
+                        with col2:
+                            if st.button(f"✅ YES - BUY", key=f"yes_{pkey}", type="primary"):
+                                # Execute real trade
+                                try:
+                                    ok, msg = auto_entry_market_price(idea, live_ltp, qty, enable_real=st.session_state.get('enable_real_trading', False))
+                                    if ok:
+                                        st.success(f"✅ REAL ORDER PLACED: {msg}")
+                                        # Remove pending
+                                        del st.session_state[pkey]
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ Order failed: {msg}")
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                        with col3:
+                            if st.button(f"❌ NO - Cancel", key=f"no_{pkey}"):
+                                try:
+                                    del st.session_state[pkey]
+                                    st.info("❌ Cancelled - Order not placed")
+                                    st.rerun()
+                                except:
+                                    pass
+                        st.divider()
+                except Exception as e:
+                    st.error(f"Pending render error {pkey}: {e}")
+                    continue
+        except Exception as e:
+            pass
+    
+    # Call it before ticker
+    render_pending_confirmations_ui()
+    
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
     expiries = load_expiries(underlying)
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
