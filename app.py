@@ -6001,10 +6001,16 @@ else:
                         'conviction': 85,
                         'is_warmup': False
                     }
-                    # Direct telegram send - no function dependency
+                    # V54 FIXED: Use new Telegram YES/NO buttons for dummy too
                     try:
-                        bot_t, chat_t = get_telegram_keys()
-                        test_msg = f"""📞 *TEST CONFIRM CALL - 85% Dummy*
+                        ok_t, resp_t = send_confirm_call_telegram(dummy_idea, 108.2, 22800, '03 Nov 2026')
+                        if ok_t:
+                            st.sidebar.success(f"✅ TEST 85% Dummy with YES/NO buttons sent to Telegram! Ab Telegram pe hi YES dabao - direct trade!")
+                            st.sidebar.info(f"💡 App ke top pe bhi YES/NO buttons dikhenge")
+                        else:
+                            # Fallback
+                            bot_t, chat_t = get_telegram_keys()
+                            test_msg = f"""📞 *TEST CONFIRM CALL - 85% Dummy*
 
 🎯 High Conviction: 85% 🟢 GREEN 🔥 85%+ BEST!
 📊 NIFTY 22750 CE
@@ -6013,19 +6019,16 @@ else:
 ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
 ✅ TEST - Real order pending
 
-✅ *To CONFIRM:* App me YES button click karo
-❌ *To CANCEL:* NO click ya ignore
-
-Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots
-
-_App me neeche YES/NO button dekho_"""
-                        ok_t, resp_t = send_telegram_message(bot_t, chat_t, test_msg)
-                        if ok_t:
-                            st.sidebar.success(f"✅ TEST Confirm Call sent to Telegram! Check Telegram & neeche YES/NO button")
-                        else:
-                            st.sidebar.error(f"❌ Test failed: {resp_t} - Token/Chat ID check karo")
+Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
+                            ok2, resp2 = send_telegram_message(bot_t, chat_t, test_msg)
+                            if ok2:
+                                st.sidebar.success(f"✅ TEST sent (fallback) - Check Telegram")
+                            else:
+                                st.sidebar.error(f"❌ Test failed: {resp_t} - Token/Chat ID check karo")
                     except Exception as e2:
                         st.sidebar.error(f"Telegram error: {e2}")
+                        import traceback
+                        traceback.print_exc()
                     st.rerun()
                 except Exception as e:
                     st.sidebar.error(f"Test error: {e}")
