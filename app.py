@@ -854,7 +854,7 @@ def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
 
 🎯 High Conviction: {conv}% {color}
 📊 {symbol} {strike} {opt}
-💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{spot:.2f}
+💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{(spot or 0):.2f}
 📅 Expiry: {expiry_label_str}
 ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
 ✅ Real order pending - Confirm needed
@@ -1113,7 +1113,7 @@ Conviction: {conf}% | Expiry: {expiry_label_str}
 🎯 *T1:* ₹{t1:.2f}
 🎯 *T2:* ₹{t2:.2f}
 📈 *R/R:* 1:{rr:.2f}
-📍 *Spot:* {spot:.2f}
+📍 *Spot:* {(spot or 0):.2f}
 
 ⚡ *Buildup:* {idea.get('buildup','')}
 📝 *Why:* {idea.get('why','')[:200]}...
@@ -1148,7 +1148,7 @@ def format_telegram_budget_combined_alert(budget_ideas, live_spot, expiry_label_
         
         msg = f"""🚀 *BUDGET FRIENDLY TRADE SETUPS - {symbol} {opt}*
 
-📍 Spot: {live_spot:.2f} | Conviction: {conf}% | Expiry: {expiry_label_str}
+📍 Spot: {(live_spot or 0):.2f} | Conviction: {conf}% | Expiry: {expiry_label_str}
 💰 Your Budget: ₹{budget_ideas[0].get('budget', 10000):.0f} per lot
 
 {strikes_text}
@@ -6725,7 +6725,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             st.markdown(f"""
                             **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}**
                             Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'}
-                            LTP: ₹{live_ltp:.2f} | Spot: {spot:.2f} | Qty: {qty} lots | Time: {time_str}
+                            LTP: ₹{live_ltp:.2f} | Spot: {(spot or 0):.2f} | Qty: {qty} lots | Time: {time_str}
                             """)
                             if not is_pass:
                                 st.error(f"Conviction {conv}% < Filter {min_conv}% - Isliye BLOCK hoga real me")
@@ -7037,6 +7037,19 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             st.cache_data.clear()
             current_spot = get_spot(underlying)
             if current_spot is None: current_spot = get_spot_cached(underlying)
+            if current_spot is None:
+                try:
+                    # Try yfinance as last fallback
+                    import yfinance as yf
+                    yf_sym = INDEX_METADATA.get(underlying, {}).get("yfinance", "^NSEI")
+                    ticker = yf.Ticker(yf_sym)
+                    hist = ticker.history(period="1d")
+                    if not hist.empty:
+                        current_spot = float(hist['Close'].iloc[-1])
+                except:
+                    pass
+            if current_spot is None:
+                current_spot = 0  # Prevent TypeError on :.2f
             # V17.4 FIX: Force LIVE chain for conviction trade
             opt_chain, _ = get_chain(underlying, selected_expiry)
             if opt_chain.empty:
@@ -7220,7 +7233,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     st.markdown(
                         f"""
                         <div class="trade-card" style="border-left: 4px solid #00FF00;">
-                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>{budget_html}
+                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {(current_spot or 0):.2f}</div>{budget_html}
                             <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
                             <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
                         </div>
