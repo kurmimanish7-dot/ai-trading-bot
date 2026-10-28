@@ -575,6 +575,94 @@ def send_telegram_alert(bot_token, chat_id, message):
         logger.debug(f"Telegram failed: {e}")
         return False
 
+
+def send_telegram_message(bot_token, chat_id, message):
+    """V55 STRICT TIME BLOCK: No alerts before 9:15 AM or after 3:30 PM IST - Bhai ka rule"""
+    # ===== V55 STRICT TIME FILTER - 9:15 AM to 3:30 PM only =====
+    try:
+        from datetime import datetime
+        import pytz
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        curr_minutes = now.hour * 60 + now.minute
+        
+        # Market hours: 9:15 = 555 mins, 15:30 = 930 mins
+        market_start = 9 * 60 + 15  # 555
+        market_end = 15 * 60 + 30   # 930
+        
+        # Check if outside market hours
+        if curr_minutes < market_start or curr_minutes > market_end:
+            ml = message.lower()
+            # Allow only P&L and final reports after market, block all trade calls
+            is_trade_call = any(x in ml for x in ['entry', 'buy', 'sell', 'target', 'sl hit', 'trade', 'confirm call', 'trapped', 'breakout', 'option setup', 'conviction'])
+            is_pnl_allowed = any(y in ml for y in ['p&l', 'pnl', 'square off', 'day close', 'final', 'test'])
+            
+            # Block trade calls outside 9:15-3:30, allow P&L
+            if is_trade_call and not is_pnl_allowed:
+                # Exception: TEST messages allowed anytime for testing
+                if 'test' not in ml:
+                    return False, f"Blocked: Outside market hours {now.strftime('%H:%M IST')} - Only 9:15 AM to 3:30 PM allowed"
+        
+        # Extra strict: After 3:15, block entries (old rule still)
+        if curr_minutes >= 945:  # 15:45 = 945 (3:15 PM)
+            ml = message.lower()
+            if any(x in ml for x in ['entry', 'buy', 'confirm call']) and 'test' not in ml:
+                if not any(y in ml for y in ['p&l', 'pnl', 'square off', 'day close', 'final', 'exit']):
+                    return False, "Blocked after 3:15 PM - No new entries"
+    except Exception as e:
+        # If time check fails, allow but log
+        print(f"Time check error: {e}")
+        pass
+    
+    # Auto get from UI if not passed
+    if not bot_token or len(str(bot_token)) < 10:
+        try:
+            ui_t, ui_c = get_telegram_keys()
+            if ui_t:
+                bot_token = ui_t
+            if ui_c and (not chat_id or len(str(chat_id))<3):
+                chat_id = ui_c
+        except:
+            pass
+    
+    # Check enabled flags
+    try:
+        ml = message.lower()
+        if ('entry' in ml or 'confirm call' in ml) and 'tg_entry_enabled' in st.session_state and not st.session_state['tg_entry_enabled']:
+            return False, "Entry disabled"
+        if ('exit' in ml or 'sl hit' in ml) and 'tg_exit_enabled' in st.session_state and not st.session_state['tg_exit_enabled']:
+            return False, "Exit disabled"
+    except:
+        pass
+
+    if not bot_token or not chat_id:
+        return False, "No token/chat"
+    
+    try:
+        import requests
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        r = requests.post(url, json=payload, timeout=8)
+        return r.status_code == 200, f"{r.status_code} {r.text[:100]}"
+    except Exception as e:
+        return False, str(e)[:100]
+
+def is_market_hours_for_alert():
+    """V55: Check if current time is within 9:15 AM - 3:30 PM IST"""
+    try:
+        from datetime import datetime
+        import pytz
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        curr_minutes = now.hour * 60 + now.minute
+        market_start = 9 * 60 + 15  # 555 = 9:15 AM
+        market_end = 15 * 60 + 30   # 930 = 3:30 PM
+        return market_start <= curr_minutes <= market_end, now
+    except:
+        return True, None
+
+
+
 # Telegram Config - User will fill
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "") if hasattr(st, 'secrets') else ""
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "") if hasattr(st, 'secrets') else ""
@@ -662,104 +750,40 @@ def get_telegram_keys():
             pass
     return bot_token.strip(), chat_id.strip()
 
-def send_telegram_message(bot_token, chat_id, message):
-    """V48 FINAL: Uses UI token/chat + Blocks after 3:15"""
-    # Auto get from UI if not passed
-    if not bot_token or len(str(bot_token)) < 10:
-        try:
-            ui_t, ui_c = get_telegram_keys()
-            if ui_t:
-                bot_token = ui_t
-            if ui_c and (not chat_id or len(str(chat_id))<3):
-                chat_id = ui_c
-        except:
-            pass
-    
-    # Check enabled
-    try:
-        ml = message.lower()
-        if ('entry' in ml or 'confirm call' in ml) and 'tg_entry_enabled' in st.session_state and not st.session_state['tg_entry_enabled']:
-            return False, "Entry disabled"
-        if ('exit' in ml or 'sl hit' in ml) and 'tg_exit_enabled' in st.session_state and not st.session_state['tg_exit_enabled']:
-            return False, "Exit disabled"
-    except:
-        pass
-    
-    # Block after 3:15
-    try:
-        from datetime import datetime
-        import pytz
-        ist = pytz.timezone('Asia/Kolkata')
-        now = datetime.now(ist)
-        if now.hour*60+now.minute >= 945:
-            ml = message.lower()
-            if any(x in ml for x in ['entry','buy','sell','target','sl hit','trade','confirm call']):
-                if not any(y in ml for y in ['p&l','pnl','square off','day close','final']):
-                    return False, "Blocked after 3:15"
-    except:
-        pass
-    # Original continues
-def send_telegram_message(bot_token, chat_id, message):
-    """V48: Fixed to use UI token/chat + Block after 3:15"""
-    # If no token passed, get from UI/secrets
-    if not bot_token or len(str(bot_token)) < 10:
-        try:
-            ui_token, ui_chat = get_telegram_keys()
-            if ui_token:
-                bot_token = ui_token
-            if ui_chat and not chat_id:
-                chat_id = ui_chat
-        except:
-            pass
-    
-    # Check UI enabled flags
-    try:
-        # If entry alert disabled, block entry messages
-        msg_lower = message.lower()
-        if 'entry' in msg_lower or 'confirm call' in msg_lower:
-            if 'tg_entry_enabled' in st.session_state and not st.session_state['tg_entry_enabled']:
-                print(f"Entry alert disabled by user")
-                return False, "Entry alerts disabled"
-        if 'exit' in msg_lower or 'sl hit' in msg_lower or 'target' in msg_lower:
-            if 'tg_exit_enabled' in st.session_state and not st.session_state['tg_exit_enabled']:
-                print(f"Exit alert disabled")
-                return False, "Exit alerts disabled"
-    except:
-        pass
-    
-    try:
-        from datetime import datetime
-        import pytz
-        ist = pytz.timezone('Asia/Kolkata')
-        now = datetime.now(ist)
-        curr_min = now.hour*60+now.minute
-        if curr_min >= (15*60+15):
-            msg_lower = message.lower()
-            if any(x in msg_lower for x in ['entry', 'buy', 'sell', 'target', 'sl hit', 'trade', 'confirm call']):
-                if 'p&l' in msg_lower or 'pnl' in msg_lower or 'square off' in msg_lower or 'day close' in msg_lower or 'final' in msg_lower:
-                    pass
-                else:
-                    print(f"Telegram blocked after 3:15 PM: {message[:50]}")
-                    return False, "Blocked after 3:15 PM"
-    except:
-        pass
-    """Send Telegram message - works for both Entry and Exit"""
-    try:
-        import requests
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {
-            "chat_id": chat_id, 
-            "text": message, 
-            "parse_mode": "Markdown"
-        }
-        r = requests.post(url, json=payload, timeout=8)
-        return r.status_code == 200, r.text[:100] if r.status_code != 200 else "OK"
-    except Exception as e:
-        return False, str(e)[:100]
+
 
 def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
-    """V54 FIXED: Confirm Call Telegram with YES/NO Buttons IN TELEGRAM - Direct Trade"""
+    """V55 FIXED: Confirm Call with STRICT 9:15-3:30 time block - Bhai ka rule"""
     try:
+        # V55 STRICT TIME CHECK FIRST - No calls before 9:15 or after 3:30
+        try:
+            from datetime import datetime
+            import pytz
+            ist = pytz.timezone('Asia/Kolkata')
+            now = datetime.now(ist)
+            curr_min = now.hour * 60 + now.minute
+            market_start = 9 * 60 + 15
+            market_end = 15 * 60 + 30
+            # Allow TEST anytime
+            is_test = False
+            try:
+                # Check if this is test dummy
+                if idea.get('confidence', 0) == 85 and idea.get('strike') == 22750:
+                    is_test = True
+            except:
+                pass
+            
+            if not is_test:
+                if curr_min < market_start:
+                    print(f"BLOCKED Confirm Call - Before 9:15 AM: {now.strftime('%H:%M')}")
+                    return False, f"Blocked: Before 9:15 AM ({now.strftime('%H:%M IST')})"
+                if curr_min > market_end:
+                    print(f"BLOCKED Confirm Call - After 3:30 PM: {now.strftime('%H:%M')}")
+                    return False, f"Blocked: After 3:30 PM ({now.strftime('%H:%M IST')})"
+        except Exception as e:
+            print(f"Time check error in confirm call: {e}")
+            pass
+        
         from datetime import datetime
         import requests
         bot_token, chat_id = get_telegram_keys()
