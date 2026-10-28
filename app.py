@@ -33,6 +33,23 @@ try:
 except:
     HAS_AUTOREFRESH = False
 
+
+# V54 FIX: Define live_fragment early to avoid NameError
+try:
+    if hasattr(st, "fragment"):
+        live_fragment = st.fragment
+    elif hasattr(st, "experimental_fragment"):
+        live_fragment = st.experimental_fragment
+    else:
+        def live_fragment(*args, **kwargs):
+            def decorator(func): return func
+            return decorator
+except:
+    def live_fragment(*args, **kwargs):
+        def decorator(func): return func
+        return decorator
+
+
 # IST Definition - No external dependency (stdlib only)
 try:
     from zoneinfo import ZoneInfo
@@ -515,15 +532,20 @@ except Exception:
     pass
 
 # V54 TELEGRAM CALLBACK POLLER - Har 3 sec pe Telegram YES/NO check - Direct trade
-@live_fragment(run_every=3)
+# FIXED: No decorator here (live_fragment defined later) - regular function
 def telegram_callback_poller():
     try:
         if st.session_state.get('enable_real_trading', False) and st.session_state.get('require_confirm_call', True):
             handle_telegram_callback_query()
-    except Exception:
+    except Exception as e:
+        # print(f"Poller error: {e}")
         pass
 
-telegram_callback_poller()
+# Call poller on every run - will check Telegram YES/NO
+try:
+    telegram_callback_poller()
+except:
+    pass
 
 
 
