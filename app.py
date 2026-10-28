@@ -651,25 +651,37 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
                         # V43: Check if confirmation required
                         require_confirm = st.session_state.get('require_confirm_call', True)
                         if require_confirm:
-                            # Don't auto entry immediately, create pending confirmation
-                            pending_key = f"pending_confirm_{idea.get('symbol')}_{idea.get('strike')}_{idea.get('option')}"
-                            # Store pending order for confirmation
-                            st.session_state[pending_key] = {
-                                'idea': idea,
-                                'live_ltp': live_ltp,
-                                'spot': spot,
-                                'expiry': expiry_label_str,
-                                'qty': st.session_state.get('real_trading_qty_lots', 1),
-                                'time': datetime.now(IST).strftime('%H:%M:%S'),
-                                'conviction': idea.get('confidence', 0)
-                            }
-                            real_enabled = False  # Block auto, wait for confirm
-                            print(f"CONFIRM CALL PENDING: {pending_key}")
-                            # Send confirm call telegram
-                            try:
-                                send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str)
-                            except Exception as e:
-                                print(f"Confirm call telegram failed: {e}")
+                            # V46: Always create pending confirmation for 65%+ (even during warmup as pre-alert)
+                            conviction_for_confirm = idea.get('confidence', idea.get('conviction', 0))
+                            min_conv_for_confirm = st.session_state.get('min_conviction', 65)
+                            if conviction_for_confirm >= min_conv_for_confirm:
+                                pending_key = f"pending_confirm_{idea.get('symbol')}_{idea.get('strike')}_{idea.get('option')}"
+                                # Store pending order for confirmation
+                                st.session_state[pending_key] = {
+                                    'idea': idea,
+                                    'live_ltp': live_ltp,
+                                    'spot': spot,
+                                    'expiry': expiry_label_str,
+                                    'qty': st.session_state.get('real_trading_qty_lots', 1),
+                                    'time': datetime.now(IST).strftime('%H:%M:%S'),
+                                    'conviction': conviction_for_confirm,
+                                    'is_warmup': curr_min_w < 570 if 'curr_min_w' in locals() else False
+                                }
+                                real_enabled = False  # Block auto, wait for confirm
+                                print(f"CONFIRM CALL PENDING: {pending_key} Conv:{conviction_for_confirm}% Warmup:{curr_min_w < 570 if 'curr_min_w' in locals() else 'N/A'}")
+                                # Send confirm call telegram - ALWAYS for 65%+
+                                try:
+                                    ok_confirm, resp_confirm = send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str)
+                                    print(f"Confirm call telegram result: ok={ok_confirm} resp={resp_confirm}")
+                                    # Also store that confirm call was sent
+                                    st.session_state[f'confirm_sent_{pending_key}'] = True
+                                except Exception as e:
+                                    print(f"Confirm call telegram failed: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                            else:
+                                print(f"Confirm call skipped - conviction {conviction_for_confirm}% < {min_conv_for_confirm}% filter")
+                                real_enabled = False
                         else:
                             real_enabled = True
                             real_qty = st.session_state.get('real_trading_qty_lots', 1)
@@ -5629,7 +5641,7 @@ else:
     except:
         pass
     
-    # V32 AUTO SCAN LOGIC - Runs without clicking SCAN ALL + Time filter
+    # V45 FIXED AUTO SCAN LOGIC - High conviction alerts even outside time
     should_auto_scan = False
     if 'auto_alert_enabled' in locals() and auto_alert_enabled:
         # Check time filter
@@ -5639,25 +5651,37 @@ else:
             start_min_check = st.session_state.get('auto_start', (9,15))[0]*60 + st.session_state.get('auto_start', (9,15))[1]
             end_min_check = st.session_state.get('auto_end', (15,30))[0]*60 + st.session_state.get('auto_end', (15,30))[1]
             time_ok = start_min_check <= curr_min_check <= end_min_check
+            is_warmup_time = curr_min_check < 570  # Before 9:30
         except:
             time_ok = True
+            is_warmup_time = False
         
-        if time_ok:
-            import time
-            current_time = time.time()
-            last_scan = st.session_state.get('last_auto_scan', 0)
-            if current_time - last_scan >= (auto_scan_interval * 60):
-                should_auto_scan = True
-                st.session_state['last_auto_scan'] = current_time
-                st.info(f"🤖 Auto Scanning... (Interval: {auto_scan_interval} min) - No manual click needed! | Time: {now_ist_check.strftime('%H:%M IST')}")
-                # Also run exit check on auto scan
-                try:
-                    auto_check_and_exit_positions()
-                except:
-                    pass
-        else:
-            st.caption(f"⏸️ Auto trading paused - outside trading hours {st.session_state.get('auto_start', (9,15))[0]:02d}:{st.session_state.get('auto_start', (9,15))[1]:02d}-{st.session_state.get('auto_end', (15,30))[0]:02d}:{st.session_state.get('auto_end', (15,30))[1]:02d} IST")
-            # Even when paused, check exits for existing positions!
+        # V45: Always scan, but respect time for real trading
+        import time
+        current_time = time.time()
+        last_scan = st.session_state.get('last_auto_scan', 0)
+        
+        # For high conviction (85%+), scan every 2 min even outside time
+        # For normal, respect interval
+        scan_interval = auto_scan_interval
+        if current_time - last_scan >= (scan_interval * 60):
+            should_auto_scan = True
+            st.session_state['last_auto_scan'] = current_time
+            if time_ok:
+                st.info(f"🤖 Auto Scanning... (Interval: {auto_scan_interval} min) | Time: {now_ist_check.strftime('%H:%M IST')} | High conviction alerts ACTIVE")
+            else:
+                if is_warmup_time:
+                    st.warning(f"⏳ WARMUP {now_ist_check.strftime('%H:%M IST')} - Analysis only till 9:30, High conviction (85%+) alerts will still come!")
+                else:
+                    st.caption(f"⏸️ Outside trading hours {st.session_state.get('auto_start', (9,15))[0]:02d}:{st.session_state.get('auto_start', (9,15))[1]:02d}-{st.session_state.get('auto_end', (15,30))[0]:02d}:{st.session_state.get('auto_end', (15,30))[1]:02d} IST - Only exit checks")
+            # Always run exit check
+            try:
+                auto_check_and_exit_positions()
+                force_close_all_positions_same_day()
+            except:
+                pass
+        elif not time_ok:
+            # Even when not scanning, check exits
             try:
                 auto_check_and_exit_positions()
             except:
