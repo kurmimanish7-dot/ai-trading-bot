@@ -5723,17 +5723,18 @@ else:
     
     st.sidebar.divider()
     st.sidebar.markdown("### 🔴 REAL TRADING (Angel One)")
+    # V53 FIXED: Define defaults BEFORE using them
+    ps_real = st.session_state.get('persistent_settings', {})
+    default_qty = ps_real.get('real_trading_qty_lots', ps_real.get('real_trading_qty', 1))
+    default_enable_real = ps_real.get('enable_real_trading', False)
+    real_trading_qty = st.sidebar.number_input("Real Trading Qty (Lots)", min_value=1, max_value=10, value=default_qty, help="Number of lots for REAL trading - Persistent")
     enable_real_trading = st.sidebar.checkbox("⚠️ Enable REAL Money Trading", value=default_enable_real, help="WARNING: Places REAL orders with REAL money on Angel One! - Persistent, save hoga")
-    # Save real trading settings
+    # Save real trading settings AFTER both defined
     try:
         save_persistent_settings({'enable_real_trading': enable_real_trading, 'real_trading_qty_lots': real_trading_qty, 'real_trading_qty': real_trading_qty})
         st.session_state['persistent_settings'].update({'enable_real_trading': enable_real_trading, 'real_trading_qty_lots': real_trading_qty})
     except:
         pass
-    ps_real = st.session_state.get('persistent_settings', {})
-    default_qty = ps_real.get('real_trading_qty_lots', ps_real.get('real_trading_qty', 1))
-    default_enable_real = ps_real.get('enable_real_trading', False)
-    real_trading_qty = st.sidebar.number_input("Real Trading Qty (Lots)", min_value=1, max_value=10, value=default_qty, help="Number of lots for REAL trading - Persistent")
     
     # V34 FULL AUTO ENTRY/EXIT AT MARKET
     auto_real_entry = False
@@ -5744,11 +5745,11 @@ else:
         default_auto_exit = ps_auto_real.get('auto_real_exit', False)
         default_require_confirm = ps_auto_real.get('require_confirm_call', True)
         auto_real_entry = st.sidebar.checkbox("🚀 Auto Entry @ MARKET on Setup", value=default_auto_entry, help="When ON: Auto BUY at market price when entry setup comes - no click needed! - Persistent")
-        auto_real_exit = st.sidebar.checkbox("🎯 Auto Exit @ MARKET on SL/Target", value=False, help="When ON: Auto SELL at market price when SL or Target hits!")
+        auto_real_exit = st.sidebar.checkbox("🎯 Auto Exit @ MARKET on SL/Target", value=default_auto_exit, help="When ON: Auto SELL at market price when SL or Target hits! - Persistent")
         
         # V43 CONFIRM CALL - Safety for real money
         st.sidebar.markdown("#### 📞 Confirm Before Real Entry")
-        require_confirm = st.sidebar.checkbox("📞 Confirm Call Before Real BUY", value=True, help="When ON: Telegram pe confirm call ayega - YES bolo tabhi real entry hoga. Safe!")
+        require_confirm = st.sidebar.checkbox("📞 Confirm Call Before Real BUY", value=default_require_confirm, help="When ON: Telegram pe confirm call ayega - YES bolo tabhi real entry hoga. Safe! - Persistent")
         st.session_state['require_confirm_call'] = require_confirm
         
         if require_confirm:
