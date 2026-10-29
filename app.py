@@ -3266,21 +3266,19 @@ def get_nse_session() -> NSEExchangeSession:
 
 nse_client = get_nse_session()
 
-# ===== V20 TURBO DATA LAYER - FIX NSE BLOCK ON STREAMLIT CLOUD =====
-import random as _rand_v20
-
-_V20_UAS = [
+# ===== V21 TURBO DATA FIX - NSE BLOCK FIX FOR STREAMLIT CLOUD =====
+import random as _rand_v21
+_V21_UAS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
 ]
 
-def _v20_yahoo_spot(symbol):
+def _v21_yahoo(symbol):
     try:
         import requests as _rq
-        mp = {"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK","FINNIFTY":"NIFTY_FIN_SERVICE.NS","SENSEX":"^BSESN","INDIA_VIX":"^INDIAVIX"}
+        mp = {"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK","FINNIFTY":"^NSEBANK","SENSEX":"^BSESN","INDIA_VIX":"^INDIAVIX"}
         ysym = mp.get(symbol,"^NSEI")
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}?interval=1m&range=1d"
-        r = _rq.get(url, headers={"User-Agent": _rand_v20.choice(_V20_UAS)}, timeout=4)
+        r = _rq.get(url, headers={"User-Agent": _rand_v21.choice(_V21_UAS)}, timeout=4)
         if r.status_code==200:
             j=r.json()
             p=j['chart']['result'][0]['meta']['regularMarketPrice']
@@ -3290,74 +3288,58 @@ def _v20_yahoo_spot(symbol):
         pass
     return None
 
-def _v20_proxy_spot(symbol):
+def _v21_proxy_spot(symbol):
     try:
         import requests as _rq, json as _js, urllib.parse as _up
-        urls = [
-            f"https://api.allorigins.win/raw?url={_up.quote('https://www.nseindia.com/api/allIndices', safe='')}",
-        ]
-        for pu in urls:
-            try:
-                r=_rq.get(pu, timeout=6, headers={"User-Agent": _rand_v20.choice(_V20_UAS)})
-                if r.status_code==200:
-                    data=_js.loads(r.text)
-                    if "data" in data:
-                        chk="NIFTY 50" if symbol=="NIFTY" else ("NIFTY BANK" if symbol=="BANKNIFTY" else symbol)
-                        for it in data["data"]:
-                            if chk in str(it.get("index","")).upper() or chk in str(it.get("indexSymbol","")).upper():
-                                v=it.get("last")
-                                try:
-                                    fv=float(v)
-                                    if fv>0:
-                                        return fv
-                                except:
-                                    pass
-            except:
-                continue
+        pu = f"https://api.allorigins.win/raw?url={_up.quote('https://www.nseindia.com/api/allIndices', safe='')}"
+        r=_rq.get(pu, timeout=6, headers={"User-Agent": _rand_v21.choice(_V21_UAS)})
+        if r.status_code==200:
+            data=_js.loads(r.text)
+            if "data" in data:
+                chk="NIFTY 50" if symbol=="NIFTY" else ("NIFTY BANK" if symbol=="BANKNIFTY" else symbol)
+                for it in data["data"]:
+                    if chk in str(it.get("index","")).upper() or chk in str(it.get("indexSymbol","")).upper():
+                        try:
+                            fv=float(it.get("last"))
+                            if fv>0:
+                                return fv
+                        except:
+                            pass
     except:
         pass
     return None
 
+# Override fetch_verified_spot with turbo version
 def fetch_verified_spot(symbol: str):
     now_str=datetime.now(IST).strftime("%H:%M:%S IST")
-    # cache check
     try:
-        import time as _tt
         ck=f"_spot_{symbol}"
         if ck in _spot_cache_v19:
             val,ts=_spot_cache_v19[ck]
+            import time as _tt
             if _tt.time()-ts<2 and val and val>0:
-                return {"price":val,"change":0.0,"p_change":0.0,"source":"CACHE_V19","status":"CACHED","timestamp":now_str}
+                return {"price":val,"change":0.0,"p_change":0.0,"source":"CACHE","status":"CACHED","timestamp":now_str}
     except:
         pass
-    # Yahoo first - most reliable on cloud
-    try:
-        yp=_v20_yahoo_spot(symbol)
-        if yp and yp>0:
-            try:
-                _spot_cache_v19[f"_spot_{symbol}"]=(yp,time.time())
-            except:
-                pass
-            return {"price":yp,"change":0.0,"p_change":0.0,"source":"YAHOO_FINANCE","status":"LIVE_YAHOO","timestamp":now_str}
-    except:
-        pass
-    # Proxy NSE
-    try:
-        pp=_v20_proxy_spot(symbol)
-        if pp and pp>0:
-            try:
-                _spot_cache_v19[f"_spot_{symbol}"]=(pp,time.time())
-            except:
-                pass
-            return {"price":pp,"change":0.0,"p_change":0.0,"source":"NSE_PROXY","status":"LIVE_PROXY","timestamp":now_str}
-    except:
-        pass
-    # Direct NSE attempt
+    yp=_v21_yahoo(symbol)
+    if yp and yp>0:
+        try:
+            _spot_cache_v19[f"_spot_{symbol}"]=(yp,time.time())
+        except:
+            pass
+        return {"price":yp,"change":0.0,"p_change":0.0,"source":"YAHOO","status":"LIVE_YAHOO","timestamp":now_str}
+    pp=_v21_proxy_spot(symbol)
+    if pp and pp>0:
+        try:
+            _spot_cache_v19[f"_spot_{symbol}"]=(pp,time.time())
+        except:
+            pass
+        return {"price":pp,"change":0.0,"p_change":0.0,"source":"PROXY","status":"LIVE_PROXY","timestamp":now_str}
     for _ in range(2):
         try:
             import requests as _rq
             sess=_rq.Session()
-            sess.headers.update({"User-Agent":_rand_v20.choice(_V20_UAS),"Referer":"https://www.nseindia.com/option-chain"})
+            sess.headers.update({"User-Agent":_rand_v21.choice(_V21_UAS),"Referer":"https://www.nseindia.com/option-chain"})
             try:
                 sess.get("https://www.nseindia.com", timeout=3)
             except:
@@ -3378,50 +3360,40 @@ def fetch_verified_spot(symbol: str):
                                         _spot_cache_v19[f"_spot_{symbol}"]=(fv,time.time())
                                     except:
                                         pass
-                                    return {"price":fv,"change":float(it.get("variation",0)),"p_change":float(it.get("percentChange",0)),"source":"NSE_DIRECT","status":"LIVE_NSE","timestamp":now_str}
+                                    return {"price":fv,"change":float(it.get("variation",0)),"p_change":float(it.get("percentChange",0)),"source":"NSE","status":"LIVE_NSE","timestamp":now_str}
                             except:
                                 pass
         except:
             time.sleep(0.2)
             continue
-    # stale cache fallback
     try:
         ck=f"_spot_{symbol}"
         if ck in _spot_cache_v19:
             val,_=_spot_cache_v19[ck]
             if val and val>0:
-                return {"price":val,"change":0.0,"p_change":0.0,"source":"CACHE_STALE","status":"CACHED_STALE","timestamp":now_str}
+                return {"price":val,"change":0.0,"p_change":0.0,"source":"STALE","status":"STALE","timestamp":now_str}
     except:
         pass
-    return {"price":None,"change":0.0,"p_change":0.0,"source":"ALL_FAILED","status":"FAILED","timestamp":now_str}
+    return {"price":None,"change":0.0,"p_change":0.0,"source":"FAILED","status":"FAILED","timestamp":now_str}
 
 def get_spot(symbol: str):
-    res=fetch_verified_spot(symbol)
-    return res.get("price")
+    return fetch_verified_spot(symbol).get("price")
 
 def get_spot_cached(symbol):
     return get_spot(symbol)
 
 def get_chain(symbol: str, expiry):
-    # Try original NSE if works
     try:
-        # Call original via nse_client
         url=f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
         raw=nse_client.get_json(url)
         if raw and isinstance(raw, dict):
             rec=raw.get("records",{})
-            data_items=rec.get("data",[])
-            if data_items:
+            items=rec.get("data",[])
+            if items:
                 import pandas as pd
                 rows=[]
                 sync_tag=datetime.now(IST).strftime("%H:%M:%S")
-                target=str(expiry).lower() if expiry else ""
-                for item in data_items:
-                    ed=str(item.get("expiryDate","")).lower()
-                    if target and target.split("-")[0] not in ed and target not in ed:
-                        # try loose match - allow if target empty or month matches
-                        if target and target[:3] not in ed:
-                            pass
+                for item in items:
                     strike=item.get("strikePrice")
                     try:
                         sf=float(strike)
@@ -3437,22 +3409,21 @@ def get_chain(symbol: str, expiry):
                     import pandas as pd
                     df=pd.DataFrame(rows)
                     return df, df.copy()
-    except Exception as e:
-        print(f"Direct chain failed: {e}")
-    # Proxy fallback
+    except:
+        pass
     try:
         import requests as _rq, json as _js, urllib.parse as _up
         chain_url=f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
         proxy_url=f"https://api.allorigins.win/raw?url={_up.quote(chain_url, safe='')}"
-        r=_rq.get(proxy_url, timeout=8, headers={"User-Agent":_rand_v20.choice(_V20_UAS)})
+        r=_rq.get(proxy_url, timeout=8, headers={"User-Agent":_rand_v21.choice(_V21_UAS)})
         if r.status_code==200:
             data=_js.loads(r.text)
             if isinstance(data, dict) and "records" in data:
                 rec=data.get("records",{})
-                data_items=rec.get("data",[])
+                items=rec.get("data",[])
                 rows=[]
                 sync_tag=datetime.now(IST).strftime("%H:%M:%S")
-                for item in data_items:
+                for item in items:
                     strike=item.get("strikePrice")
                     try:
                         sf=float(strike)
@@ -3468,14 +3439,11 @@ def get_chain(symbol: str, expiry):
                     import pandas as pd
                     df=pd.DataFrame(rows)
                     return df, df.copy()
-    except Exception as e:
-        print(f"Proxy chain failed: {e}")
-    try:
-        import pandas as pd
-        empty=pd.DataFrame()
-        return empty, empty.copy()
     except:
-        return pd.DataFrame(), pd.DataFrame()
+        pass
+    import pandas as pd
+    empty=pd.DataFrame()
+    return empty, empty.copy()
 
 def get_chain_cached(symbol, expiry):
     return get_chain(symbol, expiry)
@@ -3485,7 +3453,7 @@ def get_india_vix():
         vix_data=fetch_verified_spot("INDIA_VIX")
         vix=vix_data.get("price")
         if vix is None or vix<=0:
-            vix=_v20_yahoo_spot("INDIA_VIX")
+            vix=_v21_yahoo("INDIA_VIX")
             if not vix:
                 vix=13.5
         regime="NORMAL"
@@ -3496,11 +3464,10 @@ def get_india_vix():
                 regime="HIGH_VOL"
             elif vix>16:
                 regime="ELEVATED"
-        return {"vix":vix,"regime":regime,"source":"V20_TURBO","timestamp":datetime.now(IST).strftime("%H:%M:%S IST")}
+        return {"vix":vix,"regime":regime,"source":"V21_TURBO","timestamp":datetime.now(IST).strftime("%H:%M:%S IST")}
     except:
         return {"vix":13.5,"regime":"NORMAL","source":"FALLBACK","timestamp":datetime.now(IST).strftime("%H:%M:%S IST")}
-
-# ===== END V20 TURBO =====
+# ===== END V21 TURBO =====
 
 
 def secret(name: str) -> str:
