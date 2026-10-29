@@ -19,7 +19,14 @@ import math
 import time
 
 # ===== V28 ULTRA FAST MULTI-SOURCE FETCHER - AUDITED FOR NSE IP BLOCK =====
-import yfinance as yf
+try:
+    import yfinance as yf
+    HAS_YFINANCE = True
+except ImportError:
+    yf = None
+    HAS_YFINANCE = False
+    print("yfinance not installed, using proxy fallback only")
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 _spot_cache_v28 = {}
@@ -27,7 +34,11 @@ _chain_cache_v28 = {}
 _fii_cache_v28 = {}
 
 def _v28_yahoo_spot(symbol="NIFTY"):
-    """Yahoo Finance - Most reliable on Streamlit Cloud - Never blocked"""
+    """Yahoo Finance - Optional, fallback to proxy if not installed"""
+    if "HAS_YFINANCE" in globals() and not HAS_YFINANCE:
+        return None
+    if yf is None:
+        return None
     try:
         mapping = {
             "NIFTY": "^NSEI",
