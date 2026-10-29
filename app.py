@@ -915,6 +915,7 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
 👇 *Telegram pe hi YES/NO dabao - Direct trade!*"""
 
         # Inline keyboard with YES/NO callback buttons - Direct in Telegram
+        app_url = secret("APP_URL") or secret("STREAMLIT_APP_URL") or "https://4gg.streamlit.app"
         keyboard = {
             "inline_keyboard": [
                 [
@@ -922,7 +923,7 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
                     {"text": "❌ NO - Cancel", "callback_data": f"NO_CANCEL_{pending_key}"}
                 ],
                 [
-                    {"text": "📊 App Kholo", "callback_data": f"OPEN_APP_{pending_key}"}
+                    {"text": "📊 App Kholo", "url": app_url}
                 ]
             ]
         }
@@ -961,129 +962,163 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
         return False, str(e)[:100]
 
 def handle_telegram_callback_query():
-    """V54 NEW: Handle YES/NO clicks from Telegram - Direct trade without app"""
     try:
         import requests
         from datetime import datetime
-        
         bot_token, chat_id = get_telegram_keys()
         if not bot_token:
             return False
-            
-        # Get last update_id
         last_update_id = st.session_state.get('tg_last_update_id', 0)
-        
         url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
-        params = {"offset": last_update_id + 1, "timeout": 2, "allowed_updates": '["callback_query"]'}
-        
-        r = requests.get(url, params=params, timeout=5)
+        params = {"offset": last_update_id + 1, "timeout": 1, "allowed_updates": ["callback_query"]}
+        try:
+            r = requests.get(url, params=params, timeout=3)
+        except:
+            return False
         if r.status_code != 200:
             return False
-            
         data = r.json()
         if not data.get('ok') or not data.get('result'):
             return False
-            
         for update in data['result']:
             update_id = update.get('update_id', 0)
             st.session_state['tg_last_update_id'] = update_id
-            
             callback = update.get('callback_query')
             if not callback:
                 continue
-                
             callback_id = callback.get('id')
             callback_data = callback.get('data', '')
-            from_user = callback.get('from', {})
             message = callback.get('message', {})
             msg_id = message.get('message_id')
-            
-            # Answer callback query to remove loading
+            chat_id_cb = message.get('chat', {}).get('id', chat_id)
             try:
                 answer_url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
-                requests.post(answer_url, json={"callback_query_id": callback_id}, timeout=3)
+                requests.post(answer_url, json={"callback_query_id": callback_id, "text": "Processing..."}, timeout=2)
             except:
                 pass
-            
+            if callback_data.startswith("OPEN_APP_"):
+                try:
+                    app_url = secret("APP_URL") or secret("STREAMLIT_APP_URL") or "https://4gg.streamlit.app"
+                    edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                    txt_app = "App Link: " + str(app_url)
+                    requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": txt_app}, timeout=3)
+                except:
+                    pass
+                continue
             if callback_data.startswith("YES_BUY_"):
                 pending_key = callback_data.replace("YES_BUY_", "")
                 pdata = st.session_state.get(pending_key)
                 if not pdata:
-                    pdata = load_pending_from_file(pending_key)
-                    if pdata:
-                        st.session_state[pending_key] = pdata
-                    if not pdata:
-                        continue
-                    
+                    try:
+                        pdata = load_pending_from_file(pending_key)
+                        if pdata:
+                            st.session_state[pending_key] = pdata
+                    except:
+                        pass
+                if not pdata:
+                    try:
+                        import json as _js, pathlib as _pl
+                        for pf in [_pl.Path("pending_confirms.json"), _pl.Path("/tmp/pending_confirms.json")]:
+                            if pf.exists():
+                                alld = _js.loads(pf.read_text(encoding='utf-8'))
+                                for k,v in alld.items():
+                                    if pending_key in k or k in pending_key:
+                                        pdata = v
+                                        pending_key = k
+                                        st.session_state[pending_key] = pdata
+                                        break
+                            if pdata:
+                                break
+                    except:
+                        pass
+                if not pdata:
+                    try:
+                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                        txt_msg = "EXPIRED Order " + str(pending_key) + " not found. Scan again."
+                        requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": txt_msg}, timeout=3)
+                    except:
+                        pass
+                    continue
                 idea = pdata.get('idea', {})
                 live_ltp = pdata.get('live_ltp', 0)
                 qty = pdata.get('qty', 1)
-                
-                # Execute real trade
                 try:
-                    from datetime import datetime
-                    ok, msg = auto_entry_market_price(idea, live_ltp, qty, enable_real=st.session_state.get('enable_real_trading', False))
-                    
-                    # Edit Telegram message to show result
+                    is_real = st.session_state.get('enable_real_trading', False) or st.session_state.get('auto_real_entry_enabled', False)
+                    if is_real:
+                        ok, msg = auto_entry_market_price(idea, live_ltp, qty, enable_real=True)
+                        exec_type = "REAL"
+                    else:
+                        try:
+                            lot_size = 30 if idea.get('symbol')=='BANKNIFTY' else 75
+                            execute_paper_order(
+                                symbol=idea.get('symbol','NIFTY'),
+                                action="BUY",
+                                strike=idea.get('strike',0),
+                                option_type=idea.get('option','CE'),
+                                price=live_ltp,
+                                qty=qty * lot_size,
+                                sl=idea.get('sl', live_ltp*0.8),
+                                t1=idea.get('target1', live_ltp*1.2),
+                                t2=idea.get('target2', live_ltp*1.5),
+                                expiry=idea.get('expiry',''),
+                                reasons=str(idea.get('why','')) + " | Telegram YES",
+                                is_equity=False
+                            )
+                            ok = True
+                            msg = "PAPER Trade Placed @ Rs " + str(round(live_ltp,2))
+                        except Exception as e:
+                            ok = False
+                            msg = "Paper error: " + str(e)[:80]
+                        exec_type = "PAPER"
                     try:
-                        if ok:
-                            new_text = f"✅ *ORDER PLACED!*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\n💰 LTP: ₹{live_ltp:.2f}\nQty: {qty} lots\n\n✅ {msg}\n\nTime: {datetime.now(IST).strftime('%H:%M:%S IST')}"
-                        else:
-                            new_text = f"❌ *ORDER FAILED*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\nError: {msg}"
-                        
                         edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                        edit_payload = {
-                            "chat_id": chat_id,
-                            "message_id": msg_id,
-                            "text": new_text,
-                            "parse_mode": "Markdown"
-                        }
-                        requests.post(edit_url, json=edit_payload, timeout=5)
-                    except:
-                        pass
-                    
-                    # Send confirmation
+                        if ok:
+                            new_text = exec_type + " ORDER PLACED! " + str(idea.get('symbol')) + " " + str(idea.get('strike')) + " " + str(idea.get('option')) + " Entry Rs " + str(live_ltp) + " Qty " + str(qty) + " - " + str(msg)
+                        else:
+                            new_text = "FAILED " + str(idea.get('symbol')) + " Error: " + str(msg)
+                        requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": new_text}, timeout=4)
+                    except Exception as e:
+                        print("Edit fail")
                     try:
                         if ok:
-                            send_telegram_message(bot_token, chat_id, f"✅ *REAL ORDER EXECUTED VIA TELEGRAM*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\n💰 Entry: ₹{live_ltp:.2f}\nQty: {qty} lots\n\nTelegram YES se direct trade!")
+                            conf = exec_type + " VIA TELEGRAM " + str(idea.get('symbol')) + " " + str(idea.get('strike')) + " Entry Rs " + str(live_ltp)
+                            try:
+                                ultra_fast_telegram_send(conf, force=True)
+                            except:
+                                send_telegram_message(bot_token, str(chat_id_cb), conf)
                     except:
                         pass
-                    
-                    # Remove pending
                     try:
                         if pending_key in st.session_state:
                             del st.session_state[pending_key]
+                        delete_pending_from_file(pending_key)
                     except:
                         pass
-                        
                 except Exception as e:
                     try:
-                        send_telegram_message(bot_token, chat_id, f"❌ Error placing order: {str(e)[:100]}")
+                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                        requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": "Error: " + str(e)[:100]}, timeout=3)
                     except:
                         pass
-                        
             elif callback_data.startswith("NO_CANCEL_"):
                 pending_key = callback_data.replace("NO_CANCEL_", "")
                 try:
                     if pending_key in st.session_state:
                         del st.session_state[pending_key]
+                    delete_pending_from_file(pending_key)
                 except:
                     pass
                 try:
                     edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                    edit_payload = {
-                        "chat_id": chat_id,
-                        "message_id": msg_id,
-                        "text": f"❌ *CANCELLED via Telegram*\n\nPending order {pending_key} cancelled.\nTime: {datetime.now(IST).strftime('%H:%M:%S IST')}",
-                        "parse_mode": "Markdown"
-                    }
-                    requests.post(edit_url, json=edit_payload, timeout=5)
+                    txt_c = "CANCELLED Order " + str(pending_key)
+                    requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": txt_c}, timeout=3)
                 except:
                     pass
-                    
         return True
     except Exception as e:
-        print(f"Callback handle error: {e}")
+        print("Callback handle error")
+        import traceback
+        traceback.print_exc()
         return False
 
 
