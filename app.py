@@ -915,6 +915,7 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
 👇 *Telegram pe hi YES/NO dabao - Direct trade!*"""
 
         # Inline keyboard with YES/NO callback buttons - Direct in Telegram
+        app_url = secret("APP_URL") or secret("STREAMLIT_APP_URL") or "https://4gg.streamlit.app"
         keyboard = {
             "inline_keyboard": [
                 [
@@ -922,7 +923,7 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
                     {"text": "❌ NO - Cancel", "callback_data": f"NO_CANCEL_{pending_key}"}
                 ],
                 [
-                    {"text": "📊 App Kholo", "callback_data": f"OPEN_APP_{pending_key}"}
+                    {"text": "📊 App Kholo", "url": app_url}
                 ]
             ]
         }
@@ -1453,8 +1454,10 @@ Light1: {light1.get('status')} | Light2: {light2.get('status')}
                     
                     # Optionally auto close position if auto exit enabled
                     try:
-                        if st.session_state.get('auto_real_entry_enabled', False):
-                            # Auto exit real + paper
+                        # V26: AUTO EXIT ALWAYS - Manual Buy + Auto Sell
+                        if st.session_state.get('enable_real_trading', False) or st.session_state.get('auto_real_exit', False) or st.session_state.get('auto_real_entry_enabled', False):
+                            # Matrix: SL=100% exit, T1=50% book, T2=full exit, 15:15 force close
+
                             auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
                         else:
                             # Just close paper and alert
@@ -3377,7 +3380,21 @@ def fetch_verified_spot(symbol: str):
     return {"price":None,"change":0.0,"p_change":0.0,"source":"FAILED","status":"FAILED","timestamp":now_str}
 
 def get_spot(symbol: str):
-    return fetch_verified_spot(symbol).get("price")
+    try:
+        res = fetch_verified_spot(symbol)
+        p = res.get("price")
+        return p
+    except:
+        return None
+
+def get_spot_safe_for_display(symbol: str):
+    try:
+        p = get_spot(symbol)
+        if p and p > 0:
+            return float(p)
+        return 0.0
+    except:
+        return 0.0
 
 def get_spot_cached(symbol):
     return get_spot(symbol)
@@ -7080,7 +7097,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     st.markdown(
                         f"""
                         <div class="trade-card" style="border-left: 4px solid #00FF00;">
-                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>
+                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {(current_spot or 0):.2f}</div>
                             <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
                             <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
                         </div>
