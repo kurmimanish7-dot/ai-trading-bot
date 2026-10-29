@@ -59,6 +59,57 @@ except Exception:
     IST = timezone(timedelta(hours=5, minutes=30))  # IST = UTC+5:30 fallback
 
 
+
+# ===== V19 FIX - PENDING FILE + SPEED CACHE =====
+import json as _json_pending
+from pathlib import Path as _Path_pending
+_PENDING_FILE_V19 = _Path_pending("pending_confirms.json")
+_PENDING_TMP_V19 = _Path_pending("/tmp/pending_confirms.json")
+
+def save_pending_to_file(pkey, data):
+    try:
+        alld = {}
+        if _PENDING_FILE_V19.exists():
+            try:
+                alld = _json_pending.loads(_PENDING_FILE_V19.read_text(encoding='utf-8'))
+            except:
+                alld = {}
+        safe = _json_pending.loads(_json_pending.dumps(data, default=str))
+        alld[pkey] = safe
+        _PENDING_FILE_V19.write_text(_json_pending.dumps(alld, default=str), encoding='utf-8')
+        try:
+            _PENDING_TMP_V19.write_text(_json_pending.dumps(alld, default=str), encoding='utf-8')
+        except:
+            pass
+    except Exception as e:
+        print(f"save_pending err {e}")
+
+def load_pending_from_file(pkey):
+    for pf in [_PENDING_FILE_V19, _PENDING_TMP_V19]:
+        if pf.exists():
+            try:
+                alld = _json_pending.loads(pf.read_text(encoding='utf-8'))
+                if pkey in alld:
+                    return alld[pkey]
+            except:
+                continue
+    return None
+
+def delete_pending_from_file(pkey):
+    for pf in [_PENDING_FILE_V19, _PENDING_TMP_V19]:
+        if pf.exists():
+            try:
+                alld = _json_pending.loads(pf.read_text(encoding='utf-8'))
+                if pkey in alld:
+                    del alld[pkey]
+                    pf.write_text(_json_pending.dumps(alld, default=str), encoding='utf-8')
+            except:
+                pass
+
+_spot_cache_v19 = {}
+# ===== END V19 HELPERS =====
+
+
 from zoneinfo import ZoneInfo
 
 
@@ -126,58 +177,7 @@ FLAG_IN = "\U0001F1EE\U0001F1F3"# 🇮🇳
 CHART_BAR = "\U0001F4CA"        # 📊
 CHART_UP = "\U0001F4C8"         # 📈
 TARGET = "\U0001F3AF"           # 🎯
-TEMPLE = "\U0001F3DB"
-# ===== V18 FIX: Persistent pending + Speed boost =====
-import json as _json
-from pathlib import Path as _Path
-_PENDING_FILE = _Path("pending_confirms.json")
-_PENDING_TMP = _Path("/tmp/pending_confirms.json")
-
-def save_pending_to_file(pkey, data):
-    try:
-        alld = {}
-        if _PENDING_FILE.exists():
-            try:
-                alld = _json.loads(_PENDING_FILE.read_text(encoding='utf-8'))
-            except:
-                alld = {}
-        # make safe
-        safe = _json.loads(_json.dumps(data, default=str))
-        alld[pkey] = safe
-        _PENDING_FILE.write_text(_json.dumps(alld, default=str), encoding='utf-8')
-        try:
-            _PENDING_TMP.write_text(_json.dumps(alld, default=str), encoding='utf-8')
-        except:
-            pass
-    except Exception as e:
-        print(f"save_pending err {e}")
-
-def load_pending_from_file(pkey):
-    for pf in [_PENDING_FILE, _PENDING_TMP]:
-        if pf.exists():
-            try:
-                alld = _json.loads(pf.read_text(encoding='utf-8'))
-                if pkey in alld:
-                    return alld[pkey]
-            except:
-                continue
-    return None
-
-def delete_pending_from_file(pkey):
-    for pf in [_PENDING_FILE, _PENDING_TMP]:
-        if pf.exists():
-            try:
-                alld = _json.loads(pf.read_text(encoding='utf-8'))
-                if pkey in alld:
-                    del alld[pkey]
-                    pf.write_text(_json.dumps(alld, default=str), encoding='utf-8')
-            except:
-                pass
-
-# Speed cache for spot
-_spot_cache = {}
-
-           # 🏛️
+TEMPLE = "\U0001F3DB"           # 🏛️
 COMPASS = "\U0001F9ED"          # 🧭
 GLOBE = "\U0001F310"            # 🌐
 TRAFFIC = "\U0001F6A6"          # 🚦
@@ -1009,8 +1009,11 @@ def handle_telegram_callback_query():
                 pending_key = callback_data.replace("YES_BUY_", "")
                 pdata = st.session_state.get(pending_key)
                 if not pdata:
-                    # Try to find in persistent
-                    continue
+                    pdata = load_pending_from_file(pending_key)
+                    if pdata:
+                        st.session_state[pending_key] = pdata
+                    if not pdata:
+                        continue
                     
                 idea = pdata.get('idea', {})
                 live_ltp = pdata.get('live_ltp', 0)
@@ -1267,7 +1270,6 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
                                     save_pending_to_file(pending_key, st.session_state[pending_key])
                                 except:
                                     pass
-
                                 real_enabled = False  # Block auto, wait for confirm
                                 print(f"CONFIRM CALL PENDING: {pending_key} Conv:{conviction_for_confirm}% Warmup:{curr_min_w < 570 if 'curr_min_w' in locals() else 'N/A'}")
                                 # Send confirm call telegram - ALWAYS for 65%+
@@ -3005,9 +3007,11 @@ with st.sidebar.expander("📱 Telegram EMERGENCY EXIT Alert", expanded=False):
     
     # Auto-save telegram settings whenever changed
     try:
-        if tg_token != ps.get('tg_token') or tg_chat != ps.get('tg_chat'):
+        try:
             save_persistent_settings({'tg_token': tg_token, 'tg_chat': tg_chat, 'tg_enabled': tg_enabled, 'tg_entry_enabled': tg_entry_enabled, 'tg_exit_enabled': tg_exit_enabled})
-            st.session_state['persistent_settings'].update({'tg_token': tg_token, 'tg_chat': tg_chat})
+            st.session_state['persistent_settings'].update({'tg_token': tg_token, 'tg_chat': tg_chat, 'tg_enabled': tg_enabled, 'tg_entry_enabled': tg_entry_enabled, 'tg_exit_enabled': tg_exit_enabled})
+        except:
+            pass
     except:
         pass
     
@@ -3707,12 +3711,11 @@ def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
 
 
 def get_spot(symbol: str) -> Optional[float]:
-    # V18 SPEED - 1.5 sec cache to avoid NSE block
     try:
         import time as _tt
         ck = f"_spot_{symbol}"
-        if ck in _spot_cache:
-            val, ts = _spot_cache[ck]
+        if ck in _spot_cache_v19:
+            val, ts = _spot_cache_v19[ck]
             if _tt.time() - ts < 1.5 and val:
                 return val
     except:
@@ -3720,7 +3723,7 @@ def get_spot(symbol: str) -> Optional[float]:
     res = fetch_verified_spot(symbol)
     price = res.get("price")
     try:
-        _spot_cache[ck] = (price, _tt.time())
+        _spot_cache_v19[ck] = (price, _tt.time())
     except:
         pass
     return price
@@ -3748,10 +3751,6 @@ def determine_settlement_phase() -> str:
     if current_time < dtime(17, 30): return "LIVE SESSION (PREVIOUS CLOSE)"
     elif dtime(17, 30) <= current_time <= dtime(19, 0): return "RECONCILIATION IN PROGRESS"
     else: return "TODAY'S PROVISIONAL FIGURES"
-
-@st.cache_data(ttl=3, show_spinner=False)
-def get_chain_cached_v18(symbol: str, expiry: Optional[str]):
-    return get_chain(symbol, expiry)
 
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_fii_dii() -> Dict[str, Any]:
@@ -4841,6 +4840,27 @@ def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str,
 
     st.session_state.paper_portfolio["positions"][trade_id] = position_entry
     st.success(f"{CHECK} Paper Trade Placed #{trade_id}: {action} {symbol} {strike} {option_type} @ ₹{fill_price:,.2f} [Qty: {qty}]")
+    try:
+        bot_t, chat_t = get_telegram_keys()
+        if bot_t and chat_t:
+            msg_rules = f"""ACTIVE CALL - ENTRY DONE
+Symbol {symbol} {strike} {option_type}
+Entry Rs {fill_price:.2f} Qty {qty}
+SL Rs {sl:.2f}
+T1 Rs {t1:.2f}
+T2 Rs {t2:.2f}
+Expiry {expiry}
+Time {datetime.now(IST).strftime('%H:%M:%S IST')}
+
+EXIT RULES INSTANT:
+- SL Rs {sl:.2f} -> EXIT
+- T1 Rs {t1:.2f} -> 50pct Book
+- T2 Rs {t2:.2f} -> FULL EXIT
+- 15:15 Force Close
+Trade ID {trade_id}"""
+            send_telegram_message(bot_t, chat_t, msg_rules)
+    except Exception as e:
+        print(f"Active call telegram fail {e}")
     return True
 
 def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
@@ -5790,7 +5810,14 @@ segment_mode = st.sidebar.radio("Active Market Segment", [f"{CHART_BAR} Index & 
 
 st.sidebar.divider()
 st.sidebar.header(f"{SHIELD} Risk Circuit Settings")
-max_loss_input = st.sidebar.number_input("Max Daily Loss Limit (₹)", min_value=1000.0, max_value=50000.0, value=10000.0, step=1000.0)
+ps_loss = st.session_state.get('persistent_settings', {})
+default_loss = ps_loss.get('max_daily_loss_limit', 10000.0)
+max_loss_input = st.sidebar.number_input("Max Daily Loss Limit (₹)", min_value=1000.0, max_value=50000.0, value=float(default_loss), step=1000.0)
+try:
+    save_persistent_settings({'max_daily_loss_limit': float(max_loss_input)})
+    st.session_state['persistent_settings']['max_daily_loss_limit'] = float(max_loss_input)
+except:
+    pass
 st.session_state.paper_portfolio["daily_loss_limit"] = max_loss_input
 
 if st.sidebar.button(f"{REFRESH} Force Refresh All Caches", use_container_width=True):
@@ -6109,6 +6136,11 @@ else:
     
     st.session_state['auto_start'] = auto_start
     st.session_state['auto_end'] = auto_end
+    try:
+        save_persistent_settings({'auto_time_mode': auto_time_mode, 'auto_start': auto_start, 'auto_end': auto_end})
+        st.session_state['persistent_settings']['auto_time_mode'] = auto_time_mode
+    except:
+        pass
     
     # V53 PERSISTENT Conviction Filter - Always visible (bhai ka request) - Saves to file
     st.sidebar.divider()
@@ -6275,7 +6307,6 @@ Entry: ₹108.20 → Exit: ₹95.30
                         save_pending_to_file(pkey, st.session_state[pkey])
                     except:
                         pass
-
                     # V54 FIXED: Use new Telegram YES/NO buttons for dummy too
                     try:
                         ok_t, resp_t = send_confirm_call_telegram(dummy_idea, 108.2, 22800, '03 Nov 2026')
@@ -6314,6 +6345,11 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         
         # Store in session state for background tasks
         st.session_state['auto_real_entry_enabled'] = auto_real_entry and auto_real_exit
+        try:
+            save_persistent_settings({'auto_real_entry_enabled': auto_real_entry, 'auto_real_exit': auto_real_exit, 'require_confirm_call': require_confirm, 'real_trading_qty_lots': real_trading_qty, 'enable_real_trading': enable_real_trading})
+            st.session_state['persistent_settings'].update({'auto_real_entry_enabled': auto_real_entry, 'auto_real_exit': auto_real_exit, 'require_confirm_call': require_confirm})
+        except:
+            pass
         # Don't hardcode 75 - will use INDEX_METADATA per symbol at order time
         st.session_state['real_trading_qty_lots'] = real_trading_qty
         st.session_state['enable_real_trading'] = enable_real_trading
@@ -6411,13 +6447,23 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     
     # Call it before ticker
     render_pending_confirmations_ui()
+
+    @live_fragment(run_every=1)
+    def _instant_exit_v19():
+        try:
+            auto_check_and_exit_positions()
+        except:
+            pass
+    _instant_exit_v19()
+
     @live_fragment(run_every=2)
-    def _tg_poller():
+    def _tg_poll_v19():
         try:
             handle_telegram_callback_query()
         except:
             pass
-    _tg_poller()
+    _tg_poll_v19()
+
 
     
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
@@ -6425,10 +6471,10 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @live_fragment(run_every=1)
+    @live_fragment(run_every=2)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
-        chain_result = get_chain_cached_v18(selected_underlying, current_expiry)
+        chain_result = get_chain(selected_underlying, current_expiry)
         chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
         _raw_chain = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
         pcr = calculate_pcr(chain)
