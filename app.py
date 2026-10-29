@@ -686,6 +686,83 @@ import pandas as pd
 import requests
 import concurrent.futures
 import streamlit as st
+
+
+# ===== V33 FIX: Session State Initialization - Prevents AttributeError =====
+def init_session_state():
+    """Initialize all session_state keys with safe defaults - called once at startup"""
+    try:
+        if "paper_portfolio" not in st.session_state:
+            st.session_state.paper_portfolio = {
+                "positions": {},
+                "daily_pnl": 0.0,
+                "daily_realized_pnl": 0.0,
+                "total_pnl": 0.0,
+                "session_date": datetime.now(IST).strftime('%Y-%m-%d'),
+                "circuit_broken": False,
+                "trade_history": [],
+                "cash_balance": 500000.0,
+                "starting_balance": 500000.0,
+                "daily_loss_limit": 10000.0,
+            }
+        else:
+            pp = st.session_state.paper_portfolio
+            if not isinstance(pp, dict):
+                st.session_state.paper_portfolio = {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "session_date": datetime.now(IST).strftime('%Y-%m-%d'), "circuit_broken": False, "trade_history": [], "cash_balance": 500000.0}
+            else:
+                pp.setdefault("positions", {})
+                pp.setdefault("daily_pnl", 0.0)
+                pp.setdefault("daily_realized_pnl", 0.0)
+                pp.setdefault("total_pnl", 0.0)
+                pp.setdefault("trade_history", [])
+                pp.setdefault("cash_balance", 500000.0)
+        
+        defaults = {
+            "kill_switch": False,
+            "auto_traded_today": set(),
+            "pending_confirm_calls": {},
+            "enable_real_trading": False,
+            "auto_real_entry_enabled": False,
+            "require_confirm_call": True,
+        }
+        for k, v in defaults.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
+                
+        if st.session_state.paper_portfolio is None:
+            st.session_state.paper_portfolio = {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
+    except Exception as e:
+        print(f"Session init error: {e}")
+        try:
+            st.session_state.paper_portfolio = {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
+        except:
+            pass
+
+def get_paper_portfolio_safe():
+    """Safe getter - never raises AttributeError"""
+    try:
+        if "paper_portfolio" not in st.session_state:
+            init_session_state()
+        pp = st.session_state.get("paper_portfolio")
+        if pp is None or not isinstance(pp, dict):
+            init_session_state()
+            pp = st.session_state.get("paper_portfolio", {"positions": {}})
+        return pp
+    except:
+        return {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
+
+def get_positions_safe():
+    try:
+        pp = get_paper_portfolio_safe()
+        pos = pp.get("positions", {})
+        return pos if isinstance(pos, dict) else {}
+    except:
+        return {}
+
+# Call early
+init_session_state()
+# ===== END V33 FIX =====
+
 try:
     from streamlit_autorefresh import st_autorefresh
     HAS_AUTOREFRESH = True
@@ -3876,7 +3953,12 @@ if "paper_portfolio" not in st.session_state:
 
 def check_daily_reset():
     today_str = datetime.now(IST).date().isoformat()
-    if st.session_state.paper_portfolio.get("session_date") != today_str:
+    # V33: Safe check with get
+    try:
+        pp_date = get_paper_portfolio_safe().get("session_date")
+    except:
+        pp_date = None
+    if pp_date != today_str:
         st.session_state.paper_portfolio["session_date"] = today_str
         st.session_state.paper_portfolio["daily_realized_pnl"] = 0.0
         st.session_state.paper_portfolio["circuit_broken"] = False
@@ -5630,7 +5712,7 @@ def calculate_trade_friction(buy_price: float, sell_price: float, qty: int, is_o
 # 17. STATEFUL PAPER-TRADING RISK CONTROLS & EXECUTION
 # =====================================================================
 def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float, is_equity: bool = False) -> Tuple[bool, str]:
-    port = st.session_state.paper_portfolio
+    port = get_paper_portfolio_safe()  # V33 safe
     check_daily_reset()
 
     if port.get("circuit_broken", False):
@@ -5905,7 +5987,7 @@ def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str,
     return True
 
 def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
-    port = st.session_state.paper_portfolio
+    port = get_paper_portfolio_safe()  # V33 safe
     if trade_id not in port["positions"]: return
 
     pos = port["positions"].pop(trade_id)
@@ -8135,7 +8217,8 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 # ==============================================================================
 st.divider()
 st.markdown(f"## {SHIELD} Active Paper Positions & Risk Ledger (Options & Equities)")
-positions = st.session_state.paper_portfolio["positions"]
+# V33 FIX: Safe getter to prevent AttributeError on first run
+positions = get_positions_safe()
 if not positions:
     st.info("No active open paper positions in portfolio.")
 else:
