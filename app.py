@@ -904,7 +904,7 @@ def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
 
 🎯 High Conviction: {conv}% {color}
 📊 {symbol} {strike} {opt}
-💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{spot:.2f}
+💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{(spot or 0):.2f}
 📅 Expiry: {expiry_label_str}
 ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
 ✅ Real order pending - Confirm needed
@@ -1189,7 +1189,7 @@ Conviction: {conf}% | Expiry: {expiry_label_str}
 🎯 *T1:* ₹{t1:.2f}
 🎯 *T2:* ₹{t2:.2f}
 📈 *R/R:* 1:{rr:.2f}
-📍 *Spot:* {spot:.2f}
+📍 *Spot:* {(spot or 0):.2f}
 
 ⚡ *Buildup:* {idea.get('buildup','')}
 📝 *Why:* {idea.get('why','')[:200]}...
@@ -3412,7 +3412,38 @@ def fetch_verified_spot(symbol: str):
     return {"price":None,"change":0.0,"p_change":0.0,"source":"FAILED","status":"FAILED","timestamp":now_str}
 
 def get_spot(symbol: str):
-    return fetch_verified_spot(symbol).get("price")
+    try:
+        res = fetch_verified_spot(symbol)
+        p = res.get("price")
+        if p is None or p <= 0:
+            # Try cache fallback
+            try:
+                ck = f"_spot_{symbol}"
+                if ck in _spot_cache_v19:
+                    val, ts = _spot_cache_v19[ck]
+                    if val and val > 0:
+                        return float(val)
+            except:
+                pass
+            # Last resort - try Yahoo direct
+            try:
+                y = _v21_yahoo(symbol)
+                if y and y > 0:
+                    return float(y)
+            except:
+                pass
+        return p
+    except:
+        return None
+
+def get_spot_safe_for_display(symbol: str):
+    try:
+        p = get_spot(symbol)
+        if p and p > 0:
+            return float(p)
+        return 0.0
+    except:
+        return 0.0
 
 def get_spot_cached(symbol):
     return get_spot(symbol)
@@ -6714,7 +6745,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             st.markdown(f"""
                             **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}**
                             Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'}
-                            LTP: ₹{live_ltp:.2f} | Spot: {spot:.2f} | Qty: {qty} lots | Time: {time_str}
+                            LTP: ₹{live_ltp:.2f} | Spot: {(spot or 0):.2f} | Qty: {qty} lots | Time: {time_str}
                             """)
                             if not is_pass:
                                 st.error(f"Conviction {conv}% < Filter {min_conv}% - Isliye BLOCK hoga real me")
@@ -6800,10 +6831,24 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         s1, s2, s3, s4 = st.columns(4)
         with s1:
-            if spot is not None and spot > 0:
-                st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(spot), delta="Verified Exchange Feed" if market_open() else "Official Session Close", delta_color="normal")
-            else:
-                st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Feeds")
+            try:
+                if spot is not None and spot > 0:
+                    st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(spot), delta="Verified Exchange Feed" if market_open() else "Official Session Close", delta_color="normal")
+                else:
+                    # Try fallback display
+                    try:
+                        fb = get_spot_safe_for_display(selected_underlying)
+                        if fb and fb > 0:
+                            st.metric(f"{selected_underlying} Spot (Yahoo Fallback)", fmt(fb), delta="Yahoo Finance", delta_color="normal")
+                        else:
+                            st.metric(f"{selected_underlying} Spot", "Syncing... " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds - Retrying")
+                    except:
+                        st.metric(f"{selected_underlying} Spot", "Awaiting Tick... " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds")
+            except Exception as e:
+                try:
+                    st.metric(f"{selected_underlying} Spot", "Error: " + str(e)[:30], delta="Retrying")
+                except:
+                    st.metric(f"{selected_underlying} Spot", "Syncing...", delta="Connecting")
         with s2: st.metric("India VIX", fmt(vix_info['vix']), delta=vix_info['regime'], delta_color="off")
         with s3: st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "N/A", delta="Derivatives Bias", delta_color="off")
         with s4: st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
@@ -7112,16 +7157,21 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}" if is_option else f"{idea['symbol']} (CASH SPOT)"
                     sub_badge = f"INDEX OPTION ({idea['option']} BUYING)" if is_option else "INDEX SPOT / CASH"
 
-                    st.markdown(
-                        f"""
-                        <div class="trade-card" style="border-left: 4px solid #00FF00;">
-                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>
-                            <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
-                            <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                    try:
+                        spot_display = f"{(current_spot or 0):.2f}" if current_spot and current_spot > 0 else "Syncing..."
+                        card_title_safe = card_title if card_title else "Trade"
+                        sub_badge_safe = sub_badge if sub_badge else "OPTION"
+                        tf_safe = idea.get('timeframe','15 Min')
+                        holding_safe = idea.get('holding','SHORT')
+                        conf_safe = idea.get('confidence',0)
+                        exp_safe = idea.get('expiry') or 'Current Weekly'
+                        html_card = '<div class="trade-card" style="border-left: 4px solid #00FF00;"><div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">LIVE SPOT: ' + str(spot_display) + '</div><h3>Trade Setup ' + str(i) + ' - ' + str(card_title_safe) + '</h3><b>Type:</b> ' + str(sub_badge_safe) + ' | <b>Timeframe:</b> ' + str(tf_safe) + ' | <b>Holding:</b> ' + str(holding_safe) + ' | <b>Conviction:</b> ' + str(conf_safe) + '% | <b>Expiry:</b> ' + str(exp_safe) + '</div>'
+                        st.markdown(html_card, unsafe_allow_html=True)
+                    except Exception as e:
+                        try:
+                            st.markdown(f"**Trade Setup {i} - {idea.get('symbol','NIFTY')} | Spot: {current_spot or 'Syncing...'}**")
+                        except:
+                            st.markdown(f"**Trade Setup {i}**")
 
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
