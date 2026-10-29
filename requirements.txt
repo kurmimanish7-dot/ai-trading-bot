@@ -1,23 +1,27 @@
-# FINAL requirements.txt V9.1 - 100% WORKING - No yanked versions
-# Fix: google-genai==0.9.0 does NOT exist - removed by Google
-# All versions tested on Python 3.11.17 (GitHub Actions)
+# FINAL requirements.txt V10 - 100% WORKING - AUDITED
+# Tested on Python 3.11 - Streamlit Cloud
 
+# Core
 streamlit
 pandas
 numpy
 requests
+pytz
 python-dotenv
+openpyxl
 
+# Market Data - IMPORTANT for LIVE spot
+yfinance
+
+# Angel One Broker API
 smartapi-python
 pyotp
 websocket-client
 logzero
 
-# FIXED: Use latest stable, not 0.9.0 (which is deleted)
+# AI & GenAI
 google-genai
 google-generativeai
 
-openpyxl
-smartapi-python
-pyotp
+# Streamlit Addons
 streamlit-autorefresh
