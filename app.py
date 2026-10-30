@@ -17,278 +17,6 @@ import json
 import logging
 import math
 import time
-
-# ===== V28 ULTRA FAST MULTI-SOURCE FETCHER - AUDITED FOR NSE IP BLOCK =====
-import yfinance as yf
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-_spot_cache_v28 = {}
-_chain_cache_v28 = {}
-_fii_cache_v28 = {}
-
-def _v28_yahoo_spot(symbol="NIFTY"):
-    """Yahoo Finance - Most reliable on Streamlit Cloud - Never blocked"""
-    try:
-        mapping = {
-            "NIFTY": "^NSEI",
-            "BANKNIFTY": "^NSEBANK",
-            "FINNIFTY": "^CNXFIN",
-            "MIDCPNIFTY": "^NSEMDCP50",
-            "SENSEX": "^BSESN"
-        }
-        yahoo_symbol = mapping.get(symbol.upper(), "^NSEI")
-        # Fast 1m download with timeout
-        ticker = yf.Ticker(yahoo_symbol)
-        data = ticker.history(period="1d", interval="1m", timeout=3)
-        if not data.empty:
-            price = float(data['Close'].iloc[-1])
-            if price > 0:
-                _spot_cache_v28[symbol] = (price, time.time())
-                return price
-        # Fallback to fast info
-        try:
-            info = ticker.fast_info
-            if hasattr(info, 'last_price') and info.last_price:
-                return float(info.last_price)
-        except:
-            pass
-    except Exception as e:
-        print(f"Yahoo {symbol} failed: {e}")
-    return None
-
-def _v28_nse_proxy_spot(symbol="NIFTY"):
-    """NSE via allorigins proxy - bypass IP block"""
-    try:
-        url = "https://www.nseindia.com/api/allIndices"
-        proxy_url = f"https://api.allorigins.win/raw?url={url}"
-        resp = _FAST_SESSION.get(proxy_url, timeout=3)
-        if resp.status_code == 200:
-            data = resp.json()
-            for idx in data.get('data', []):
-                if symbol.upper() in idx.get('index', '').upper() or (symbol=="NIFTY" and idx.get('index')=="NIFTY 50"):
-                    price = idx.get('last')
-                    if price:
-                        return float(price)
-    except Exception as e:
-        print(f"NSE Proxy {symbol} failed: {e}")
-    return None
-
-def _v28_direct_nse_spot(symbol="NIFTY"):
-    """Direct NSE - may fail on Streamlit Cloud IP block"""
-    try:
-        url = "https://www.nseindia.com/api/allIndices"
-        # Ensure cookies
-        try:
-            _FAST_SESSION.get("https://www.nseindia.com", timeout=2)
-        except:
-            pass
-        resp = _FAST_SESSION.get(url, timeout=3)
-        if resp.status_code == 200:
-            data = resp.json()
-            for idx in data.get('data', []):
-                if symbol.upper() in idx.get('index', '').upper() or (symbol=="NIFTY" and idx.get('index')=="NIFTY 50"):
-                    price = idx.get('last')
-                    if price:
-                        return float(price)
-    except:
-        pass
-    return None
-
-def fetch_verified_spot_v28(symbol="NIFTY"):
-    """V28 ULTRA FAST - 3 sources parallel, 2 sec timeout, cache 5 sec"""
-    cache_key = f"spot_{symbol}"
-    now = time.time()
-    # Check cache first - 5 sec validity for ultra fast
-    if cache_key in _spot_cache_v28:
-        val, ts = _spot_cache_v28[cache_key]
-        if now - ts < 5 and val and val > 0:
-            return {"price": float(val), "source": "CACHE", "time": ts}
-    
-    # Try 3 sources in parallel - fastest wins
-    price = None
-    source = "NONE"
-    
-    # Try Yahoo first (most reliable on Cloud)
-    p = _v28_yahoo_spot(symbol)
-    if p and p > 0:
-        return {"price": float(p), "source": "YAHOO", "time": now}
-    
-    # Try proxy
-    p = _v28_nse_proxy_spot(symbol)
-    if p and p > 0:
-        _spot_cache_v28[cache_key] = (p, now)
-        return {"price": float(p), "source": "NSE_PROXY", "time": now}
-    
-    # Try direct
-    p = _v28_direct_nse_spot(symbol)
-    if p and p > 0:
-        _spot_cache_v28[cache_key] = (p, now)
-        return {"price": float(p), "source": "NSE_DIRECT", "time": now}
-    
-    # Last cache fallback - even if expired
-    if cache_key in _spot_cache_v28:
-        val, ts = _spot_cache_v28[cache_key]
-        if val and val > 0:
-            return {"price": float(val), "source": "STALE_CACHE", "time": ts}
-    
-    # Ultimate fallback - return 0 to avoid crash but log
-    return {"price": None, "source": "FAILED", "time": now}
-
-def get_spot_v28(symbol: str):
-    """Wrapper for compatibility"""
-    try:
-        res = fetch_verified_spot_v28(symbol)
-        return res.get("price")
-    except:
-        return None
-
-# Override old functions
-def fetch_verified_spot(symbol="NIFTY"):
-    return fetch_verified_spot_v28(symbol)
-
-def get_spot(symbol: str):
-    return get_spot_v28(symbol)
-
-def get_spot_safe_for_display(symbol: str):
-    try:
-        p = get_spot_v28(symbol)
-        if p and p > 0:
-            return float(p)
-        # Try stale cache
-        ck = f"spot_{symbol}"
-        if ck in _spot_cache_v28:
-            val, ts = _spot_cache_v28[ck]
-            if val and val > 0:
-                return float(val)
-        return 0.0
-    except:
-        return 0.0
-
-# ===== V29 FINAL FIX - NameError FIXED - EARLY DEFS =====
-def auto_entry_market_price(idea, live_ltp, quantity_lots, enable_real=False):
-    """Auto Entry at MARKET PRICE when setup comes - no click needed - FIXED LOT SIZE"""
-    if not enable_real:
-        return False, "Real trading disabled"
-    
-    try:
-        symbol = idea.get('symbol','NIFTY')
-        # Get correct lot size from INDEX_METADATA
-        lot_size = INDEX_METADATA.get(symbol, {}).get('lot_size', 65)
-        if symbol == 'NIFTY':
-            lot_size = 65
-        elif symbol == 'BANKNIFTY':
-            lot_size = 30
-        elif symbol == 'FINNIFTY':
-            lot_size = 60
-        elif symbol == 'MIDCPNIFTY':
-            lot_size = 120
-        elif symbol == 'SENSEX':
-            lot_size = 20
-        
-        quantity = quantity_lots * lot_size
-        
-        # Place BUY at market
-        ok, msg, order_id = place_angel_real_order(
-            symbol=symbol,
-            strike=idea.get('strike',0),
-            opt_type=idea.get('option','CE'),
-            expiry=idea.get('expiry',''),
-            quantity=quantity,
-            order_type="BUY",
-            price=0  # Market price
-        )
-        
-        if ok:
-            # Also create paper position for tracking
-            try:
-                lot_qty = quantity
-                execute_paper_order(
-                    symbol=idea["symbol"], action="BUY", strike=idea["strike"], option_type=idea["option"],
-                    price=live_ltp, qty=lot_qty, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
-                    expiry=idea["expiry"], reasons=idea["why"] + " | AUTO REAL ENTRY", is_equity=False
-                )
-            except:
-                pass
-        
-        return ok, msg
-        
-    except Exception as e:
-        return False, str(e)[:80]
-
-
-def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
-    """Auto Exit at MARKET PRICE when SL/Target hit"""
-    if not enable_real:
-        return False, "Real trading disabled"
-    
-    try:
-        symbol = position.get('symbol','NIFTY')
-        strike = position.get('strike',0)
-        opt_type = position.get('option_type','CE')
-        expiry = position.get('expiry','')
-        qty = position.get('qty',0)
-        
-        # Place SELL at market
-        ok, msg, order_id = place_angel_real_order(
-            symbol=symbol,
-            strike=strike,
-            opt_type=opt_type,
-            expiry=expiry,
-            quantity=qty,
-            order_type="SELL",
-            price=0  # Market price for exit
-        )
-        
-        if ok:
-            # Close paper position
-            close_paper_position(trade_id, live_ltp, f"AUTO REAL EXIT @ ₹{live_ltp:.2f} | Order: {order_id}")
-        
-        return ok, msg
-        
-    except Exception as e:
-        return False, str(e)[:80]
-
-
-
-# ===== END FIX =====
-
-# ===== V28 FII/DII FAST FETCH WITH FALLBACK =====
-def fetch_fii_dii_v28():
-    """FII/DII with proxy + cache fallback - never show Syncing forever"""
-    cache_key = "fii_dii"
-    now = time.time()
-    if cache_key in _fii_cache_v28:
-        val, ts = _fii_cache_v28[cache_key]
-        if now - ts < 300:  # 5 min cache
-            return val
-    
-    # Try NSE FII/DII API via proxy
-    try:
-        url = "https://www.nseindia.com/api/fiidiiTradeReact"
-        proxy_url = f"https://api.allorigins.win/raw?url={url}"
-        resp = _FAST_SESSION.get(proxy_url, timeout=4)
-        if resp.status_code == 200:
-            data = resp.json()
-            # Parse FII/DII
-            result = {
-                "fii": data.get("fiiBuy", 0) - data.get("fiiSell", 0) if isinstance(data, dict) else 0,
-                "dii": data.get("diiBuy", 0) - data.get("diiSell", 0) if isinstance(data, dict) else 0,
-                "source": "NSE_PROXY"
-            }
-            _fii_cache_v28[cache_key] = (result, now)
-            return result
-    except Exception as e:
-        print(f"FII DII proxy failed: {e}")
-    
-    # Return cached or neutral
-    if cache_key in _fii_cache_v28:
-        val, ts = _fii_cache_v28[cache_key]
-        return val
-    
-    # Fallback - show previous close logic
-    return {"fii": 0, "dii": 0, "source": "PREV_CLOSE", "fii_text": "Market Closed", "dii_text": "Awaiting Open"}
-
-
 import uuid
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
@@ -7113,7 +6841,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         else:
                             st.metric(f"{selected_underlying} Spot", "Syncing... " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds - Retrying")
                     except:
-                        st.metric(f"{selected_underlying} Spot", "₹22800.00 " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds")
+                        st.metric(f"{selected_underlying} Spot", "Awaiting Tick... " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds")
             except Exception as e:
                 try:
                     st.metric(f"{selected_underlying} Spot", "Error: " + str(e)[:30], delta="Retrying")
@@ -7711,3 +7439,86 @@ else:
     st.dataframe(journal_df[display_cols], use_container_width=True)
 
 st.caption(f"Paper Trading Engine Active {BULLET} Real Broker Order Routing Disabled {BULLET} Strictly Educational Quantitative Research.")
+def auto_entry_market_price(idea, live_ltp, quantity_lots, enable_real=False):
+    """Auto Entry at MARKET PRICE when setup comes - no click needed - FIXED LOT SIZE"""
+    if not enable_real:
+        return False, "Real trading disabled"
+    
+    try:
+        symbol = idea.get('symbol','NIFTY')
+        # Get correct lot size from INDEX_METADATA
+        lot_size = INDEX_METADATA.get(symbol, {}).get('lot_size', 65)
+        if symbol == 'NIFTY':
+            lot_size = 65
+        elif symbol == 'BANKNIFTY':
+            lot_size = 30
+        elif symbol == 'FINNIFTY':
+            lot_size = 60
+        elif symbol == 'MIDCPNIFTY':
+            lot_size = 120
+        elif symbol == 'SENSEX':
+            lot_size = 20
+        
+        quantity = quantity_lots * lot_size
+        
+        # Place BUY at market
+        ok, msg, order_id = place_angel_real_order(
+            symbol=symbol,
+            strike=idea.get('strike',0),
+            opt_type=idea.get('option','CE'),
+            expiry=idea.get('expiry',''),
+            quantity=quantity,
+            order_type="BUY",
+            price=0  # Market price
+        )
+        
+        if ok:
+            # Also create paper position for tracking
+            try:
+                lot_qty = quantity
+                execute_paper_order(
+                    symbol=idea["symbol"], action="BUY", strike=idea["strike"], option_type=idea["option"],
+                    price=live_ltp, qty=lot_qty, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
+                    expiry=idea["expiry"], reasons=idea["why"] + " | AUTO REAL ENTRY", is_equity=False
+                )
+            except:
+                pass
+        
+        return ok, msg
+        
+    except Exception as e:
+        return False, str(e)[:80]
+
+def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
+    """Auto Exit at MARKET PRICE when SL/Target hit"""
+    if not enable_real:
+        return False, "Real trading disabled"
+    
+    try:
+        symbol = position.get('symbol','NIFTY')
+        strike = position.get('strike',0)
+        opt_type = position.get('option_type','CE')
+        expiry = position.get('expiry','')
+        qty = position.get('qty',0)
+        
+        # Place SELL at market
+        ok, msg, order_id = place_angel_real_order(
+            symbol=symbol,
+            strike=strike,
+            opt_type=opt_type,
+            expiry=expiry,
+            quantity=qty,
+            order_type="SELL",
+            price=0  # Market price for exit
+        )
+        
+        if ok:
+            # Close paper position
+            close_paper_position(trade_id, live_ltp, f"AUTO REAL EXIT @ ₹{live_ltp:.2f} | Order: {order_id}")
+        
+        return ok, msg
+        
+    except Exception as e:
+        return False, str(e)[:80]
+
+
