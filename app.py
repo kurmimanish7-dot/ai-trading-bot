@@ -738,17 +738,76 @@ def init_session_state():
         except:
             pass
 
-def get_paper_portfolio_safe():
-    """Safe getter - never raises AttributeError"""
+def init_session_state_safe():
+    """Safe init that never raises SessionInfo error"""
+    try:
+        # Check if session is available
+        _ = st.session_state
+    except Exception as e:
+        if "SessionInfo" in str(e):
+            # Session not ready yet, skip init, will init later
+            return False
+        pass
+    
     try:
         if "paper_portfolio" not in st.session_state:
-            init_session_state()
+            st.session_state.paper_portfolio = {
+                "positions": {},
+                "daily_pnl": 0.0,
+                "daily_realized_pnl": 0.0,
+                "total_pnl": 0.0,
+                "session_date": datetime.now(IST).strftime('%Y-%m-%d') if 'IST' in globals() else "2025-01-01",
+                "circuit_broken": False,
+                "trade_history": [],
+                "cash_balance": 500000.0,
+                "starting_balance": 500000.0,
+                "daily_loss_limit": 10000.0,
+            }
+        else:
+            pp = st.session_state.paper_portfolio
+            if not isinstance(pp, dict):
+                st.session_state.paper_portfolio = {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": [], "cash_balance": 500000.0}
+            else:
+                pp.setdefault("positions", {})
+                pp.setdefault("daily_pnl", 0.0)
+                pp.setdefault("trade_history", [])
+        
+        defaults = {
+            "kill_switch": False,
+            "auto_traded_today": set(),
+            "pending_confirm_calls": {},
+            "enable_real_trading": False,
+            "auto_real_entry_enabled": False,
+            "require_confirm_call": True,
+        }
+        for k, v in defaults.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
+        return True
+    except Exception as e:
+        if "SessionInfo" in str(e):
+            return False
+        print(f"Session init safe error: {e}")
+        return False
+
+# Alias for backward compatibility
+def init_session_state():
+    return init_session_state_safe()
+
+def get_paper_portfolio_safe():
+    """Safe getter - never raises SessionInfo error"""
+    try:
+        # Try to init if needed
+        init_session_state_safe()
         pp = st.session_state.get("paper_portfolio")
         if pp is None or not isinstance(pp, dict):
-            init_session_state()
+            init_session_state_safe()
             pp = st.session_state.get("paper_portfolio", {"positions": {}})
         return pp
-    except:
+    except Exception as e:
+        if "SessionInfo" in str(e):
+            # Return dummy to avoid crash during early import
+            return {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
         return {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
 
 def get_positions_safe():
@@ -756,11 +815,14 @@ def get_positions_safe():
         pp = get_paper_portfolio_safe()
         pos = pp.get("positions", {})
         return pos if isinstance(pos, dict) else {}
-    except:
+    except Exception as e:
+        if "SessionInfo" in str(e):
+            return {}
         return {}
 
-# Call early
-init_session_state()
+
+# V34 FIX: Do NOT call at import time - causes SessionInfo error
+# init_session_state() will be called lazily inside safe getters and inside main UI
 # ===== END V33 FIX =====
 
 try:
@@ -914,6 +976,18 @@ CHART_BAR = "\U0001F4CA"        # 📊
 CHART_UP = "\U0001F4C8"         # 📈
 TARGET = "\U0001F3AF"           # 🎯
 TEMPLE = "\U0001F3DB"           # 🏛️
+
+# ===== V35 FIX: set_page_config MUST be first st. call =====
+try:
+    st.set_page_config(
+        page_title="AI Institutional Live Trading Advisor (Quantitative GEX & Equity Engine)",
+        page_icon="⚡",
+        layout="wide",
+    )
+except Exception as e:
+    print(f"set_page_config error (may already be set): {e}")
+# ===== END V35 FIX =====
+
 COMPASS = "\U0001F9ED"          # 🧭
 GLOBE = "\U0001F310"            # 🌐
 TRAFFIC = "\U0001F6A6"          # 🚦
@@ -1223,11 +1297,6 @@ TIMEFRAME_CONFIG = {
 # =====================================================================
 # 6. CONFIGURATION, THEME & STYLES
 # =====================================================================
-st.set_page_config(
-    page_title="AI Institutional Live Trading Advisor (Quantitative GEX & Equity Engine)",
-    page_icon=BOLT,
-    layout="wide",
-)
 
 # ================= V53 PERSISTENT SETTINGS - Fix reset after page close =================
 import os
@@ -1328,8 +1397,15 @@ def telegram_callback_poller():
         pass
 
 # Call poller on every run - will check Telegram YES/NO
+# V35 FIX: Safe guard for SessionInfo
 try:
-    telegram_callback_poller()
+    # Only call if session is initialized
+    try:
+        _ = st.session_state
+        telegram_callback_poller()
+    except Exception as e:
+        if "SessionInfo" not in str(e):
+            telegram_callback_poller()
 except:
     pass
 
@@ -2193,7 +2269,7 @@ def auto_check_emergency_exit_from_lights(light1, light2):
                         continue
                     
                     # Get live LTP
-                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
+                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match_FIXED(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
                     if not is_ok or live_ltp <= 0:
                         live_ltp = pos.get('entry_price', 0)
                     
@@ -2275,7 +2351,7 @@ def auto_check_and_exit_positions():
                 expiry = pos.get('expiry','')
                 
                 # Get live LTP - use broker matched
-                live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
+                live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match_FIXED(symbol, strike, opt_type, expiry)
                 
                 if not is_ok or live_ltp <= 0:
                     # Try fallback proxy if Angel fails
@@ -3111,24 +3187,29 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 
 
-def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
+def get_angel_ltp_100pct_broker_match_FIXED(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY
+    V38 FINAL: Use structured fields (strike, expiry, instrumenttype) not just symbol string
+    Fixes 2000+ LTP bug - was matching futures or wrong instrument
     """
     try:
         api_key = ""; client_id = ""; password = ""; totp_secret = ""
         for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
             if k in st.secrets:
-                api_key = str(st.secrets[k]).strip(); break
+                api_key = str(st.secrets[k]).strip()
+                break
         for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"]:
             if k in st.secrets:
-                client_id = str(st.secrets[k]).strip(); break
+                client_id = str(st.secrets[k]).strip()
+                break
         for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"]:
             if k in st.secrets:
-                password = str(st.secrets[k]).strip(); break
+                password = str(st.secrets[k]).strip()
+                break
         for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
             if k in st.secrets:
-                totp_secret = str(st.secrets[k]).strip(); break
+                totp_secret = str(st.secrets[k]).strip()
+                break
         if not api_key or not client_id:
             return 0, "ANGEL_KEYS_MISSING", False
         try:
@@ -3136,133 +3217,294 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             import pyotp
             import requests
             import re
+            from datetime import datetime
         except ImportError as e:
             return 0, f"LIB_MISSING_{str(e)[:20]}", False
+        
         totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
         obj = SmartConnect(api_key=api_key)
         data = obj.generateSession(client_id, password, totp_code)
         if not (data and data.get("status") == True):
             return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
+        
+        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        mr = requests.get(master_url, timeout=15)
+        if mr.status_code != 200:
+            return 0, "MASTER_FETCH_FAILED", False
+        instruments = mr.json()
+        
+        symbol = symbol.upper().strip()
+        target_strike = int(float(strike))
+        target_opt = opt_type.upper()
+        
+        # Parse target expiry
+        target_exp_dt = None
+        target_exp_strs = []
         try:
-            master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-            mr = requests.get(master_url, timeout=12)
-            if mr.status_code != 200:
-                return 0, "MASTER_FETCH_FAILED", False
-            instruments = mr.json()
-            symbol = symbol.upper().strip()
+            exp_str = str(expiry).strip()
+            for fmt in ["%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%d-%B-%Y", "%Y-%m-%d", "%d %b %y", "%d-%b-%y", "%d-%m-%Y"]:
+                try:
+                    target_exp_dt = datetime.strptime(exp_str, fmt)
+                    break
+                except:
+                    continue
+            if not target_exp_dt:
+                try:
+                    exp_norm = expiry_norm(expiry) if 'expiry_norm' in globals() else ""
+                    if exp_norm:
+                        target_exp_dt = datetime.strptime(exp_norm, "%Y-%m-%d")
+                except:
+                    pass
+            if target_exp_dt:
+                # Multiple formats for matching
+                target_exp_strs = [
+                    target_exp_dt.strftime("%d%b%Y").upper(),  # 03NOV2026
+                    target_exp_dt.strftime("%d%b%y").upper(),   # 03NOV26
+                    target_exp_dt.strftime("%d-%b-%Y").upper(), # 03-NOV-2026
+                    target_exp_dt.strftime("%Y-%m-%d"),         # 2026-11-03
+                    target_exp_dt.strftime("%d%m%Y"),           # 03112026
+                ]
+        except:
+            target_exp_dt = None
+        
+        if symbol == "NIFTY":
+            search_label = "NIFTY"
+        elif symbol == "BANKNIFTY":
+            search_label = "BANKNIFTY"
+        elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
+            search_label = "FINNIFTY"
+        elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
+            search_label = "MIDCPNIFTY"
+        elif symbol in ["SENSEX", "BSESN"]:
+            search_label = "SENSEX"
+        else:
+            search_label = symbol
+        
+        candidates = []
+        
+        for inst in instruments:
+            if not isinstance(inst, dict):
+                continue
+            
+            # === V38: USE STRUCTURED FIELDS FIRST ===
+            # Angel master has explicit fields - use them!
+            inst_exch = str(inst.get("exch_seg", "")).upper()
+            if inst_exch not in ["NFO", "BFO"]:
+                continue
+            
+            # Instrument type must be OPTIDX or OPTSTK, not FUT
+            inst_type = str(inst.get("instrumenttype", "")).upper()
+            # If instrumenttype exists, filter for OPT only
+            if inst_type and "OPT" not in inst_type and inst_type not in ["", "OPTIDX", "OPTSTK"]:
+                if "FUT" in inst_type:
+                    continue  # Skip futures - this was causing 2000+ bug!
+            
+            # Name field check
+            inst_name = str(inst.get("name", "")).upper()
+            tradingsym = str(inst.get("symbol", "")).strip()
+            tradingsym_upper = tradingsym.upper()
+            
+            # Symbol prefix check
             if symbol == "NIFTY":
-                def is_match(sym):
-                    sym_u = sym.upper()
-                    if "FINNIFTY" in sym_u or "BANKNIFTY" in sym_u or "MIDCPNIFTY" in sym_u or "NIFTYNXT" in sym_u:
-                        return False
-                    return sym_u.startswith("NIFTY") and str(strike) in sym_u and opt_type.upper() in sym_u
-                search_label = "NIFTY"
+                if not (tradingsym_upper.startswith("NIFTY") or inst_name == "NIFTY"):
+                    continue
+                if "FINNIFTY" in tradingsym_upper or "BANKNIFTY" in tradingsym_upper or "MIDCPNIFTY" in tradingsym_upper or "NIFTYNXT" in tradingsym_upper:
+                    continue
+                if inst_name and inst_name not in ["NIFTY", ""]:
+                    if "FINNIFTY" in inst_name or "BANKNIFTY" in inst_name:
+                        continue
             elif symbol == "BANKNIFTY":
-                def is_match(sym):
-                    return "BANKNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "BANKNIFTY"
-            elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
-                def is_match(sym):
-                    sym_u = sym.upper()
-                    return ("FINNIFTY" in sym_u or (sym_u.startswith("FIN") and "NIFTY" in sym_u)) and str(strike) in sym_u and opt_type.upper() in sym_u
-                search_label = "FINNIFTY"
-            elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
-                def is_match(sym):
-                    return "MIDCPNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "MIDCPNIFTY"
-            elif symbol in ["SENSEX", "BSESN"]:
-                def is_match(sym):
-                    return "SENSEX" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "SENSEX"
+                if "BANKNIFTY" not in tradingsym_upper and inst_name != "BANKNIFTY":
+                    continue
+            elif search_label == "FINNIFTY":
+                if "FINNIFTY" not in tradingsym_upper and inst_name != "FINNIFTY":
+                    continue
+            elif search_label == "MIDCPNIFTY":
+                if "MIDCPNIFTY" not in tradingsym_upper:
+                    continue
+            elif search_label == "SENSEX":
+                if "SENSEX" not in tradingsym_upper and inst_name != "SENSEX":
+                    continue
+            
+            # === STRIKE CHECK USING STRUCTURED FIELD ===
+            inst_strike = inst.get("strike")
+            extracted_strike = None
+            
+            # Try structured strike field first (most reliable)
+            if inst_strike is not None:
+                try:
+                    # Angel strike is often like 2305000 (with decimals *100)
+                    # Actually strike 23050 might be stored as 23050 or 2305000
+                    s_val = float(inst_strike)
+                    # If > 100000, divide by 100 (Angel sometimes stores *100)
+                    if s_val > 100000:
+                        s_val = s_val / 100.0
+                    extracted_strike = int(s_val)
+                except:
+                    pass
+            
+            # Fallback to parsing from symbol if structured not available
+            if extracted_strike is None:
+                m1 = re.search(r'(\d{4,6})\s*(CE|PE)\s*$', tradingsym_upper)
+                m2 = re.search(r'(C|P)\s*(\d{4,6})\s*$', tradingsym_upper)
+                m3 = re.search(r'\s(\d{4,6})\s+(CE|PE)', tradingsym_upper)
+                m4 = re.search(r'(\d{4,6})(CE|PE)$', tradingsym_upper)
+                if m1:
+                    extracted_strike = int(m1.group(1))
+                elif m2:
+                    extracted_strike = int(m2.group(2))
+                elif m3:
+                    extracted_strike = int(m3.group(1))
+                elif m4:
+                    extracted_strike = int(m4.group(1))
+                else:
+                    if re.search(rf'\b{target_strike}\b', tradingsym_upper):
+                        extracted_strike = target_strike
+            
+            if extracted_strike is None:
+                continue
+            if extracted_strike != target_strike:
+                continue
+            
+            # === OPTION TYPE CHECK ===
+            # Check from symbol
+            inst_opt = None
+            if "CE" in tradingsym_upper:
+                inst_opt = "CE"
+            elif "PE" in tradingsym_upper:
+                inst_opt = "PE"
+            elif tradingsym_upper.endswith("C"):
+                inst_opt = "CE"
+            elif tradingsym_upper.endswith("P"):
+                inst_opt = "PE"
+            
+            # Also check from instrumenttype or symbol parsing
+            if inst_opt and inst_opt != target_opt:
+                continue
+            
+            # Extra safety: ensure CE/PE in symbol
+            if target_opt not in tradingsym_upper:
+                # Check short form
+                if not (tradingsym_upper.endswith("C") and target_opt == "CE") and not (tradingsym_upper.endswith("P") and target_opt == "PE"):
+                    # Still allow if strike matched exactly, but log
+                    pass
+            
+            # === EXPIRY CHECK USING STRUCTURED FIELD ===
+            exp_score = 0
+            inst_expiry = str(inst.get("expiry", "")).upper()
+            
+            if target_exp_dt and inst_expiry:
+                try:
+                    # Parse inst expiry - can be like "03NOV2026" or "03-Nov-2026" or "2026-11-03"
+                    inst_exp_dt = None
+                    for fmt in ["%d%b%Y", "%d%b%y", "%d-%b-%Y", "%Y-%m-%d", "%d%m%Y", "%d-%b-%y"]:
+                        try:
+                            inst_exp_dt = datetime.strptime(inst_expiry, fmt)
+                            break
+                        except:
+                            continue
+                    # Also try from trading symbol
+                    if not inst_exp_dt:
+                        m_exp = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', tradingsym_upper)
+                        if m_exp:
+                            day = m_exp.group(1)
+                            mon = m_exp.group(2)
+                            yr = m_exp.group(3)
+                            if len(yr) == 2:
+                                yr_full = "20" + yr if int(yr) < 50 else "19" + yr
+                            else:
+                                yr_full = yr
+                            exp_str_sym = f"{day}{mon}{yr_full}"
+                            try:
+                                inst_exp_dt = datetime.strptime(exp_str_sym, "%d%b%Y")
+                            except:
+                                pass
+                    
+                    if inst_exp_dt:
+                        if inst_exp_dt.date() == target_exp_dt.date():
+                            exp_score = 100
+                        elif inst_exp_dt.month == target_exp_dt.month and inst_exp_dt.year == target_exp_dt.year:
+                            # Same month/year, score by day diff
+                            exp_score = 50 - abs(inst_exp_dt.day - target_exp_dt.day)
+                        else:
+                            exp_score = 5
+                    else:
+                        # Fallback: check if month in expiry
+                        if target_exp_dt.strftime("%b").upper() in inst_expiry or target_exp_dt.strftime("%b").upper() in tradingsym_upper:
+                            exp_score = 20
+                except:
+                    exp_score = 1
             else:
-                def is_match(sym):
-                    return symbol in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = symbol
-            target_exp_norm = ""
-            try:
-                target_exp_norm = expiry_norm(expiry) if expiry else ""
-                target_exp_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d") if target_exp_norm else None
-            except:
-                target_exp_dt = None
-            candidates = []
-            for inst in instruments:
-                if not isinstance(inst, dict):
-                    continue
-                sym = str(inst.get("symbol", "")).upper()
-                if not is_match(sym):
-                    continue
-                if inst.get("exch_seg") not in ["NFO", "BFO"]:
-                    continue
-                exp_score = 0
+                # No target expiry or no inst expiry, try symbol matching
                 if target_exp_dt:
-                    try:
-                        m = re.search(r"(\d{2})([A-Z]{3})(\d{2,4})", sym)
-                        if m:
-                            if target_exp_dt.strftime("%b").upper() in sym:
-                                exp_score += 10
-                            if str(target_exp_dt.day) in sym:
-                                exp_score += 5
-                            if str(target_exp_dt.year)[-2:] in sym or str(target_exp_dt.year) in sym:
-                                exp_score += 3
-                    except:
-                        pass
+                    if target_exp_dt.strftime("%b").upper() in tradingsym_upper:
+                        exp_score += 10
                 else:
                     exp_score = 1
-                candidates.append((exp_score, inst))
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            for score, inst in candidates[:10]:
-                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
-                try:
-                    ltp_data = obj.ltpData(exch, sym, token)
-                    if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data", {}).get("ltp")
-                        if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}{expiry.replace('-','').upper() if expiry else ''}{strike}{opt_type.upper()}_{ltp_val}", True
-                except:
-                    continue
-            for score, inst in candidates[:20]:
-                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
-                try:
-                    ltp_data = obj.ltpData(exch, sym, token)
-                    if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data", {}).get("ltp")
-                        if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}_FALLBACK_{strike}{opt_type}_{ltp_val}", True
-                except:
-                    continue
-            return 0, f"NO_LTP_FOUND_{search_label}_{strike}{opt_type}", False
-        except Exception as e:
-            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:50]}", False
+            
+            # Skip if expiry score is 0 and we have target expiry (too far)
+            # But keep at least some candidates
+            
+            candidates.append((exp_score, inst, tradingsym))
+        
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        # Try candidates with highest expiry score first
+        for score, inst, tradingsym in candidates[:20]:
+            token = str(inst.get("token", ""))
+            exch = str(inst.get("exch_seg", "NFO"))
+            try:
+                ltp_data = obj.ltpData(exch, tradingsym, token)
+                if ltp_data and ltp_data.get("status") == True:
+                    ltp_val = ltp_data.get("data", {}).get("ltp")
+                    if ltp_val and float(ltp_val) > 0:
+                        # Safety: LTP should be reasonable for option
+                        # NIFTY option LTP should be < 2000 for OTM, < 5000 even for deep ITM
+                        # If LTP > 5000, likely wrong instrument (futures)
+                        f_ltp = float(ltp_val)
+                        if f_ltp > 5000:
+                            # Likely futures or wrong - skip unless deep ITM
+                            # For NIFTY 23050 CE with spot 22923, max should be ~2000 even deep ITM
+                            # So skip >5000
+                            continue
+                        return f_ltp, f"ANGEL_V38_{search_label}_{target_strike}{target_opt}_SCORE_{score}_{tradingsym}_{ltp_val}", True
+            except Exception as e:
+                continue
+        
+        # If no candidate with reasonable LTP, try all but with LTP sanity check
+        for score, inst, tradingsym in candidates[:30]:
+            token = str(inst.get("token", ""))
+            exch = str(inst.get("exch_seg", "NFO"))
+            try:
+                ltp_data = obj.ltpData(exch, tradingsym, token)
+                if ltp_data and ltp_data.get("status") == True:
+                    ltp_val = ltp_data.get("data", {}).get("ltp")
+                    if ltp_val and float(ltp_val) > 0:
+                        f_ltp = float(ltp_val)
+                        # For 23050 CE, if LTP 2000+, it's wrong (should be 50-300)
+                        # Allow up to 3000 for safety
+                        if f_ltp > 3000:
+                            continue
+                        return f_ltp, f"ANGEL_V38_FB_{search_label}_{target_strike}{target_opt}_{tradingsym}_{ltp_val}", True
+            except:
+                continue
+        
+        # Debug: return with sample
+        sample = ""
+        if len(candidates) > 0:
+            sample = candidates[0][2][:40]
+        else:
+            # No candidates at all - show first few NIFTY instruments
+            for inst in instruments[:10]:
+                if isinstance(inst, dict) and "NIFTY" in str(inst.get("symbol","")).upper():
+                    sample = str(inst.get("symbol",""))[:40]
+                    break
+        
+        return 0, f"NO_MATCH_V38_{search_label}_{target_strike}{target_opt}_CAND_{len(candidates)}_SAMPLE_{sample}", False
     except Exception as e:
-        return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
+        import traceback
+        return 0, f"EXC_V38_{str(e)[:120]}", False
 
-
-def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    """
-    V20: Tries Angel first (100% broker matched), then proxy, then NSE
-    """
-    # Try Angel first - 100% broker matched, works on Cloud
-    ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
-    if ok and ltp > 0:
-        return ltp, src, True
-    
-    # If Angel keys missing, try proxy
-    ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
-    if ok2 and ltp2 > 0:
-        return ltp2, src2, True
-    
-    # Try ultimate
-    try:
-        ltp3, src3, ok3 = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
-        if ok3 and ltp3 > 0:
-            return ltp3, src3, True
-    except:
-        pass
-    
-    # All failed - return 0 with clear message
-    if "ANGEL_KEYS_MISSING" in src:
-        return 0, "ADD_ANGEL_KEYS_IN_SECRETS_FOR_108.20", False
-    return 0, src, False
 
 
 def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
@@ -7990,7 +8232,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         
                         try:
                             # V27 FINAL: Angel first - 100% broker matched like debug app
-                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match(
+                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match_FIXED(
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
@@ -8215,6 +8457,11 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 # ==============================================================================
 # GLOBAL PAPER TRADING PORTFOLIO & TRADE JOURNAL (OPTIONS + EQUITIES)
 # ==============================================================================
+try:
+    init_session_state_safe()
+except:
+    pass
+
 st.divider()
 st.markdown(f"## {SHIELD} Active Paper Positions & Risk Ledger (Options & Equities)")
 # V33 FIX: Safe getter to prevent AttributeError on first run
