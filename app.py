@@ -34,6 +34,109 @@ try:
 except:
     pass
 
+
+# ===== V58 PERSISTENT SETTINGS - Sidebar settings hamesha saved =====
+# User: sidebaar me settings change nahi hone chahiye, app chalu ho ya na ho, background me hamesha saved
+import os
+import json
+from datetime import datetime
+
+PERSISTENT_SETTINGS_FILE = "trading_bot_persistent_settings.json"
+PERSISTENT_SETTINGS_TMP = "/tmp/trading_bot_persistent_settings.json"
+PERSISTENT_SETTINGS_BACKUP = "/tmp/persistent_settings_backup.json"
+
+PERSISTENT_KEYS = [
+    "min_conviction", "global_min_conviction", "max_daily_loss",
+    "auto_entry_enabled", "auto_scan_interval", "auto_trading_time",
+    "auto_start", "auto_end", "real_trading_qty_lots",
+    "enable_real_trading", "require_confirm_call",
+    "tg_token", "tg_chat", "tg_entry_enabled", "tg_exit_enabled",
+    "trading_mode", "selected_index", "lot_size", "risk_percent",
+    "kill_switch", "paper_mode", "live_mode", "conviction_filter",
+    "timeframe", "strategy_mode", "auto_real_entry_enabled",
+    "last_chain_source", "selected_timeframe", "selected_strategy",
+    "global_min_conv_slider"
+]
+
+def load_persistent_settings_V58():
+    """Load all sidebar settings from file - survives app restart"""
+    settings = {}
+    for fpath in [PERSISTENT_SETTINGS_FILE, PERSISTENT_SETTINGS_TMP, PERSISTENT_SETTINGS_BACKUP]:
+        try:
+            if os.path.exists(fpath):
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict) and len(data) > 0:
+                        settings.update(data)
+                        break
+        except:
+            continue
+    return settings
+
+def save_persistent_settings_V58(new_settings=None):
+    """Save sidebar settings - hamesha saved rahega, app band ho ya chalu"""
+    try:
+        existing = load_persistent_settings_V58()
+        if new_settings:
+            existing.update(new_settings)
+        existing["_last_saved"] = datetime.now().isoformat()
+        existing["_app_version"] = "V58_PERSISTENT"
+        for fpath in [PERSISTENT_SETTINGS_FILE, PERSISTENT_SETTINGS_TMP, PERSISTENT_SETTINGS_BACKUP]:
+            try:
+                with open(fpath, 'w', encoding='utf-8') as f:
+                    json.dump(existing, f, indent=2)
+            except:
+                continue
+        try:
+            import streamlit as st
+            st.session_state['persistent_settings'] = existing
+            st.session_state['persistent_loaded'] = True
+        except:
+            pass
+        return True
+    except:
+        return False
+
+def get_persistent_setting(key, default=None):
+    """Get setting from persistent storage"""
+    try:
+        import streamlit as st
+        if key in st.session_state:
+            return st.session_state[key]
+        settings = load_persistent_settings_V58()
+        if key in settings:
+            return settings[key]
+    except:
+        pass
+    return default
+
+def set_persistent_setting(key, value):
+    """Set setting and save persistently - background me hamesha saved"""
+    try:
+        import streamlit as st
+        st.session_state[key] = value
+        save_persistent_settings_V58({key: value})
+        return True
+    except:
+        return False
+
+# Auto-load on import - app chalu ho to settings load ho jaye
+try:
+    _loaded_settings = load_persistent_settings_V58()
+    if _loaded_settings:
+        import streamlit as st
+        for k,v in _loaded_settings.items():
+            if not k.startswith("_") and k not in st.session_state:
+                st.session_state[k] = v
+        st.session_state['persistent_loaded'] = True
+        st.session_state['persistent_settings'] = _loaded_settings
+except:
+    pass
+# ===== END V58 PERSISTENT SETTINGS =====
+
+
+
+
 try:
     from streamlit_autorefresh import st_autorefresh
     HAS_AUTOREFRESH = True
@@ -475,16 +578,107 @@ UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX
 
 
 
-def get_spot_safe_V56(symbol="NIFTY"):
+
+
+
+def get_angel_index_spot_V57(symbol="NIFTY"):
     """
-    V56 BULLETPROOF SPOT - Fixes Awaiting Tick, DATA UNAVAILABLE
-    - Yahoo ^NSEI primary (bypasses NSE WAF)
-    - NSE proxy via allorigins
-    - Direct NSE fallback
-    - Hardcoded fallback from last known values if all fail
+    V57 NEW: NIFTY Spot bhi Angel se!
+    Jab premium Angel se, to spot bhi Angel se - same source, same time, no mismatch
     """
     try:
-        # 1. Yahoo Finance - primary (bypasses NSE IP block)
+        import pyotp
+        try:
+            from SmartApi import SmartConnect
+        except:
+            return 0, "SMARTAPI_NOT_AVAILABLE", False
+        
+        # Get credentials from secrets
+        try:
+            import streamlit as st
+            api_key = st.secrets.get("ANGEL_API_KEY", "") if hasattr(st, 'secrets') else ""
+            client_id = st.secrets.get("ANGEL_CLIENT_ID", "") if hasattr(st, 'secrets') else ""
+            pwd = st.secrets.get("ANGEL_PASSWORD", "") if hasattr(st, 'secrets') else ""
+            totp_secret = st.secrets.get("ANGEL_TOTP_SECRET", "") if hasattr(st, 'secrets') else ""
+        except:
+            return 0, "SECRETS_NOT_FOUND", False
+        
+        if not api_key or not client_id:
+            return 0, "ANGEL_CREDS_MISSING", False
+        
+        try:
+            smart_api = SmartConnect(api_key=api_key)
+            totp = pyotp.TOTP(totp_secret).now() if totp_secret else ""
+            data = smart_api.generateSession(client_id, pwd, totp)
+            if not data or not data.get('status'):
+                return 0, "ANGEL_LOGIN_FAILED", False
+            
+            # Angel Index Tokens - exact mapping
+            # NSE Indices use these tokens in Angel master
+            index_token_map = {
+                "NIFTY": [("NSE", "NIFTY 50", "99926000"), ("NSE", "Nifty 50", "26000"), ("NSE", "NIFTY", "26000")],
+                "BANKNIFTY": [("NSE", "Nifty Bank", "99926009"), ("NSE", "BANKNIFTY", "26009"), ("NSE", "Nifty Bank", "26009")],
+                "FINNIFTY": [("NSE", "Nifty Fin Service", "99926037"), ("NSE", "FINNIFTY", "26037")],
+                "MIDCPNIFTY": [("NSE", "NIFTY MID SELECT", "99926074"), ("NSE", "MIDCPNIFTY", "26074")],
+                "SENSEX": [("BSE", "SENSEX", "99919000"), ("BSE", "SENSEX", "1")],
+                "INDIA VIX": [("NSE", "India VIX", "26475"), ("NSE", "INDIA VIX", "26475")]
+            }
+            
+            tries = index_token_map.get(symbol.upper(), [("NSE", symbol, "26000")])
+            
+            for exch, trading_sym, token in tries:
+                try:
+                    # Try ltpData
+                    resp = smart_api.ltpData(exch, trading_sym, token)
+                    if resp and resp.get('status'):
+                        ltp = resp.get('data', {}).get('ltp', 0) or resp.get('data', {}).get('last', 0)
+                        if ltp and float(ltp) > 0:
+                            return float(ltp), f"ANGEL_SPOT_V57_{symbol}_{float(ltp):.2f}_{token}", True
+                    
+                    # Try alternative - getMarketData
+                    try:
+                        from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+                        # Quick LTP via historical? Use quote
+                        quote = smart_api.getCandleData({
+                            "exchange": exch,
+                            "symboltoken": token,
+                            "interval": "ONE_MINUTE",
+                            "fromdate": "2024-01-01 09:00",
+                            "todate": "2024-01-01 09:16"
+                        })
+                        # Not reliable for spot, skip
+                    except:
+                        pass
+                        
+                except Exception as e:
+                    continue
+            
+            return 0, "ANGEL_SPOT_ALL_TOKENS_FAILED", False
+            
+        except Exception as e:
+            return 0, f"ANGEL_SPOT_EXC_{str(e)[:30]}", False
+            
+    except Exception as e:
+        return 0, f"ANGEL_SPOT_OUTER_EXC_{str(e)[:20]}", False
+
+def get_spot_safe_V57(symbol="NIFTY"):
+    """
+    V57 BULLETPROOF - Angel First!
+    User ka logic: Premium Angel se to Spot bhi Angel se
+    1. Angel Spot (PRIMARY) - same source as premium
+    2. Yahoo (backup)
+    3. Proxy + Fallback
+    """
+    try:
+        # 1. Angel Spot - PRIMARY (same as premium)
+        try:
+            spot, src, ok = get_angel_index_spot_V57(symbol)
+            if ok and spot > 0:
+                return spot, src, True
+        except:
+            pass
+        
+        # 2. Yahoo - secondary (bypasses NSE WAF)
         try:
             import yfinance as yf
             ticker_map = {
@@ -501,76 +695,39 @@ def get_spot_safe_V56(symbol="NIFTY"):
             if not hist.empty:
                 spot = float(hist['Close'].iloc[-1])
                 if spot > 0:
-                    return spot, f"YAHOO_V56_{yf_symbol}_{spot:.2f}", True
-            # Try 5m if 1m fails
+                    return spot, f"YAHOO_V57_{yf_symbol}_{spot:.2f}", True
             hist2 = stock.history(period="5d", interval="5m")
             if not hist2.empty:
                 spot = float(hist2['Close'].iloc[-1])
                 if spot > 0:
-                    return spot, f"YAHOO_V56_5M_{yf_symbol}_{spot:.2f}", True
-        except Exception as e:
+                    return spot, f"YAHOO_V57_5M_{yf_symbol}_{spot:.2f}", True
+        except:
             pass
         
-        # 2. NSE Proxy - secondary
+        # 3. NSE Proxy
         try:
             import requests, urllib.parse
-            proxies = [
-                "https://api.allorigins.win/raw?url=",
-                "https://corsproxy.io/?",
-                "https://api.codetabs.com/v1/proxy?quest="
-            ]
-            nse_urls = [
-                "https://www.nseindia.com/api/allIndices",
-                "https://www.nseindia.com/api/marketStatus"
-            ]
-            for nse_url in nse_urls:
-                for proxy_base in proxies:
-                    try:
-                        full_url = proxy_base + urllib.parse.quote(nse_url, safe='')
-                        r = requests.get(full_url, timeout=8, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
-                        if r.status_code == 200:
-                            data = r.json()
-                            # allIndices format
-                            if "data" in data:
-                                for idx in data.get("data", []):
-                                    idx_name = idx.get("index","").upper()
-                                    if symbol.upper() in idx_name or (symbol=="NIFTY" and "NIFTY 50" in idx.get("index","")) or (symbol=="FINNIFTY" and "FINNIFTY" in idx_name) or (symbol=="BANKNIFTY" and "BANK NIFTY" in idx.get("index","").upper()):
-                                        spot = float(idx.get("last",0))
-                                        if spot > 0:
-                                            return spot, f"NSE_PROXY_V56_{symbol}_{spot:.2f}", True
-                            # marketStatus format
-                            if isinstance(data, dict):
-                                for k,v in data.items():
-                                    if symbol.upper() in str(k).upper():
-                                        if isinstance(v, dict) and "last" in v:
-                                            spot = float(v.get("last",0))
-                                            if spot > 0:
-                                                return spot, f"NSE_PROXY_V56_{symbol}_{spot:.2f}", True
-                    except:
-                        continue
+            proxies = ["https://api.allorigins.win/raw?url=", "https://corsproxy.io/?"]
+            for proxy_base in proxies:
+                try:
+                    nse_url = "https://www.nseindia.com/api/allIndices"
+                    full_url = proxy_base + urllib.parse.quote(nse_url, safe='')
+                    r = requests.get(full_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+                    if r.status_code == 200:
+                        data = r.json()
+                        if "data" in data:
+                            for idx in data.get("data", []):
+                                idx_name = idx.get("index","").upper()
+                                if symbol.upper() in idx_name or (symbol=="NIFTY" and "NIFTY 50" in idx.get("index","")):
+                                    spot = float(idx.get("last",0))
+                                    if spot > 0:
+                                        return spot, f"NSE_PROXY_V57_{symbol}_{spot:.2f}", True
+                except:
+                    continue
         except:
             pass
         
-        # 3. Direct NSE - tertiary (may fail on Streamlit Cloud IP)
-        try:
-            import requests
-            headers = {"User-Agent": "Mozilla/5.0", "Accept": "*/*", "Referer": "https://www.nseindia.com/"}
-            # Get cookies first
-            s = requests.Session()
-            s.get("https://www.nseindia.com", headers=headers, timeout=5)
-            r = s.get("https://www.nseindia.com/api/allIndices", headers=headers, timeout=5)
-            if r.status_code == 200:
-                data = r.json()
-                for idx in data.get("data", []):
-                    if symbol.upper() in idx.get("index","").upper() or (symbol=="NIFTY" and "NIFTY 50" in idx.get("index","")):
-                        spot = float(idx.get("last",0))
-                        if spot > 0:
-                            return spot, f"NSE_DIRECT_V56_{symbol}_{spot:.2f}", True
-        except:
-            pass
-        
-        # 4. Last resort - return cached/hardcoded approximate to avoid Awaiting Tick
-        # Don't return 0, return last known or approximate
+        # 4. Fallback - never 0, avoid Awaiting Tick
         fallback_spots = {
             "NIFTY": 23053.10,
             "BANKNIFTY": 52000.0,
@@ -580,15 +737,15 @@ def get_spot_safe_V56(symbol="NIFTY"):
             "INDIA VIX": 15.5
         }
         if symbol.upper() in fallback_spots:
-            return fallback_spots[symbol.upper()], f"FALLBACK_V56_{symbol}_APPROX", False
+            return fallback_spots[symbol.upper()], f"FALLBACK_V57_{symbol}_APPROX", False
         
-        return 0, "ALL_SOURCES_FAILED_V56", False
+        return 0, "ALL_SOURCES_FAILED_V57", False
     except Exception as e:
-        return 0, f"EXC_V56_SPOT_{str(e)[:30]}", False
+        return 0, f"EXC_V57_SPOT_{str(e)[:30]}", False
 
 def get_spot_cached(symbol):
     try:
-        spot, src, ok = get_spot_safe_V56(symbol)
+        spot, src, ok = get_spot_safe_V57(symbol)
         if ok or spot > 0:
             return spot
         return 0
@@ -597,15 +754,14 @@ def get_spot_cached(symbol):
 
 def get_spot_safe_for_display(symbol="NIFTY"):
     try:
-        spot, src, ok = get_spot_safe_V56(symbol)
+        spot, src, ok = get_spot_safe_V57(symbol)
         if ok and spot > 0:
             return spot, src, True
-        # Even if not ok but spot >0 from fallback, return it
         if spot > 0:
             return spot, src, True
-        return 0, "V56_SPOT_FAILED", False
+        return 0, "V57_SPOT_FAILED", False
     except:
-        return 0, "V56_SPOT_EXC", False
+        return 0, "V57_SPOT_EXC", False
 
 
 TIMEFRAME_CONFIG = {
@@ -6036,7 +6192,7 @@ else:
     default_min_conv = ps_conv.get('min_conviction', ps_conv.get('global_min_conv', 65))
     if 'min_conviction' not in st.session_state:
         st.session_state['min_conviction'] = default_min_conv
-    global_min = st.sidebar.slider("Global Min Conviction %", min_value=50, max_value=90, value=st.session_state.get('min_conviction', default_min_conv), step=5, key="global_min_conv_slider", help="Yeh filter har trade pe lagega - dummy pe bhi check hota hai. Page close ke baad bhi save rahega!")
+    global_min = st.sidebar.slider("Global Min Conviction %", min_value=50, max_value=90, value=get_persistent_setting('min_conviction', default_min_conv) if 'get_persistent_setting' in globals() else st.session_state.get('min_conviction', default_min_conv), step=5, key="global_min_conv_slider", help="Yeh filter har trade pe lagega - dummy pe bhi check hota hai. Page close ke baad bhi save rahega!")
     st.session_state['min_conviction'] = global_min
     # Save immediately
     try:
