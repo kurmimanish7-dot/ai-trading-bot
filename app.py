@@ -2269,7 +2269,7 @@ def auto_check_emergency_exit_from_lights(light1, light2):
                         continue
                     
                     # Get live LTP
-                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
+                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match_FIXED(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
                     if not is_ok or live_ltp <= 0:
                         live_ltp = pos.get('entry_price', 0)
                     
@@ -2351,7 +2351,7 @@ def auto_check_and_exit_positions():
                 expiry = pos.get('expiry','')
                 
                 # Get live LTP - use broker matched
-                live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
+                live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match_FIXED(symbol, strike, opt_type, expiry)
                 
                 if not is_ok or live_ltp <= 0:
                     # Try fallback proxy if Angel fails
@@ -3187,10 +3187,10 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 
 
-def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
+def get_angel_ltp_100pct_broker_match_FIXED(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V36 FIXED: LTP bug fixed - exact strike + exact expiry matching
-    Fixes: 22950 CE showing 359.95 instead of 111.9
+    V37 FIXED: LTP bug - exact first, loose fallback if CAND_0
+    Fixes both 359.95 bug and 0.00 bug
     """
     try:
         api_key = ""; client_id = ""; password = ""; totp_secret = ""
@@ -3226,7 +3226,7 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
         if not (data and data.get("status") == True):
             return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
         master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        mr = requests.get(master_url, timeout=12)
+        mr = requests.get(master_url, timeout=15)
         if mr.status_code != 200:
             return 0, "MASTER_FETCH_FAILED", False
         instruments = mr.json()
@@ -3263,7 +3263,9 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             search_label = "SENSEX"
         else:
             search_label = symbol
-        candidates = []
+        
+        # ===== V37: TRY EXACT MATCH FIRST =====
+        candidates_exact = []
         for inst in instruments:
             if not isinstance(inst, dict):
                 continue
@@ -3295,6 +3297,7 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             m1 = re.search(r'(\d{4,6})\s*(CE|PE)\s*$', tradingsym_upper)
             m2 = re.search(r'(C|P)\s*(\d{4,6})\s*$', tradingsym_upper)
             m3 = re.search(r'\s(\d{4,6})\s+(CE|PE)', tradingsym_upper)
+            m4 = re.search(r'(\d{4,6})(CE|PE)$', tradingsym_upper)
             if m1:
                 extracted_strike = int(m1.group(1))
                 extracted_opt = m1.group(2)
@@ -3304,6 +3307,9 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             elif m3:
                 extracted_strike = int(m3.group(1))
                 extracted_opt = m3.group(2)
+            elif m4:
+                extracted_strike = int(m4.group(1))
+                extracted_opt = m4.group(2)
             else:
                 if re.search(rf'\b{target_strike}\b', tradingsym_upper):
                     extracted_strike = target_strike
@@ -3345,9 +3351,12 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
                     exp_score = 1
             else:
                 exp_score = 1
-            candidates.append((exp_score, inst, tradingsym))
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        for score, inst, tradingsym in candidates[:15]:
+            candidates_exact.append((exp_score, inst, tradingsym))
+        
+        candidates_exact.sort(key=lambda x: x[0], reverse=True)
+        
+        # Try exact matches first
+        for score, inst, tradingsym in candidates_exact[:15]:
             token = str(inst.get("token", ""))
             exch = inst.get("exch_seg", "NFO")
             try:
@@ -3355,26 +3364,82 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
                 if ltp_data and ltp_data.get("status") == True:
                     ltp_val = ltp_data.get("data", {}).get("ltp")
                     if ltp_val and float(ltp_val) > 0:
-                        return float(ltp_val), f"ANGEL_FIXED_{search_label}_{target_strike}{target_opt}_SCORE_{score}_{tradingsym}_{ltp_val}", True
+                        return float(ltp_val), f"ANGEL_V37_EXACT_{search_label}_{target_strike}{target_opt}_SCORE_{score}_{tradingsym}_{ltp_val}", True
             except:
                 continue
-        for score, inst, tradingsym in candidates[:25]:
-            token = str(inst.get("token", ""))
-            exch = inst.get("exch_seg", "NFO")
-            try:
-                ltp_data = obj.ltpData(exch, tradingsym, token)
-                if ltp_data and ltp_data.get("status") == True:
-                    ltp_val = ltp_data.get("data", {}).get("ltp")
-                    if ltp_val and float(ltp_val) > 0:
-                        return float(ltp_val), f"ANGEL_FIXED_FB_{search_label}_{target_strike}{target_opt}_{tradingsym}_{ltp_val}", True
-            except:
-                continue
-        return 0, f"NO_MATCH_FIXED_{search_label}_{target_strike}{target_opt}_CAND_{len(candidates)}", False
+        
+        # ===== V37 FALLBACK: If exact gives 0 candidates, try LOOSE matching (old V35 logic) =====
+        if len(candidates_exact) == 0:
+            candidates_loose = []
+            for inst in instruments:
+                if not isinstance(inst, dict):
+                    continue
+                sym = str(inst.get("symbol", "")).upper()
+                if inst.get("exch_seg") not in ["NFO", "BFO"]:
+                    continue
+                # Loose check: strike string in symbol and opt type in symbol
+                if symbol == "NIFTY":
+                    if "FINNIFTY" in sym or "BANKNIFTY" in sym or "MIDCPNIFTY" in sym or "NIFTYNXT" in sym:
+                        continue
+                    if not sym.startswith("NIFTY"):
+                        continue
+                    if str(target_strike) not in sym or target_opt not in sym:
+                        # Try C/P short form
+                        if not ((target_opt == "CE" and "C" in sym[-5:]) or (target_opt == "PE" and "P" in sym[-5:])):
+                            if str(target_strike) not in sym:
+                                continue
+                elif symbol == "BANKNIFTY":
+                    if "BANKNIFTY" not in sym or str(target_strike) not in sym or target_opt not in sym:
+                        continue
+                else:
+                    if str(target_strike) not in sym or target_opt not in sym:
+                        continue
+                
+                # Expiry scoring for loose
+                exp_score = 0
+                if target_exp_dt:
+                    try:
+                        if target_exp_dt.strftime("%b").upper() in sym:
+                            exp_score += 20
+                        m_exp = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', sym)
+                        if m_exp:
+                            if target_exp_dt.strftime("%b").upper() == m_exp.group(2):
+                                exp_score += 30
+                            if str(target_exp_dt.day) == m_exp.group(1):
+                                exp_score += 10
+                    except:
+                        pass
+                else:
+                    exp_score = 1
+                candidates_loose.append((exp_score, inst))
+            
+            candidates_loose.sort(key=lambda x: x[0], reverse=True)
+            
+            for score, inst in candidates_loose[:15]:
+                tradingsym = str(inst.get("symbol", ""))
+                token = str(inst.get("token", ""))
+                exch = inst.get("exch_seg", "NFO")
+                try:
+                    ltp_data = obj.ltpData(exch, tradingsym, token)
+                    if ltp_data and ltp_data.get("status") == True:
+                        ltp_val = ltp_data.get("data", {}).get("ltp")
+                        if ltp_val and float(ltp_val) > 0:
+                            return float(ltp_val), f"ANGEL_V37_LOOSE_{search_label}_{target_strike}{target_opt}_SCORE_{score}_{tradingsym}_{ltp_val}", True
+                except:
+                    continue
+            
+            # If still 0, return with debug info including sample symbols
+            sample_syms = []
+            for inst in instruments[:5]:
+                if isinstance(inst, dict) and "NIFTY" in str(inst.get("symbol","")).upper():
+                    sample_syms.append(str(inst.get("symbol",""))[:30])
+            return 0, f"NO_MATCH_V37_{search_label}_{target_strike}{target_opt}_EXACT_{len(candidates_exact)}_LOOSE_{len(candidates_loose)}_SAMPLE_{'_'.join(sample_syms)[:80]}", False
+        
+        # Exact had candidates but LTP failed
+        return 0, f"NO_LTP_V37_{search_label}_{target_strike}{target_opt}_CAND_{len(candidates_exact)}", False
     except Exception as e:
-        return 0, f"EXC_FIXED_{str(e)[:100]}", False
-
-def get_angel_ltp_100pct_broker_match_ORIGINAL(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
-    return get_angel_ltp_100pct_broker_match_FIXED(symbol, strike, opt_type, expiry)
+        import traceback
+        return 0, f"EXC_V37_{str(e)[:100]}", False
 
 
 
@@ -8103,7 +8168,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         
                         try:
                             # V27 FINAL: Angel first - 100% broker matched like debug app
-                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match(
+                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match_FIXED(
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
