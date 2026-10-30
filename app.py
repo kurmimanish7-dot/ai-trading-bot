@@ -738,17 +738,76 @@ def init_session_state():
         except:
             pass
 
-def get_paper_portfolio_safe():
-    """Safe getter - never raises AttributeError"""
+def init_session_state_safe():
+    """Safe init that never raises SessionInfo error"""
+    try:
+        # Check if session is available
+        _ = st.session_state
+    except Exception as e:
+        if "SessionInfo" in str(e):
+            # Session not ready yet, skip init, will init later
+            return False
+        pass
+    
     try:
         if "paper_portfolio" not in st.session_state:
-            init_session_state()
+            st.session_state.paper_portfolio = {
+                "positions": {},
+                "daily_pnl": 0.0,
+                "daily_realized_pnl": 0.0,
+                "total_pnl": 0.0,
+                "session_date": datetime.now(IST).strftime('%Y-%m-%d') if 'IST' in globals() else "2025-01-01",
+                "circuit_broken": False,
+                "trade_history": [],
+                "cash_balance": 500000.0,
+                "starting_balance": 500000.0,
+                "daily_loss_limit": 10000.0,
+            }
+        else:
+            pp = st.session_state.paper_portfolio
+            if not isinstance(pp, dict):
+                st.session_state.paper_portfolio = {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": [], "cash_balance": 500000.0}
+            else:
+                pp.setdefault("positions", {})
+                pp.setdefault("daily_pnl", 0.0)
+                pp.setdefault("trade_history", [])
+        
+        defaults = {
+            "kill_switch": False,
+            "auto_traded_today": set(),
+            "pending_confirm_calls": {},
+            "enable_real_trading": False,
+            "auto_real_entry_enabled": False,
+            "require_confirm_call": True,
+        }
+        for k, v in defaults.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
+        return True
+    except Exception as e:
+        if "SessionInfo" in str(e):
+            return False
+        print(f"Session init safe error: {e}")
+        return False
+
+# Alias for backward compatibility
+def init_session_state():
+    return init_session_state_safe()
+
+def get_paper_portfolio_safe():
+    """Safe getter - never raises SessionInfo error"""
+    try:
+        # Try to init if needed
+        init_session_state_safe()
         pp = st.session_state.get("paper_portfolio")
         if pp is None or not isinstance(pp, dict):
-            init_session_state()
+            init_session_state_safe()
             pp = st.session_state.get("paper_portfolio", {"positions": {}})
         return pp
-    except:
+    except Exception as e:
+        if "SessionInfo" in str(e):
+            # Return dummy to avoid crash during early import
+            return {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
         return {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
 
 def get_positions_safe():
@@ -756,11 +815,14 @@ def get_positions_safe():
         pp = get_paper_portfolio_safe()
         pos = pp.get("positions", {})
         return pos if isinstance(pos, dict) else {}
-    except:
+    except Exception as e:
+        if "SessionInfo" in str(e):
+            return {}
         return {}
 
-# Call early
-init_session_state()
+
+# V34 FIX: Do NOT call at import time - causes SessionInfo error
+# init_session_state() will be called lazily inside safe getters and inside main UI
 # ===== END V33 FIX =====
 
 try:
@@ -8215,6 +8277,11 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 # ==============================================================================
 # GLOBAL PAPER TRADING PORTFOLIO & TRADE JOURNAL (OPTIONS + EQUITIES)
 # ==============================================================================
+try:
+    init_session_state_safe()
+except:
+    pass
+
 st.divider()
 st.markdown(f"## {SHIELD} Active Paper Positions & Risk Ledger (Options & Equities)")
 # V33 FIX: Safe getter to prevent AttributeError on first run
