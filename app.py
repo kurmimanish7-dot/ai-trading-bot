@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-AI Institutional Live Trading Advisor (Quantitative GEX & Multi-Factor Equity Engine)
-=====================================================================================
-Production Institutional Release:
-- Universal 5,000+ Equity Universe (NSE & BSE)
-- Multi-Factor Equity Setup Engine: Technicals, Fundamentals, Official Corporate/Insider
-  Disclosures, Future Plans/Capex, Arithmetic/Mathematical Models, Volume/Investment Flow
-- Dual Entry Call & Active Exit Call Engine with Target Price & Mathematical Target Time (ETA)
-- 12-Tier Multi-Timeframe Matrix, SEBI Regulatory Metadata, Analytical Greeks, Dealer GEX Radar
-- Stateful Paper-Trading Risk Engine (Supports both Index Options & Equity Shares)
-"""
+""" AI Institutional Live Trading Advisor (Quantitative GEX & Multi-Factor Equity Engine) ===================================================================================== Production Institutional Release: - Universal 5,000+ Equity Universe (NSE & BSE) - Multi-Factor Equity Setup Engine: Technicals, Fundamentals, Official Corporate/Insider Disclosures, Future Plans/Capex, Arithmetic/Mathematical Models, Volume/Investment Flow - Dual Entry Call & Active Exit Call Engine with Target Price & Mathematical Target Time (ETA) - 12-Tier Multi-Timeframe Matrix, SEBI Regulatory Metadata, Analytical Greeks, Dealer GEX Radar - Stateful Paper-Trading Risk Engine (Supports both Index Options & Equity Shares) """
 
 import datetime
 from datetime import datetime, date, time as dtime, timedelta
@@ -174,280 +164,6 @@ def get_spot_safe_for_display(symbol: str):
         return 0.0
     except:
         return 0.0
-
-
-
-
-# ===== FINAL FIX - ALL DATA FROM ANGEL - V39 BASED =====
-def get_angel_credentials_VFINAL():
-    try:
-        import streamlit as st
-        api_key = st.secrets.get("ANGEL_API_KEY", "") or st.secrets.get("API_KEY", "")
-        client_id = st.secrets.get("ANGEL_CLIENT_ID", "") or st.secrets.get("CLIENT_ID", "")
-        password = st.secrets.get("ANGEL_PASSWORD", "") or st.secrets.get("PASSWORD", "")
-        totp_secret = st.secrets.get("ANGEL_TOTP_SECRET", "") or st.secrets.get("TOTP_SECRET", "")
-        return api_key, client_id, password, totp_secret
-    except:
-        return "", "", "", ""
-
-_angel_session_cache = None
-_angel_session_time = 0
-
-def get_angel_session_VFINAL():
-    try:
-        from SmartApi import SmartConnect
-        import pyotp, time
-        global _angel_session_cache, _angel_session_time
-        api_key, client_id, password, totp_secret = get_angel_credentials_VFINAL()
-        if not api_key or not client_id:
-            return None, "NO_CREDS"
-        now = time.time()
-        if _angel_session_cache and (now - _angel_session_time < 300):
-            return _angel_session_cache, "CACHED"
-        smart_api = SmartConnect(api_key=api_key)
-        totp = pyotp.TOTP(totp_secret).now() if totp_secret else ""
-        data = smart_api.generateSession(client_id, password, totp)
-        if data and data.get('status'):
-            _angel_session_cache = smart_api
-            _angel_session_time = now
-            return smart_api, "NEW_LOGIN"
-        else:
-            return None, f"LOGIN_FAIL"
-    except Exception as e:
-        return None, f"EXC_{str(e)[:30]}"
-
-def get_angel_spot_VFINAL(symbol="NIFTY"):
-    try:
-        smart_api, src = get_angel_session_VFINAL()
-        if not smart_api:
-            return 0, f"ANGEL_SPOT_NO_SESSION_{src}", False
-        token_map = {
-            "NIFTY": [("NSE", "NIFTY 50", "99926000"), ("NSE", "Nifty 50", "26000")],
-            "BANKNIFTY": [("NSE", "Nifty Bank", "99926009"), ("NSE", "BANKNIFTY", "26009")],
-            "FINNIFTY": [("NSE", "Nifty Fin Service", "99926037")],
-            "MIDCPNIFTY": [("NSE", "NIFTY MID SELECT", "99926074")],
-            "SENSEX": [("BSE", "SENSEX", "99919000")],
-            "INDIA VIX": [("NSE", "India VIX", "26475")]
-        }
-        tries = token_map.get(symbol.upper(), [("NSE", symbol, "26000")])
-        for exch, trading_sym, token in tries:
-            try:
-                resp = smart_api.ltpData(exch, trading_sym, token)
-                if resp and resp.get('status'):
-                    data = resp.get('data', {})
-                    ltp = data.get('ltp', 0) or data.get('last', 0)
-                    if ltp and float(ltp) > 0:
-                        return float(ltp), f"ANGEL_SPOT_{symbol}_{float(ltp):.2f}_{token}", True
-            except:
-                continue
-        return 0, f"ANGEL_SPOT_NO_LTP_{symbol}", False
-    except Exception as e:
-        return 0, f"ANGEL_SPOT_EXC_{str(e)[:40]}", False
-
-def get_angel_ltp_VFINAL(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    try:
-        smart_api, src = get_angel_session_VFINAL()
-        if not smart_api:
-            return 0, f"ANGEL_LTP_NO_SESSION_{src}", False
-        import requests, re
-        from datetime import datetime
-        try:
-            target_strike = int(float(strike))
-        except:
-            return 0, f"STRIKE_FAIL_{strike}", False
-        target_opt = opt_type.upper().strip()
-        if target_opt == "C":
-            target_opt = "CE"
-        if target_opt == "P":
-            target_opt = "PE"
-        target_exp_dt = None
-        exp_str = str(expiry).strip()
-        for fmt in ["%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%Y-%m-%d", "%d %b %y", "%d%b%Y"]:
-            try:
-                target_exp_dt = datetime.strptime(exp_str, fmt)
-                break
-            except:
-                continue
-        if not target_exp_dt:
-            try:
-                target_exp_dt = datetime.strptime(exp_str.upper(), "%d %b %Y")
-            except:
-                pass
-        if not target_exp_dt:
-            return 0, f"EXPIRY_FAIL_{expiry}", False
-        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        try:
-            mr = requests.get(master_url, timeout=15)
-            if mr.status_code != 200:
-                return 0, f"MASTER_HTTP_{mr.status_code}", False
-            instruments = mr.json()
-        except:
-            return 0, "MASTER_EXC", False
-        symbol_upper = symbol.upper().strip()
-        invalid = ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY"] if symbol_upper == "NIFTY" else []
-        candidates_exact = []
-        candidates_fallback = []
-        for inst in instruments:
-            if not isinstance(inst, dict):
-                continue
-            if str(inst.get("exch_seg", "")).upper() not in ["NFO", "BFO"]:
-                continue
-            if "FUT" in str(inst.get("instrumenttype", "")).upper():
-                continue
-            tradingsym = str(inst.get("symbol", "")).strip()
-            tradingsym_upper = tradingsym.upper()
-            if symbol_upper == "NIFTY":
-                if not tradingsym_upper.startswith("NIFTY"):
-                    continue
-                if any(inv in tradingsym_upper for inv in invalid):
-                    continue
-            else:
-                if not tradingsym_upper.startswith(symbol_upper):
-                    if symbol_upper not in tradingsym_upper:
-                        continue
-            inst_strike_raw = inst.get("strike")
-            extracted_strike = None
-            if inst_strike_raw is not None and str(inst_strike_raw).strip() not in ["", "-1", "-1.000000", "0", "0.000000"]:
-                try:
-                    s_val = float(inst_strike_raw)
-                    if s_val > 100000:
-                        s_val = s_val / 100.0
-                    if s_val > 100000:
-                        s_val = s_val / 10.0
-                    extracted_strike = int(round(s_val))
-                except:
-                    pass
-            if extracted_strike is None:
-                for pat in [r'(\d{4,6})\s*(CE|PE)\s*$', r'(\d{4,6})(CE|PE)$']:
-                    m = re.search(pat, tradingsym_upper)
-                    if m:
-                        try:
-                            for g in m.groups():
-                                if g and g.isdigit() and len(g) >= 4:
-                                    extracted_strike = int(g)
-                                    break
-                        except:
-                            pass
-                        if extracted_strike:
-                            break
-            if extracted_strike is None or extracted_strike != target_strike:
-                continue
-            inst_opt = "CE" if "CE" in tradingsym_upper else "PE" if "PE" in tradingsym_upper else None
-            if inst_opt and inst_opt != target_opt:
-                continue
-            inst_expiry_raw = str(inst.get("expiry", "")).strip()
-            inst_exp_dt = None
-            if inst_expiry_raw:
-                for fmt in ["%d%b%Y", "%d%b%y", "%d-%b-%Y", "%Y-%m-%d", "%d %b %Y"]:
-                    try:
-                        clean = inst_expiry_raw.replace(" ", "").upper()
-                        inst_exp_dt = datetime.strptime(clean, fmt)
-                        break
-                    except:
-                        try:
-                            inst_exp_dt = datetime.strptime(inst_expiry_raw, fmt)
-                            break
-                        except:
-                            continue
-            if not inst_exp_dt:
-                m_exp = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', tradingsym_upper)
-                if m_exp:
-                    day = m_exp.group(1)
-                    mon = m_exp.group(2)
-                    yr = m_exp.group(3)
-                    yr_full = "20" + yr if len(yr) == 2 and int(yr) < 50 else "19" + yr if len(yr) == 2 else yr
-                    exp_str_sym = f"{day}{mon}{yr_full}"
-                    try:
-                        inst_exp_dt = datetime.strptime(exp_str_sym, "%d%b%Y")
-                    except:
-                        pass
-            candidates_fallback.append((inst, tradingsym, inst_expiry_raw, inst_exp_dt))
-            if target_exp_dt and inst_exp_dt:
-                if inst_exp_dt.date() != target_exp_dt.date():
-                    continue
-            candidates_exact.append((inst, tradingsym, inst_expiry_raw, inst_exp_dt))
-        candidates = candidates_exact if candidates_exact else candidates_fallback
-        if not candidates:
-            return 0, f"NO_CANDIDATE_{symbol_upper}_{target_strike}{target_opt}_{target_exp_dt.strftime('%d%b%Y') if target_exp_dt else expiry}", False
-        for inst, tradingsym, inst_expiry, inst_exp_dt in candidates:
-            token = str(inst.get("token", ""))
-            exch = str(inst.get("exch_seg", "NFO"))
-            try:
-                ltp_data = smart_api.ltpData(exch, tradingsym, token)
-                if ltp_data and ltp_data.get("status"):
-                    ltp_val = ltp_data.get("data", {}).get("ltp", 0)
-                    if ltp_val and float(ltp_val) > 0:
-                        f_ltp = float(ltp_val)
-                        exp_log = inst_exp_dt.strftime("%d%b%Y") if inst_exp_dt else inst_expiry
-                        match_type = "EXACT" if candidates_exact else "FALLBACK"
-                        return f_ltp, f"ANGEL_DIRECT_{match_type}_{symbol_upper}_{target_strike}{target_opt}_EXP_{exp_log}_{tradingsym}_TOKEN_{token}_LTP_{f_ltp}", True
-            except:
-                continue
-        return 0, f"NO_LTP_{symbol_upper}_{target_strike}{target_opt}_CAND_{len(candidates)}", False
-    except Exception as e:
-        return 0, f"EXC_VFINAL_{str(e)[:100]}", False
-
-# Override all old functions to use Angel direct
-def get_spot_v28(symbol="NIFTY"):
-    try:
-        spot, src, ok = get_angel_spot_VFINAL(symbol)
-        if ok and spot > 0:
-            return spot
-        return _v28_yahoo_spot(symbol) or _v28_nse_proxy_spot(symbol) or 0
-    except:
-        return 0
-
-def fetch_verified_spot_v28(symbol="NIFTY"):
-    try:
-        spot, src, ok = get_angel_spot_VFINAL(symbol)
-        if ok and spot > 0:
-            return {"price": spot, "source": src, "time": __import__("time").time()}
-        p = _v28_yahoo_spot(symbol)
-        if p and p > 0:
-            return {"price": float(p), "source": "YAHOO_FALLBACK", "time": __import__("time").time()}
-        p = _v28_nse_proxy_spot(symbol)
-        if p and p > 0:
-            return {"price": float(p), "source": "NSE_PROXY_FALLBACK", "time": __import__("time").time()}
-        return {"price": None, "source": "FAILED", "time": __import__("time").time()}
-    except:
-        return {"price": None, "source": "EXC", "time": __import__("time").time()}
-
-def get_spot_safe_for_display(symbol="NIFTY"):
-    try:
-        spot, src, ok = get_angel_spot_VFINAL(symbol)
-        if ok and spot > 0:
-            return float(spot), src, True
-        p = get_spot_v28(symbol)
-        if p and p > 0:
-            return float(p), "FALLBACK", True
-        return 0.0, "FAILED", False
-    except:
-        return 0.0, "EXC", False
-
-def get_spot(symbol="NIFTY"):
-    return get_spot_v28(symbol)
-
-def fetch_verified_spot(symbol="NIFTY"):
-    return fetch_verified_spot_v28(symbol)
-
-def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_VFINAL(symbol, strike, opt_type, expiry)
-
-def get_angel_ltp_VFINAL_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_VFINAL(symbol, strike, opt_type, expiry)
-
-def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    return get_angel_ltp_VFINAL(symbol, strike, opt_type, expiry)
-
-def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
-    return get_angel_ltp_VFINAL(symbol, strike, opt_type, expiry)
-
-def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_VFINAL(symbol, strike, opt_type, expiry)
-
-def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_VFINAL(symbol, strike, opt_type, expiry)
-
 
 # ===== V29 FINAL FIX - NameError FIXED - EARLY DEFS =====
 def auto_entry_market_price(idea, live_ltp, quantity_lots, enable_real=False):
@@ -1457,19 +1173,7 @@ def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
         pending_key = f"pending_confirm_{symbol}_{strike}_{opt}"
         
         # V54 NEW: Telegram pe direct YES/NO buttons
-        msg = f"""📞 *CONFIRM CALL - {conv}% {symbol}*
-
-🎯 High Conviction: {conv}% {color}
-📊 {symbol} {strike} {opt}
-💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{(spot or 0):.2f}
-📅 Expiry: {expiry_label_str}
-⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
-✅ Real order pending - Confirm needed
-
-Qty: {qty} lots
-Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
-
-👇 *Telegram pe hi YES/NO dabao - Direct trade!*"""
+        msg = f"""📞 *CONFIRM CALL - {conv}% {symbol}* 🎯 High Conviction: {conv}% {color} 📊 {symbol} {strike} {opt} 💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{(spot or 0):.2f} 📅 Expiry: {expiry_label_str} ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')} ✅ Real order pending - Confirm needed Qty: {qty} lots Conviction Range: {st.session_state.get('min_conviction',65)}%+ required 👇 *Telegram pe hi YES/NO dabao - Direct trade!*"""
 
         # Inline keyboard with YES/NO callback buttons - Direct in Telegram
         app_url = secret("APP_URL") or secret("STREAMLIT_APP_URL") or "https://4gg.streamlit.app"
@@ -1733,26 +1437,7 @@ def format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str):
     rr = idea.get('risk_reward',0)
     conf = idea.get('confidence',0)
     
-    msg = f"""🚀 *NEW TRADE SETUP - {symbol}*
-
-📊 *{symbol} {strike} {opt}*
-Type: INDEX OPTION (CE BUYING)
-Timeframe: 15 Min (Institutional Breakout)
-Holding: NEXT SESSION
-Conviction: {conf}% | Expiry: {expiry_label_str}
-
-💰 *Entry:* ₹{entry:.2f} (LIVE Broker: ₹{live_ltp:.2f})
-🛑 *SL:* ₹{sl:.2f}
-🎯 *T1:* ₹{t1:.2f}
-🎯 *T2:* ₹{t2:.2f}
-📈 *R/R:* 1:{rr:.2f}
-📍 *Spot:* {(spot or 0):.2f}
-
-⚡ *Buildup:* {idea.get('buildup','')}
-📝 *Why:* {idea.get('why','')[:200]}...
-
-⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-🤖 Auto Alert from AI Trading Bot"""
+    msg = f"""🚀 *NEW TRADE SETUP - {symbol}* 📊 *{symbol} {strike} {opt}* Type: INDEX OPTION (CE BUYING) Timeframe: 15 Min (Institutional Breakout) Holding: NEXT SESSION Conviction: {conf}% | Expiry: {expiry_label_str} 💰 *Entry:* ₹{entry:.2f} (LIVE Broker: ₹{live_ltp:.2f}) 🛑 *SL:* ₹{sl:.2f} 🎯 *T1:* ₹{t1:.2f} 🎯 *T2:* ₹{t2:.2f} 📈 *R/R:* 1:{rr:.2f} 📍 *Spot:* {(spot or 0):.2f} ⚡ *Buildup:* {idea.get('buildup','')} 📝 *Why:* {idea.get('why','')[:200]}... ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} 🤖 Auto Alert from AI Trading Bot"""
     return msg
 
 def format_telegram_exit_alert(position, exit_price, pnl, reason):
@@ -1764,15 +1449,7 @@ def format_telegram_exit_alert(position, exit_price, pnl, reason):
     
     pnl_emoji = "✅" if pnl > 0 else "❌"
     
-    msg = f"""{pnl_emoji} *TRADE EXIT - {symbol}*
-
-📊 *{symbol} {strike} {opt}*
-Entry: ₹{entry:.2f} → Exit: ₹{exit_price:.2f}
-💰 *P&L:* ₹{pnl:+.2f}
-📝 *Reason:* {reason}
-
-⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-🤖 Auto Exit Alert"""
+    msg = f"""{pnl_emoji} *TRADE EXIT - {symbol}* 📊 *{symbol} {strike} {opt}* Entry: ₹{entry:.2f} → Exit: ₹{exit_price:.2f} 💰 *P&L:* ₹{pnl:+.2f} 📝 *Reason:* {reason} ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} 🤖 Auto Exit Alert"""
     return msg
 
 def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
@@ -1897,14 +1574,7 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
                 if auto_ok:
                     # Send confirmation telegram
                     try:
-                        confirm_msg = f"""🔴 *AUTO REAL ENTRY EXECUTED*
-
-📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}
-💰 Entry: ₹{live_ltp:.2f} x {real_qty} qty @ MARKET
-🆔 {auto_msg}
-⏰ {datetime.now(IST).strftime('%H:%M:%S IST')}
-
-✅ Auto entry at market price!"""
+                        confirm_msg = f"""🔴 *AUTO REAL ENTRY EXECUTED* 📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')} 💰 Entry: ₹{live_ltp:.2f} x {real_qty} qty @ MARKET 🆔 {auto_msg} ⏰ {datetime.now(IST).strftime('%H:%M:%S IST')} ✅ Auto entry at market price!"""
                         send_telegram_message(bot_token, chat_id, confirm_msg)
                     except:
                         pass
@@ -1922,10 +1592,7 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
         return False, str(e)[:80]
 
 def check_momentum_reversal(pos, current_rsi=60, current_trend="BULLISH"):
-    """
-    V39 MOMENTUM REVERSAL DETECTION
-    Returns: (is_reversal, reversal_type, severity)
-    """
+    """ V39 MOMENTUM REVERSAL DETECTION Returns: (is_reversal, reversal_type, severity) """
     try:
         entry_rsi = pos.get('entry_rsi', 65)
         entry_trend = pos.get('entry_trend', 'BULLISH')
@@ -2022,20 +1689,7 @@ def auto_check_emergency_exit_from_lights(light1, light2):
                     pnl = (live_ltp - entry) * pos.get('qty', 0) if opt_type == "CE" else (entry - live_ltp) * pos.get('qty', 0)
                     
                     # Send emergency exit telegram
-                    msg = f"""🚨 *EMERGENCY EXIT - {symbol} {pos.get('strike')} {opt_type}*
-
-📊 *{symbol} {pos.get('strike')} {opt_type}*
-Entry: ₹{entry:.2f} → Exit: ₹{live_ltp:.2f}
-💰 *P&L:* ₹{pnl:+.2f}
-
-🔥 *Reason:* {reason}
-
-Pattern: {light1.get('pattern')}
-Vol: {light1.get('vol_ratio',0):.2f}x
-Light1: {light1.get('status')} | Light2: {light2.get('status')}
-
-⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-🤖 Emergency Exit from Traffic Light System"""
+                    msg = f"""🚨 *EMERGENCY EXIT - {symbol} {pos.get('strike')} {opt_type}* 📊 *{symbol} {pos.get('strike')} {opt_type}* Entry: ₹{entry:.2f} → Exit: ₹{live_ltp:.2f} 💰 *P&L:* ₹{pnl:+.2f} 🔥 *Reason:* {reason} Pattern: {light1.get('pattern')} Vol: {light1.get('vol_ratio',0):.2f}x Light1: {light1.get('status')} | Light2: {light2.get('status')} ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} 🤖 Emergency Exit from Traffic Light System"""
                     
                     ok, resp = send_telegram_message(bot_token, chat_id, msg)
                     print(f"Emergency exit alert sent for {trade_id}: ok={ok} resp={resp}")
@@ -2099,13 +1753,8 @@ def auto_check_and_exit_positions():
                 live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
                 
                 if not is_ok or live_ltp <= 0:
-                    # Try fallback proxy if Angel fails
-                    try:
-                        live_ltp, live_src, is_ok, _ = get_broker_matched_ltp_FINAL(symbol, strike, opt_type, expiry)
-                    except:
-                        continue
-                    if not is_ok or live_ltp <= 0:
-                        continue
+                    # Never use another expiry's premium to value/exit this position.
+                    continue
                 
                 entry = pos.get('entry_price',0)
                 sl = pos.get('sl',0)
@@ -2515,10 +2164,7 @@ class HighConvictionMathEngine:
             return 60, "🟡"
     
     def calculate(self, spot, strike, ce_pe, prices, highs, lows, volumes, oi_data, iv=15, time_to_expiry_days=3, premium_ltp=0):
-        """
-        Main Math Engine - All permutation & combination
-        Returns: detailed setups, overall conviction, EV, Kelly, Probability
-        """
+        """ Main Math Engine - All permutation & combination Returns: detailed setups, overall conviction, EV, Kelly, Probability """
         setups = {}
         scores = {}
         
@@ -2799,10 +2445,7 @@ import time as time_fix
 import random
 
 def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", expiry="27-Oct-2026"):
-    """
-    V14 ULTRA: Completely fresh session every call, bypasses Cloudflare/CDN cache,
-    retries 3 times with different UAs. This fixes the 78.40 stuck vs 130+ live issue.
-    """
+    """ V14 ULTRA: Completely fresh session every call, bypasses Cloudflare/CDN cache, retries 3 times with different UAs. This fixes the 78.40 stuck vs 130+ live issue. """
     # Normalize
     try:
         target_exp_norm = expiry_norm(expiry)
@@ -2895,202 +2538,153 @@ def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", 
 
 
 def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
-    """
-    V15 FINAL: Guarantees broker match (108.2 vs 56.30 issue fixed)
-    Tries selected expiry first, then all expiries, returns first non-zero LTP that matches broker.
-    """
-    # Try selected expiry with ultra fresh fetcher
-    ltp, src, ok, exp_used = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, selected_expiry)
-    if ok and ltp > 0:
-        return ltp, src, True, exp_used
-    
-    # If failed, try all expiries from NSE (finds 27 Oct tomorrow)
+    """Compatibility shim: never substitute a different expiry for a requested contract."""
+    return 0.0, "ANGEL_ONLY_EXACT_EXPIRY_REQUIRED", False, _angel_normalize_expiry(selected_expiry)
+
+
+# ===== STRICT ANGEL ONE OPTION LTP RESOLVER (EXACT CONTRACT ONLY) =====
+_ANGEL_SCRIP_MASTER_CACHE = {"data": None, "ts": 0.0}
+
+def _angel_normalize_expiry(value):
+    """Return YYYY-MM-DD for supported NSE/Angel expiry representations."""
+    if not value:
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.strftime("%Y-%m-%d")
+    raw = str(value).strip().upper()
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%d-%m-%Y",
+                "%d/%m/%Y", "%d%b%Y", "%d%b%y", "%d-%b-%y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+def _angel_load_scrip_master(requests_module):
+    """Cache Angel's official instrument master for six hours."""
+    now = time.time()
+    cached = _ANGEL_SCRIP_MASTER_CACHE.get("data")
+    if cached and now - float(_ANGEL_SCRIP_MASTER_CACHE.get("ts", 0)) < 21600:
+        return cached
+    url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+    response = requests_module.get(url, timeout=20)
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, list) or not data:
+        raise RuntimeError("Angel instrument master is empty/invalid")
+    _ANGEL_SCRIP_MASTER_CACHE["data"] = data
+    _ANGEL_SCRIP_MASTER_CACHE["ts"] = now
+    return data
+
+def _angel_index_name(symbol):
+    aliases = {"NIFTY":"NIFTY", "BANKNIFTY":"BANKNIFTY", "FINNIFTY":"FINNIFTY",
+               "MIDCPNIFTY":"MIDCPNIFTY", "SENSEX":"SENSEX", "BANKEX":"BANKEX"}
+    key = str(symbol or "NIFTY").upper().replace(" ", "")
+    if key not in aliases:
+        raise ValueError(f"Unsupported index for Angel option contract: {symbol}")
+    return aliases[key]
+
+def _angel_find_exact_option_contract(instruments, symbol, strike, opt_type, expiry):
+    """Match underlying, exact expiry, exact strike, option right and exchange."""
+    underlying = _angel_index_name(symbol)
+    target_exp = _angel_normalize_expiry(expiry)
+    if not target_exp:
+        raise ValueError(f"Invalid/missing expiry: {expiry!r}")
+    target_strike = float(strike)
+    right = str(opt_type).upper().strip()
+    if right not in ("CE", "PE"):
+        raise ValueError(f"Invalid option type: {opt_type}")
+    meta = INDEX_METADATA.get(underlying, {})
+    expected_segment = "BFO" if meta.get("exchange") == "BSE" else "NFO"
+    matches = []
+    for inst in instruments:
+        if not isinstance(inst, dict):
+            continue
+        if str(inst.get("exch_seg", "")).upper() != expected_segment:
+            continue
+        inst_type = str(inst.get("instrumenttype", "")).upper()
+        if inst_type and inst_type not in ("OPTIDX", "OPTSTK"):
+            continue
+        inst_name = str(inst.get("name", "")).upper().replace(" ", "")
+        if inst_name != underlying:
+            continue
+        trading_symbol = str(inst.get("symbol", "")).strip()
+        if not trading_symbol.upper().endswith(right):
+            continue
+        if _angel_normalize_expiry(inst.get("expiry")) != target_exp:
+            continue
+        try:
+            raw_strike = float(inst.get("strike", 0) or 0)
+            # Angel index option strike is generally stored in paise.
+            inst_strike = raw_strike / 100.0 if raw_strike > 100000 else raw_strike
+        except (TypeError, ValueError):
+            continue
+        if abs(inst_strike - target_strike) > 0.001:
+            continue
+        token = str(inst.get("token", "")).strip()
+        if token and trading_symbol:
+            matches.append((trading_symbol, token, expected_segment))
+    if len(matches) != 1:
+        if not matches:
+            raise LookupError(f"Exact Angel contract not found: {underlying} {target_exp} {target_strike:g} {right} {expected_segment}")
+        raise LookupError(f"Ambiguous Angel contract ({len(matches)} matches): {underlying} {target_exp} {target_strike:g} {right}")
+    return matches[0]
+
+def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
+    """Fetch Angel LTP only for the exact contract; never substitute another expiry."""
     try:
-        # Get expiry list fresh
-        sess = requests.Session()
-        sess.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/option-chain"})
-        sess.get("https://www.nseindia.com", timeout=3)
-        ts = int(time.time()*1000)
-        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}&_={ts}"
-        r = sess.get(url, timeout=6)
-        if r.status_code == 200:
-            data = r.json()
-            expiry_list = data.get("records", {}).get("expiryDates", [])
-            for exp in expiry_list[:3]:  # Try next 3 expiries
-                ltp2, src2, ok2, exp_used2 = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, exp)
-                if ok2 and ltp2 > 0:
-                    return ltp2, src2 + f"_EXP_{exp}", True, exp_used2
-    except Exception as e:
-        pass
-    
-    return 0, "ALL_EXPIRIES_FAILED", False, ""
-
-
-
-
-
-
-
-
-def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
-    """
-    V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY
-    """
-    try:
-        api_key = ""; client_id = ""; password = ""; totp_secret = ""
-        for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
-            if k in st.secrets:
-                api_key = str(st.secrets[k]).strip(); break
-        for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"]:
-            if k in st.secrets:
-                client_id = str(st.secrets[k]).strip(); break
-        for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"]:
-            if k in st.secrets:
-                password = str(st.secrets[k]).strip(); break
-        for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
-            if k in st.secrets:
-                totp_secret = str(st.secrets[k]).strip(); break
-        if not api_key or not client_id:
-            return 0, "ANGEL_KEYS_MISSING", False
+        keys = {}
+        aliases = {
+            "api_key": ("ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"),
+            "client_id": ("ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"),
+            "password": ("ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"),
+            "totp": ("ANGEL_TOTP_SECRET", "TOTP_SECRET"),
+        }
+        for field, names in aliases.items():
+            for key in names:
+                try:
+                    value = st.secrets.get(key, "")
+                except Exception:
+                    value = ""
+                if value:
+                    keys[field] = str(value).strip()
+                    break
+        if not all(keys.get(k) for k in ("api_key", "client_id", "password", "totp")):
+            return 0.0, "ANGEL_KEYS_MISSING_OR_INCOMPLETE", False
         try:
             from SmartApi import SmartConnect
             import pyotp
-            import requests
-            import re
-        except ImportError as e:
-            return 0, f"LIB_MISSING_{str(e)[:20]}", False
-        totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
-        obj = SmartConnect(api_key=api_key)
-        data = obj.generateSession(client_id, password, totp_code)
-        if not (data and data.get("status") == True):
-            return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
-        try:
-            master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-            mr = requests.get(master_url, timeout=12)
-            if mr.status_code != 200:
-                return 0, "MASTER_FETCH_FAILED", False
-            instruments = mr.json()
-            symbol = symbol.upper().strip()
-            if symbol == "NIFTY":
-                def is_match(sym):
-                    sym_u = sym.upper()
-                    if "FINNIFTY" in sym_u or "BANKNIFTY" in sym_u or "MIDCPNIFTY" in sym_u or "NIFTYNXT" in sym_u:
-                        return False
-                    return sym_u.startswith("NIFTY") and str(strike) in sym_u and opt_type.upper() in sym_u
-                search_label = "NIFTY"
-            elif symbol == "BANKNIFTY":
-                def is_match(sym):
-                    return "BANKNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "BANKNIFTY"
-            elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
-                def is_match(sym):
-                    sym_u = sym.upper()
-                    return ("FINNIFTY" in sym_u or (sym_u.startswith("FIN") and "NIFTY" in sym_u)) and str(strike) in sym_u and opt_type.upper() in sym_u
-                search_label = "FINNIFTY"
-            elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
-                def is_match(sym):
-                    return "MIDCPNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "MIDCPNIFTY"
-            elif symbol in ["SENSEX", "BSESN"]:
-                def is_match(sym):
-                    return "SENSEX" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "SENSEX"
-            else:
-                def is_match(sym):
-                    return symbol in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = symbol
-            target_exp_norm = ""
-            try:
-                target_exp_norm = expiry_norm(expiry) if expiry else ""
-                target_exp_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d") if target_exp_norm else None
-            except:
-                target_exp_dt = None
-            candidates = []
-            for inst in instruments:
-                if not isinstance(inst, dict):
-                    continue
-                sym = str(inst.get("symbol", "")).upper()
-                if not is_match(sym):
-                    continue
-                if inst.get("exch_seg") not in ["NFO", "BFO"]:
-                    continue
-                exp_score = 0
-                if target_exp_dt:
-                    try:
-                        m = re.search(r"(\d{2})([A-Z]{3})(\d{2,4})", sym)
-                        if m:
-                            if target_exp_dt.strftime("%b").upper() in sym:
-                                exp_score += 10
-                            if str(target_exp_dt.day) in sym:
-                                exp_score += 5
-                            if str(target_exp_dt.year)[-2:] in sym or str(target_exp_dt.year) in sym:
-                                exp_score += 3
-                    except:
-                        pass
-                else:
-                    exp_score = 1
-                candidates.append((exp_score, inst))
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            for score, inst in candidates[:10]:
-                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
-                try:
-                    ltp_data = obj.ltpData(exch, sym, token)
-                    if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data", {}).get("ltp")
-                        if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}{expiry.replace('-','').upper() if expiry else ''}{strike}{opt_type.upper()}_{ltp_val}", True
-                except:
-                    continue
-            for score, inst in candidates[:20]:
-                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
-                try:
-                    ltp_data = obj.ltpData(exch, sym, token)
-                    if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data", {}).get("ltp")
-                        if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}_FALLBACK_{strike}{opt_type}_{ltp_val}", True
-                except:
-                    continue
-            return 0, f"NO_LTP_FOUND_{search_label}_{strike}{opt_type}", False
-        except Exception as e:
-            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:50]}", False
-    except Exception as e:
-        return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
-
+            import requests as angel_requests
+        except ImportError as exc:
+            return 0.0, f"ANGEL_LIBRARY_MISSING_{str(exc)[:30]}", False
+        target_exp = _angel_normalize_expiry(expiry)
+        if not target_exp:
+            return 0.0, f"ANGEL_INVALID_EXPIRY_{str(expiry)[:24]}", False
+        obj = SmartConnect(api_key=keys["api_key"])
+        login = obj.generateSession(keys["client_id"], keys["password"], pyotp.TOTP(keys["totp"]).now())
+        if not (isinstance(login, dict) and login.get("status") is True):
+            return 0.0, f"ANGEL_LOGIN_FAILED_{str(login)[:60]}", False
+        instruments = _angel_load_scrip_master(angel_requests)
+        trading_symbol, token, exchange = _angel_find_exact_option_contract(
+            instruments, symbol, strike, opt_type, target_exp
+        )
+        quote = obj.ltpData(exchange, trading_symbol, token)
+        if not (isinstance(quote, dict) and quote.get("status") is True):
+            return 0.0, f"ANGEL_QUOTE_FAILED_{str(quote)[:60]}", False
+        ltp = float((quote.get("data") or {}).get("ltp") or 0)
+        if not math.isfinite(ltp) or ltp <= 0:
+            return 0.0, "ANGEL_INVALID_LTP", False
+        return ltp, f"ANGEL_EXACT_{trading_symbol}_{target_exp}", True
+    except Exception as exc:
+        return 0.0, f"ANGEL_EXACT_CONTRACT_ERROR_{str(exc)[:100]}", False
 
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    """
-    V20: Tries Angel first (100% broker matched), then proxy, then NSE
-    """
-    # Try Angel first - 100% broker matched, works on Cloud
-    ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
-    if ok and ltp > 0:
-        return ltp, src, True
-    
-    # If Angel keys missing, try proxy
-    ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
-    if ok2 and ltp2 > 0:
-        return ltp2, src2, True
-    
-    # Try ultimate
-    try:
-        ltp3, src3, ok3 = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
-        if ok3 and ltp3 > 0:
-            return ltp3, src3, True
-    except:
-        pass
-    
-    # All failed - return 0 with clear message
-    if "ANGEL_KEYS_MISSING" in src:
-        return 0, "ADD_ANGEL_KEYS_IN_SECRETS_FOR_108.20", False
-    return 0, src, False
+    """Angel One only; return no quote rather than a different expiry's premium."""
+    return get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
 
 
 def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
-    """
-    V19 FINAL: Uses proxy to bypass NSE IP block on Streamlit Cloud
-    This WILL show 108.20 even on Cloud
-    """
+    """ V19 FINAL: Uses proxy to bypass NSE IP block on Streamlit Cloud This WILL show 108.20 even on Cloud """
     import urllib.parse
     target_strike = int(strike)
     target_type = opt_type.upper()
@@ -3170,10 +2764,7 @@ def get_live_premium_V19_FINAL(symbol, strike, opt_type, expiry):
 
 
 def get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
-    """
-    V18 ULTIMATE: Works on Streamlit Cloud even when nseindia.com blocks IP
-    Tries 4 sources to get broker-matched LTP like 108.2
-    """
+    """ V18 ULTIMATE: Works on Streamlit Cloud even when nseindia.com blocks IP Tries 4 sources to get broker-matched LTP like 108.2 """
     import random, json
     target_strike = int(strike)
     target_type = opt_type.upper()
@@ -3613,138 +3204,11 @@ with st.sidebar.expander("📱 Telegram EMERGENCY EXIT Alert", expanded=False):
         else:
             st.warning("Token + Chat ID daalo pehle")
     
-    st.markdown("""
-    **Kaise banaye:**
-    1. Telegram pe @BotFather search karo
-    2. /newbot → Name do → Token milega (123456:ABC...)
-    3. Apne bot ko /start karo
-    4. Chat ID: @userinfobot pe /start → ID milega
-    5. Yaha Token + Chat ID daalo + Enable karo
-    """)
+    st.markdown(""" **Kaise banaye:** 1. Telegram pe @BotFather search karo 2. /newbot → Name do → Token milega (123456:ABC...) 3. Apne bot ko /start karo 4. Chat ID: @userinfobot pe /start → ID milega 5. Yaha Token + Chat ID daalo + Enable karo """)
 
 
 st.markdown(
-    """
-    <style>
-    .block-container {
-        padding-top: 0.8rem !important;
-        padding-left: 0.5rem !important;
-        padding-right: 0.5rem !important;
-        max-width: 100% !important;
-    }
-    
-    @media(max-width: 768px) {
-        [data-testid="stHorizontalBlock"] {
-            flex-wrap: wrap !important;
-            gap: 0.35rem !important;
-            width: 100% !important;
-        }
-        [data-testid="column"] {
-            min-width: 48% !important;
-            max-width: 48% !important;
-            flex: 1 1 48% !important;
-            width: 48% !important;
-        }
-        [data-testid="stMetricValue"], [data-testid="stMetricValue"] * {
-            font-size: 1.05rem !important;
-            line-height: 1.15 !important;
-        }
-        [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * {
-            font-size: 0.72rem !important;
-            line-height: 1.1 !important;
-        }
-        [data-testid="stMetricDelta"], [data-testid="stMetricDelta"] * {
-            font-size: 0.68rem !important;
-            line-height: 1.0 !important;
-        }
-    }
-    
-    .trade-card {
-        width: 100%;
-        box-sizing: border-box;
-        border: 1px solid rgba(128, 128, 128, 0.30);
-        border-radius: 12px;
-        padding: 1rem;
-        margin: 0.7rem 0;
-        background-color: rgba(255, 255, 255, 0.02);
-    }
-    .light-box {
-        border: 1px solid rgba(128, 128, 128, 0.25);
-        border-radius: 12px;
-        padding: 0.8rem;
-        text-align: center;
-        background-color: rgba(255, 255, 255, 0.02);
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    .reason-box {
-        background-color: rgba(128, 128, 128, 0.08);
-        border-left: 4px solid #4CAF50;
-        padding: 0.75rem;
-        border-radius: 4px;
-        margin: 0.5rem 0;
-        line-height: 1.45;
-    }
-    .exit-box {
-        background-color: rgba(244, 67, 54, 0.08);
-        border-left: 4px solid #F44336;
-        padding: 0.75rem;
-        border-radius: 4px;
-        margin: 0.5rem 0;
-        line-height: 1.45;
-    }
-    .prediction-card-green {
-        background: linear-gradient(135deg, rgba(76, 175, 80, 0.15), rgba(76, 175, 80, 0.05));
-        border: 1.5px solid #4CAF50;
-        border-radius: 12px;
-        padding: 1rem 1.1rem;
-        margin: 0.5rem 0 0.8rem 0;
-    }
-    .prediction-card-red {
-        background: linear-gradient(135deg, rgba(244, 67, 54, 0.15), rgba(244, 67, 54, 0.05));
-        border: 1.5px solid #F44336;
-        border-radius: 12px;
-        padding: 1rem 1.1rem;
-        margin: 0.5rem 0 0.8rem 0;
-    }
-    .prediction-card-gold {
-        background: linear-gradient(135deg, rgba(255, 193, 7, 0.15), rgba(255, 193, 7, 0.05));
-        border: 1.5px solid #FFC107;
-        border-radius: 12px;
-        padding: 1rem 1.1rem;
-        margin: 0.5rem 0 0.8rem 0;
-    }
-
-    div[data-stale="true"], div[data-stale="true"] *, .stale-element, .stale-element *, .element-container, .element-container * {
-        opacity: 1 !important;
-        filter: none !important;
-        transition: none !important;
-        animation: none !important;
-    }
-
-    [data-testid="stMetric"], [data-testid="stMetric"] * {
-        opacity: 1 !important;
-        transition: none !important;
-        animation: none !important;
-    }
-
-    [data-testid="stMetric"] {
-        background-color: rgba(255, 255, 255, 0.02) !important;
-        border: 1px solid rgba(128, 128, 128, 0.25) !important;
-        border-radius: 10px !important;
-        padding: 0.5rem 0.55rem !important;
-        min-height: 82px !important;
-        display: flex !important;
-        flex-direction: column !important;
-        justify-content: center !important;
-        overflow: hidden !important;
-    }
-
-    [data-testid="stStatusWidget"] {
-        visibility: hidden !important;
-        display: none !important;
-    }
-    </style>
-    """,
+    """ <style> .block-container { padding-top: 0.8rem !important; padding-left: 0.5rem !important; padding-right: 0.5rem !important; max-width: 100% !important; } @media(max-width: 768px) { [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; gap: 0.35rem !important; width: 100% !important; } [data-testid="column"] { min-width: 48% !important; max-width: 48% !important; flex: 1 1 48% !important; width: 48% !important; } [data-testid="stMetricValue"], [data-testid="stMetricValue"] * { font-size: 1.05rem !important; line-height: 1.15 !important; } [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * { font-size: 0.72rem !important; line-height: 1.1 !important; } [data-testid="stMetricDelta"], [data-testid="stMetricDelta"] * { font-size: 0.68rem !important; line-height: 1.0 !important; } } .trade-card { width: 100%; box-sizing: border-box; border: 1px solid rgba(128, 128, 128, 0.30); border-radius: 12px; padding: 1rem; margin: 0.7rem 0; background-color: rgba(255, 255, 255, 0.02); } .light-box { border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 12px; padding: 0.8rem; text-align: center; background-color: rgba(255, 255, 255, 0.02); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); } .reason-box { background-color: rgba(128, 128, 128, 0.08); border-left: 4px solid #4CAF50; padding: 0.75rem; border-radius: 4px; margin: 0.5rem 0; line-height: 1.45; } .exit-box { background-color: rgba(244, 67, 54, 0.08); border-left: 4px solid #F44336; padding: 0.75rem; border-radius: 4px; margin: 0.5rem 0; line-height: 1.45; } .prediction-card-green { background: linear-gradient(135deg, rgba(76, 175, 80, 0.15), rgba(76, 175, 80, 0.05)); border: 1.5px solid #4CAF50; border-radius: 12px; padding: 1rem 1.1rem; margin: 0.5rem 0 0.8rem 0; } .prediction-card-red { background: linear-gradient(135deg, rgba(244, 67, 54, 0.15), rgba(244, 67, 54, 0.05)); border: 1.5px solid #F44336; border-radius: 12px; padding: 1rem 1.1rem; margin: 0.5rem 0 0.8rem 0; } .prediction-card-gold { background: linear-gradient(135deg, rgba(255, 193, 7, 0.15), rgba(255, 193, 7, 0.05)); border: 1.5px solid #FFC107; border-radius: 12px; padding: 1rem 1.1rem; margin: 0.5rem 0 0.8rem 0; } div[data-stale="true"], div[data-stale="true"] *, .stale-element, .stale-element *, .element-container, .element-container * { opacity: 1 !important; filter: none !important; transition: none !important; animation: none !important; } [data-testid="stMetric"], [data-testid="stMetric"] * { opacity: 1 !important; transition: none !important; animation: none !important; } [data-testid="stMetric"] { background-color: rgba(255, 255, 255, 0.02) !important; border: 1px solid rgba(128, 128, 128, 0.25) !important; border-radius: 10px !important; padding: 0.5rem 0.55rem !important; min-height: 82px !important; display: flex !important; flex-direction: column !important; justify-content: center !important; overflow: hidden !important; } [data-testid="stStatusWidget"] { visibility: hidden !important; display: none !important; } </style> """,
     unsafe_allow_html=True,
 )
 
@@ -4712,7 +4176,7 @@ def expiry_norm(x: Any) -> Optional[str]:
     if not x: return None
     if isinstance(x, (datetime, date)): return x.strftime("%Y-%m-%d")
     s = str(x).strip().upper()
-    for f in ["%Y-%m-%d", "%d-%b-%Y", "%d-%m-%Y", "%d/%m/%Y", "%d%b%Y"]:
+    for f in ["%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%d-%m-%Y", "%d/%m/%Y", "%d%b%Y", "%d%b%y", "%d-%b-%y"]:
         try: return datetime.strptime(s, f).strftime("%Y-%m-%d")
         except Exception: pass
     return s
@@ -5487,12 +4951,7 @@ def calculate_indian_market_prediction(macro_data: Dict[str, Any], domestic_pcr:
 # 16. REGULATORY TRANSACTION FRICTION ENGINE (OPTIONS & EQUITIES)
 # =====================================================================
 def calculate_trade_friction(buy_price: float, sell_price: float, qty: int, is_option: bool = True, is_delivery_equity: bool = False) -> Dict[str, float]:
-    """
-    Computes exact Indian regulatory charges:
-    - Options: STT on sell turnover, Exchange 0.05%, GST 18%, Stamp 0.003%
-    - Equity Intraday: STT 0.025% on sell, Exchange 0.00345%, Stamp 0.003%
-    - Equity Delivery: STT 0.1% on BOTH buy and sell, Stamp 0.015% on buy
-    """
+    """ Computes exact Indian regulatory charges: - Options: STT on sell turnover, Exchange 0.05%, GST 18%, Stamp 0.003% - Equity Intraday: STT 0.025% on sell, Exchange 0.00345%, Stamp 0.003% - Equity Delivery: STT 0.1% on BOTH buy and sell, Stamp 0.015% on buy """
     buy_turnover = buy_price * qty
     sell_turnover = sell_price * qty
     total_turnover = buy_turnover + sell_turnover
@@ -5560,10 +5019,7 @@ def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float, is_eq
 # ===== V33 REAL AUTO TRADING WITH ANGEL ONE - Direct Broker Execution =====
 
 def place_angel_real_order(symbol, strike, opt_type, expiry, quantity, order_type="BUY", price=0):
-    """
-    Place REAL order on Angel One via SmartAPI
-    WARNING: This places REAL money order!
-    """
+    """ Place REAL order on Angel One via SmartAPI WARNING: This places REAL money order! """
     try:
         # Get secrets
         api_key = ""
@@ -5613,26 +5069,13 @@ def place_angel_real_order(symbol, strike, opt_type, expiry, quantity, order_typ
             return False, "Master fetch failed", None
         
         instruments = mr.json()
-        target_token = None
-        target_symbol = None
-        trading_symbol = None
-        
-        for inst in instruments:
-            if not isinstance(inst, dict):
-                continue
-            sym = str(inst.get("symbol", "")).upper()
-            if str(strike) in sym and opt_type.upper() in sym and "NIFTY" in sym:
-                # Match expiry if possible
-                if sym.endswith(f"{strike}{opt_type.upper()}") or f"{strike}{opt_type.upper()}" in sym:
-                    target_token = str(inst.get("token", ""))
-                    target_symbol = sym
-                    trading_symbol = inst.get("symbol", "")
-                    # Prefer exact expiry match if provided
-                    if expiry and expiry.replace("-","").upper()[:3] in sym:
-                        break
-        
-        if not target_token:
-            return False, f"Token not found for {symbol} {strike} {opt_type}", None
+        # Strictly resolve exact underlying + expiry + strike + CE/PE + exchange.
+        try:
+            trading_symbol, target_token, target_exchange = _angel_find_exact_option_contract(
+                instruments, symbol, strike, opt_type, expiry
+            )
+        except Exception as resolve_error:
+            return False, f"Exact Angel contract rejected: {str(resolve_error)[:120]}", None
         
         # Place order via SmartAPI
         try:
@@ -5642,7 +5085,7 @@ def place_angel_real_order(symbol, strike, opt_type, expiry, quantity, order_typ
                 "tradingsymbol": trading_symbol,
                 "symboltoken": target_token,
                 "transactiontype": order_type.upper(),  # BUY or SELL
-                "exchange": "NFO",
+                "exchange": target_exchange,
                 "ordertype": "MARKET" if price == 0 else "LIMIT",
                 "producttype": "CARRYFORWARD",  # For options
                 "duration": "DAY",
@@ -5696,14 +5139,7 @@ def execute_real_trade_with_confirmation(idea, live_ltp, quantity, enable_real=F
                 bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","")
                 chat_id = st.secrets.get("TELEGRAM_CHAT_ID","")
                 if bot_token and chat_id:
-                    real_msg = f"""🔴 *REAL ORDER PLACED - {symbol}*
-
-📊 *{symbol} {strike} {opt_type}*
-💰 Entry: ₹{live_ltp:.2f} x {quantity} qty
-🆔 Order ID: {order_id}
-⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-
-⚠️ REAL MONEY ORDER - Check Angel One app!"""
+                    real_msg = f"""🔴 *REAL ORDER PLACED - {symbol}* 📊 *{symbol} {strike} {opt_type}* 💰 Entry: ₹{live_ltp:.2f} x {quantity} qty 🆔 Order ID: {order_id} ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} ⚠️ REAL MONEY ORDER - Check Angel One app!"""
                     send_telegram_message(bot_token, chat_id, real_msg)
             except:
                 pass
@@ -5992,7 +5428,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
 
 # =====================================================================
 # 19. MULTI-FACTOR EQUITY INTELLIGENCE ENGINE (TECHNICAL, FUNDAMENTAL,
-#     CORPORATE/INSIDER FILINGS, FUTURE PLANS, MATH & TARGET TIME ETA)
+# CORPORATE/INSIDER FILINGS, FUTURE PLANS, MATH & TARGET TIME ETA)
 # =====================================================================
 @st.cache_data(ttl=20, show_spinner=False)
 def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: str = "NSE", yf_sym: Optional[str] = None) -> Dict[str, Any]:
@@ -6036,9 +5472,7 @@ def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Optional[str] = None, current_price: Optional[float] = None) -> Dict[str, Any]:
-    """
-    Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary.
-    """
+    """ Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary. """
     clean_sym = symbol.replace("-EQ", "").strip().upper()
     target_yf = yf_sym or f"{clean_sym}.{'NS' if exchange=='NSE' else 'BO'}"
     
@@ -6135,10 +5569,7 @@ def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Option
 
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_corporate_filings_and_future_plans(symbol: str, stock_name: str) -> Dict[str, Any]:
-    """
-    Ingests official exchange corporate disclosures (NSE corporate-announcements API),
-    promoter/institutional bulk & insider disclosures, and company future plans (Capex/Orders).
-    """
+    """ Ingests official exchange corporate disclosures (NSE corporate-announcements API), promoter/institutional bulk & insider disclosures, and company future plans (Capex/Orders). """
     clean_sym = symbol.replace("-EQ", "").strip().upper()
     exchange_filings = []
     future_plans_news = []
@@ -6263,15 +5694,7 @@ def fetch_equity_candles(symbol: str, token: Optional[str] = None, exchange: str
     return pd.DataFrame()
 
 def compute_equity_math_and_eta(df: pd.DataFrame, last_price: float, target1: float, target2: float, atr: float, adx: float, tf_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Computes Arithmetic & Mathematical metrics:
-    - Linear Regression Slope & R-Squared over 20 periods
-    - Statistical Z-Score (Mean Reversion distance)
-    - Annualized Volatility (%)
-    - Fibonacci Retracement & Extension Levels
-    - Relative Volume (RVOL) & Money Flow Accumulation Score
-    - Mathematical Target Time Estimation (ETA in candles and exact Date/Time window)
-    """
+    """ Computes Arithmetic & Mathematical metrics: - Linear Regression Slope & R-Squared over 20 periods - Statistical Z-Score (Mean Reversion distance) - Annualized Volatility (%) - Fibonacci Retracement & Extension Levels - Relative Volume (RVOL) & Money Flow Accumulation Score - Mathematical Target Time Estimation (ETA in candles and exact Date/Time window) """
     closes = df["close"].tail(20).values
     n = len(closes)
     if n >= 5:
@@ -6379,15 +5802,7 @@ def compute_equity_math_and_eta(df: pd.DataFrame, last_price: float, target1: fl
     }
 
 def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: pd.DataFrame, tf_cfg: Optional[Dict[str, Any]] = None, fundamentals: Optional[Dict[str, Any]] = None, corp_intel: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """
-    Comprehensive Multi-Factor Equity Setup & Exit Engine combining:
-    1. Technicals (EMA20/50/200, Wilder RSI/ADX, Anchored VWAP, Candlesticks)
-    2. Fundamentals (P/E, ROE, Debt/Equity, Market Cap)
-    3. Corporate Filings, Legal Insider Disclosures & Future Plans
-    4. Arithmetic & Mathematical Models (Z-Score, Linear Regression, Fibonacci, Quarter-Kelly)
-    5. Volume & Institutional Investment Flow (RVOL, CMF)
-    6. Explicit Entry Call AND Active Exit Call with Target Price & Mathematical Target Time (ETA)
-    """
+    """ Comprehensive Multi-Factor Equity Setup & Exit Engine combining: 1. Technicals (EMA20/50/200, Wilder RSI/ADX, Anchored VWAP, Candlesticks) 2. Fundamentals (P/E, ROE, Debt/Equity, Market Cap) 3. Corporate Filings, Legal Insider Disclosures & Future Plans 4. Arithmetic & Mathematical Models (Z-Score, Linear Regression, Fibonacci, Quarter-Kelly) 5. Volume & Institutional Investment Flow (RVOL, CMF) 6. Explicit Entry Call AND Active Exit Call with Target Price & Mathematical Target Time (ETA) """
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
     last = quote.get("price")
     if last is None or df.empty or len(df) < 5: return None
@@ -6664,17 +6079,7 @@ def ask_gemini(ideas, market_data):
     except:
         pass
     
-    prompt = f"""
-You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY) and equities.
-Explain the generated trade setups in detail in Hindi + English mix (Hinglish) for retail trader.
-
-Focus on timeframe, GEX regime, Greeks, Max Pain, Expected Move, Kelly sizing.
-
-Keep tone educational, paper-trading safe, no financial advice.
-
-DATA:
-{__import__('json').dumps(payload, default=str)[:10000]}
-"""
+    prompt = f""" You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY) and equities. Explain the generated trade setups in detail in Hindi + English mix (Hinglish) for retail trader. Focus on timeframe, GEX regime, Greeks, Max Pain, Expected Move, Kelly sizing. Keep tone educational, paper-trading safe, no financial advice. DATA: {__import__('json').dumps(payload, default=str)[:10000]} """
     result = call_gemini_cascade(prompt)
     if not result or len(result.strip()) < 20:
         return ""
@@ -6793,7 +6198,7 @@ if "Universal 5,000+" in segment_mode:
     if selected_stock:
         st.divider()
 
-        @live_fragment(run_every=10)
+@live_fragment(run_every=10)
         def render_live_equity_view(stock, tf):
             quote = fetch_equity_live_quote(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"))
             df = add_indicators(fetch_equity_candles(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"), tf_cfg=tf), current_live_price=quote.get("price"))
@@ -6815,32 +6220,13 @@ if "Universal 5,000+" in segment_mode:
 
                 # 1. ENTRY CALL & TARGET TIME (ETA) BANNER
                 st.markdown(
-                    f"""
-                    <div class="{analysis['badge']}">
-                        <h3 style="margin: 0; padding: 0;">{icon} Institutional Entry Call: <b>{analysis['stance']}</b> ({tf['label']})</h3>
-                        <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;">
-                            <b>Ideal Entry Zone:</b> {RUPEE}{fmt(analysis['entry_zone_low'])} – {RUPEE}{fmt(analysis['entry_zone_high'])} | 
-                            <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])} | 
-                            <b>Recommended Size:</b> {analysis['recommended_qty']} Shares ({RUPEE}{analysis['alloc_capital']:,.0f} | Kelly: {analysis['kelly_pct']}%)
-                        </p>
-                        <p style="margin: 0.25rem 0; font-size: 14.5px;">
-                            <b>🎯 Target 1:</b> {RUPEE}{fmt(analysis['t1'])} (<b>ETA:</b> <code>{math_m['t1_eta']}</code>) | 
-                            <b>🎯 Target 2:</b> {RUPEE}{fmt(analysis['t2'])} (<b>ETA:</b> <code>{math_m['t2_eta']}</code>)
-                        </p>
-                        <span style="font-size: 13.5px;"><b>Regime Status:</b> {analysis['sideways_notes']}</span>
-                    </div>
-                    """,
+                    f""" <div class="{analysis['badge']}"> <h3 style="margin: 0; padding: 0;">{icon} Institutional Entry Call: <b>{analysis['stance']}</b> ({tf['label']})</h3> <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;"> <b>Ideal Entry Zone:</b> {RUPEE}{fmt(analysis['entry_zone_low'])} – {RUPEE}{fmt(analysis['entry_zone_high'])} | <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])} | <b>Recommended Size:</b> {analysis['recommended_qty']} Shares ({RUPEE}{analysis['alloc_capital']:,.0f} | Kelly: {analysis['kelly_pct']}%) </p> <p style="margin: 0.25rem 0; font-size: 14.5px;"> <b>🎯 Target 1:</b> {RUPEE}{fmt(analysis['t1'])} (<b>ETA:</b> <code>{math_m['t1_eta']}</code>) | <b>🎯 Target 2:</b> {RUPEE}{fmt(analysis['t2'])} (<b>ETA:</b> <code>{math_m['t2_eta']}</code>) </p> <span style="font-size: 13.5px;"><b>Regime Status:</b> {analysis['sideways_notes']}</span> </div> """,
                     unsafe_allow_html=True,
                 )
 
                 # 2. DEDICATED EXIT CALL & TRAILING SCHEDULE BOX
                 st.markdown(
-                    f"""
-                    <div class="exit-box">
-                        <b>{STOPWATCH} Active Exit Call & Profit-Booking Schedule ({analysis['exit_call_status']}):</b><br>
-                        {analysis['exit_call_action']}
-                    </div>
-                    """,
+                    f""" <div class="exit-box"> <b>{STOPWATCH} Active Exit Call & Profit-Booking Schedule ({analysis['exit_call_status']}):</b><br> {analysis['exit_call_action']} </div> """,
                     unsafe_allow_html=True,
                 )
 
@@ -6863,7 +6249,7 @@ if "Universal 5,000+" in segment_mode:
                 st.info(
                     f"📐 **Fibonacci Mathematical Structure:** "
                     f"Retracement Support: **38.2%:** `{RUPEE}{math_m['fib_382']:,.2f}` | **50.0%:** `{RUPEE}{math_m['fib_500']:,.2f}` | **61.8% (Golden Pocket):** `{RUPEE}{math_m['fib_618']:,.2f}` "
-                    f"• Upside Breakout Extensions: **127.2%:** `{RUPEE}{math_m['fib_ext_1272']:,.2f}` | **161.8%:** `{RUPEE}{math_m['fib_ext_1618']:,.2f}`  \n"
+                    f"• Upside Breakout Extensions: **127.2%:** `{RUPEE}{math_m['fib_ext_1272']:,.2f}` | **161.8%:** `{RUPEE}{math_m['fib_ext_1618']:,.2f}` \n"
                     f"🏦 **Institutional Volume & Investment Footprint:** `{math_m['investment_flow_status']}` (Candle Pattern: `{analysis['candle_eval']['pattern']}`)"
                 )
 
@@ -6905,12 +6291,7 @@ if "Universal 5,000+" in segment_mode:
                             st.caption(f"{BULLET} {ef}")
 
                 st.markdown(
-                    f"""
-                    <div class="reason-box">
-                        <b>{PIN} Multi-Factor Trade Formulation Summary ({tf['label']}):</b><br>
-                        {' | '.join(analysis['reasons'])}
-                    </div>
-                    """,
+                    f""" <div class="reason-box"> <b>{PIN} Multi-Factor Trade Formulation Summary ({tf['label']}):</b><br> {' | '.join(analysis['reasons'])} </div> """,
                     unsafe_allow_html=True,
                 )
 
@@ -6943,39 +6324,7 @@ if "Universal 5,000+" in segment_mode:
         if GEMINI_API_KEY and analysis_result:
             if st.button(f"{ROBOT} GENERATE FULL AI MULTI-FACTOR ENTRY & EXIT REPORT FOR {selected_stock['symbol']}", use_container_width=True):
                 with st.spinner("Gemini Institutional AI synthesizing Technicals, Fundamentals, Corporate Filings, Future Plans, Math & Exit ETA..."):
-                    prompt = f"""
-                    You are a Senior Institutional Equity Strategist & Quantitative Analyst for Indian Markets (NSE/BSE).
-                    Synthesize a complete, grounded Entry & Exit Trade Advisory for {analysis_result['name']} ({analysis_result['symbol']}) on timeframe [{active_tf['label']}].
-                    CRITICAL: Use ONLY the verified numbers provided below. Do not invent prices.
-
-                    1. ENTRY & EXIT CALLS WITH TARGET TIME (ETA):
-                       - Stance: {analysis_result['stance']} | Current Price: ₹{analysis_result['price']}
-                       - Ideal Entry Zone: ₹{analysis_result['entry_zone_low']} to ₹{analysis_result['entry_zone_high']}
-                       - Target 1: ₹{analysis_result['t1']} (Expected Time ETA: {analysis_result['math']['t1_eta']})
-                       - Target 2: ₹{analysis_result['t2']} (Expected Time ETA: {analysis_result['math']['t2_eta']})
-                       - Strict Stop-Loss: ₹{analysis_result['sl']} | Max Time-Stop Hold: {analysis_result['math']['max_hold_bars']} bars
-                       - Active Exit Call Status: {analysis_result['exit_call_status']} -> {analysis_result['exit_call_action']}
-
-                    2. ARITHMETIC, MATHEMATICAL & VOLUME METRICS:
-                       - Linear Regression Slope: {analysis_result['math']['reg_slope']}/bar (R² = {analysis_result['math']['r_squared']})
-                       - Z-Score: {analysis_result['math']['z_score']} sigma | Annualized Vol: {analysis_result['math']['ann_vol_pct']}%
-                       - Fibonacci: 38.2% (₹{analysis_result['math']['fib_382']}), 61.8% (₹{analysis_result['math']['fib_618']}), Ext 161.8% (₹{analysis_result['math']['fib_ext_1618']})
-                       - Relative Volume (RVOL): {analysis_result['math']['rvol']}x | CMF Money Flow: {analysis_result['math']['cmf_20']} ({analysis_result['math']['investment_flow_status']})
-                       - Quarter-Kelly Capital Allocation: {analysis_result['kelly_pct']}% ({analysis_result['recommended_qty']} shares)
-
-                    3. FUNDAMENTALS, CORPORATE DISCLOSURES & FUTURE PLANS:
-                       - Fundamental Verdict: {fund_result.get('fund_verdict')} | Notes: {fund_result.get('fund_notes')}
-                       - Corporate Catalyst: {corp_result.get('catalyst_verdict')}
-                       - Future Plans / Capex / Orders: {corp_result.get('future_plans')}
-                       - Promoter / Institutional Disclosures: {corp_result.get('insider_signals')}
-
-                    Structure your response into 5 crisp institutional sections:
-                    1. Executive Entry Call & Position Sizing
-                    2. Technical, Arithmetic & Volume/Investment Thesis
-                    3. Fundamental Valuation, Corporate Filings & Future Plans Impact
-                    4. Mathematical Target Price & Target Time (ETA) Roadmap
-                    5. Complete Exit Call Protocol (Partial Booking, Trailing SL, Time-Stop & Invalidation)
-                    """
+                    prompt = f""" You are a Senior Institutional Equity Strategist & Quantitative Analyst for Indian Markets (NSE/BSE). Synthesize a complete, grounded Entry & Exit Trade Advisory for {analysis_result['name']} ({analysis_result['symbol']}) on timeframe [{active_tf['label']}]. CRITICAL: Use ONLY the verified numbers provided below. Do not invent prices. 1. ENTRY & EXIT CALLS WITH TARGET TIME (ETA): - Stance: {analysis_result['stance']} | Current Price: ₹{analysis_result['price']} - Ideal Entry Zone: ₹{analysis_result['entry_zone_low']} to ₹{analysis_result['entry_zone_high']} - Target 1: ₹{analysis_result['t1']} (Expected Time ETA: {analysis_result['math']['t1_eta']}) - Target 2: ₹{analysis_result['t2']} (Expected Time ETA: {analysis_result['math']['t2_eta']}) - Strict Stop-Loss: ₹{analysis_result['sl']} | Max Time-Stop Hold: {analysis_result['math']['max_hold_bars']} bars - Active Exit Call Status: {analysis_result['exit_call_status']} -> {analysis_result['exit_call_action']} 2. ARITHMETIC, MATHEMATICAL & VOLUME METRICS: - Linear Regression Slope: {analysis_result['math']['reg_slope']}/bar (R² = {analysis_result['math']['r_squared']}) - Z-Score: {analysis_result['math']['z_score']} sigma | Annualized Vol: {analysis_result['math']['ann_vol_pct']}% - Fibonacci: 38.2% (₹{analysis_result['math']['fib_382']}), 61.8% (₹{analysis_result['math']['fib_618']}), Ext 161.8% (₹{analysis_result['math']['fib_ext_1618']}) - Relative Volume (RVOL): {analysis_result['math']['rvol']}x | CMF Money Flow: {analysis_result['math']['cmf_20']} ({analysis_result['math']['investment_flow_status']}) - Quarter-Kelly Capital Allocation: {analysis_result['kelly_pct']}% ({analysis_result['recommended_qty']} shares) 3. FUNDAMENTALS, CORPORATE DISCLOSURES & FUTURE PLANS: - Fundamental Verdict: {fund_result.get('fund_verdict')} | Notes: {fund_result.get('fund_notes')} - Corporate Catalyst: {corp_result.get('catalyst_verdict')} - Future Plans / Capex / Orders: {corp_result.get('future_plans')} - Promoter / Institutional Disclosures: {corp_result.get('insider_signals')} Structure your response into 5 crisp institutional sections: 1. Executive Entry Call & Position Sizing 2. Technical, Arithmetic & Volume/Investment Thesis 3. Fundamental Valuation, Corporate Filings & Future Plans Impact 4. Mathematical Target Price & Target Time (ETA) Roadmap 5. Complete Exit Call Protocol (Partial Booking, Trailing SL, Time-Stop & Invalidation) """
                     ai_response = call_gemini_cascade(prompt)
                     st.markdown(f"### {ROBOT} Institutional Multi-Factor AI Equity Advisory")
                     st.write(ai_response)
@@ -7141,16 +6490,7 @@ else:
                         test_pos = {'symbol': 'NIFTY', 'strike': 22750, 'option_type': 'CE', 'entry_price': 108.2, 'qty': 1}
                         test_msg_sl = format_telegram_exit_alert(test_pos, 85.5, -22.7, "SL Hit @ ₹85.50 🚨 | PAPER EXIT @ MARKET - TEST EXIT")
                         test_msg_t1 = format_telegram_exit_alert(test_pos, 135.0, +26.8, "Target 1 Hit @ ₹135.00 📈 1st LOT BOOKED - TEST EXIT")
-                        test_msg_emergency = f"""🚨 *TEST EMERGENCY EXIT - NIFTY 22750 CE*
-
-📊 *NIFTY 22750 CE*
-Entry: ₹108.20 → Exit: ₹95.30
-💰 *P&L:* ₹-12.90
-
-🔥 *Reason:* 🚨 EMERGENCY EXIT CE: Bearish Engulfing | Light1: RED | Light2: RED | Momentum Reversed! - TEST EXIT
-
-⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
-🤖 TEST Emergency Exit - Sure Shot"""
+                        test_msg_emergency = f"""🚨 *TEST EMERGENCY EXIT - NIFTY 22750 CE* 📊 *NIFTY 22750 CE* Entry: ₹108.20 → Exit: ₹95.30 💰 *P&L:* ₹-12.90 🔥 *Reason:* 🚨 EMERGENCY EXIT CE: Bearish Engulfing | Light1: RED | Light2: RED | Momentum Reversed! - TEST EXIT ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} 🤖 TEST Emergency Exit - Sure Shot"""
                         ok1, resp1 = send_telegram_message(bot_t, chat_t, test_msg_sl)
                         import time
                         time.sleep(1)
@@ -7208,16 +6548,7 @@ Entry: ₹108.20 → Exit: ₹95.30
                         else:
                             # Fallback
                             bot_t, chat_t = get_telegram_keys()
-                            test_msg = f"""📞 *TEST CONFIRM CALL - 85% Dummy*
-
-🎯 High Conviction: 85% 🟢 GREEN 🔥 85%+ BEST!
-📊 NIFTY 22750 CE
-💰 LTP: ₹108.20 | Spot: ₹22800
-📅 Expiry: 03 Nov 2026
-⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
-✅ TEST - Real order pending
-
-Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
+                            test_msg = f"""📞 *TEST CONFIRM CALL - 85% Dummy* 🎯 High Conviction: 85% 🟢 GREEN 🔥 85%+ BEST! 📊 NIFTY 22750 CE 💰 LTP: ₹108.20 | Spot: ₹22800 📅 Expiry: 03 Nov 2026 ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')} ✅ TEST - Real order pending Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             ok2, resp2 = send_telegram_message(bot_t, chat_t, test_msg)
                             if ok2:
                                 st.sidebar.success(f"✅ TEST sent (fallback) - Check Telegram")
@@ -7297,11 +6628,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         col1, col2, col3 = st.columns([3,1,1])
                         with col1:
                             status_icon = "✅" if is_pass else "❌"
-                            st.markdown(f"""
-                            **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}**
-                            Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'}
-                            LTP: ₹{live_ltp:.2f} | Spot: {(spot or 0):.2f} | Qty: {qty} lots | Time: {time_str}
-                            """)
+                            st.markdown(f""" **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}** Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'} LTP: ₹{live_ltp:.2f} | Spot: {(spot or 0):.2f} | Qty: {qty} lots | Time: {time_str} """)
                             if not is_pass:
                                 st.error(f"Conviction {conv}% < Filter {min_conv}% - Isliye BLOCK hoga real me")
                         with col2:
@@ -7342,7 +6669,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     # Call it before ticker
     render_pending_confirmations_ui()
 
-    @live_fragment(run_every=0.5)
+@live_fragment(run_every=0.5)
     def _instant_exit_v22():
         try:
             auto_check_and_exit_positions()
@@ -7350,7 +6677,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             pass
     _instant_exit_v22()
 
-    @live_fragment(run_every=0.5)
+@live_fragment(run_every=0.5)
     def _instant_exit_v19():
         try:
             auto_check_and_exit_positions()
@@ -7358,7 +6685,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             pass
     _instant_exit_v19()
 
-    @live_fragment(run_every=1)
+@live_fragment(run_every=1)
     def _tg_poll_v19():
         try:
             handle_telegram_callback_query()
@@ -7373,7 +6700,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @live_fragment(run_every=1)
+@live_fragment(run_every=1)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
@@ -7411,7 +6738,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     render_index_live_ticker(underlying, selected_expiry, active_tf)
     st.divider()
 
-    @live_fragment(run_every=30)
+@live_fragment(run_every=30)
     def render_index_research_and_prediction(selected_underlying, current_expiry):
         st.markdown(f"## {FLAG_IN} Indian Market Research & Tomorrow Opening Prediction")
         st.caption(f"Cross-Asset Synthesis: Nifty 50 Gap Model {BULLET} FII/DII Institutional Flow {BULLET} Global Radar")
@@ -7427,17 +6754,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         icon = ROCKET if "GAP-UP" in pred["verdict"] else (DOWN_ARROW if "GAP-DOWN" in pred["verdict"] else SCALE)
 
         st.markdown(
-            f"""
-            <div class="{pred['badge']}">
-                <h3 style="margin: 0; padding: 0;">{icon} Next Session Opening Expectation: <b>{pred['verdict']}</b></h3>
-                <p style="margin: 0.4rem 0 0.2rem 0; font-size: 14.5px;">
-                    <b>Estimated Opening Gap:</b> <code>{pred['points_range']}</code> | 
-                    <b>Model Conviction:</b> {pred['confidence']}% | 
-                    <b>PCR Floor:</b> {pcr_val:.2f}
-                </p>
-                <span style="font-size: 13.5px;"><b>Recommended Execution Strategy:</b> {pred['action']}</span>
-            </div>
-            """,
+            f""" <div class="{pred['badge']}"> <h3 style="margin: 0; padding: 0;">{icon} Next Session Opening Expectation: <b>{pred['verdict']}</b></h3> <p style="margin: 0.4rem 0 0.2rem 0; font-size: 14.5px;"> <b>Estimated Opening Gap:</b> <code>{pred['points_range']}</code> | <b>Model Conviction:</b> {pred['confidence']}% | <b>PCR Floor:</b> {pcr_val:.2f} </p> <span style="font-size: 13.5px;"><b>Recommended Execution Strategy:</b> {pred['action']}</span> </div> """,
             unsafe_allow_html=True,
         )
 
@@ -7482,7 +6799,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     render_index_research_and_prediction(underlying, selected_expiry)
     st.divider()
 
-    @live_fragment(run_every=10)
+@live_fragment(run_every=10)
     def render_market_confluence_dashboard(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
@@ -7522,12 +6839,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         st.write("")
 
-        st.info(f"""
-        ⚖️ **Institutional Market Maker Radar:**
-        * **Dealer GEX Regime:** `{gex_info['gex_regime']}` (Net GEX: `{gex_info['net_gex_cr']:+,.0f} Cr / 1% move`)
-        * **Zero-Gamma Flip Level:** `{gex_info['gamma_flip']:,.0f}` | **Max Pain Target:** `{gex_info['max_pain']:,.0f}`
-        * **Institutional Barriers:** Call Wall `{gex_info['call_wall']:,.0f}` | Put Wall `{gex_info['put_wall']:,.0f}` | 1-Sigma Expected Move: `\u00B1{gex_info['expected_move']:,.1f} Pts`
-        """)
+        st.info(f""" ⚖️ **Institutional Market Maker Radar:** * **Dealer GEX Regime:** `{gex_info['gex_regime']}` (Net GEX: `{gex_info['net_gex_cr']:+,.0f} Cr / 1% move`) * **Zero-Gamma Flip Level:** `{gex_info['gamma_flip']:,.0f}` | **Max Pain Target:** `{gex_info['max_pain']:,.0f}` * **Institutional Barriers:** Call Wall `{gex_info['call_wall']:,.0f}` | Put Wall `{gex_info['put_wall']:,.0f}` | 1-Sigma Expected Move: `\u00B1{gex_info['expected_move']:,.1f} Pts` """)
 
         if confluence["badge"] == "success":
             st.success(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
@@ -7743,26 +7055,11 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
-                                expiry=selected_expiry
+                                expiry=idea.get('expiry') or selected_expiry
                             )
-                            actual_exp_used = selected_expiry
+                            actual_exp_used = idea.get('expiry') or selected_expiry
                             
-                            # If Angel failed, try proxy/broker matched as fallback
-                            if not is_live_ok or live_ltp_now == 0:
-                                try:
-                                    live_ltp_now2, live_src2, is_live_ok2, actual_exp_used2 = get_broker_matched_ltp_FINAL(
-                                        symbol=idea.get('symbol','NIFTY'),
-                                        strike=idea.get('strike',22750),
-                                        opt_type=idea.get('option','CE'),
-                                        selected_expiry=selected_expiry
-                                    )
-                                    if is_live_ok2 and live_ltp_now2 > 0:
-                                        live_ltp_now = live_ltp_now2
-                                        live_src = live_src2
-                                        is_live_ok = is_live_ok2
-                                        actual_exp_used = actual_exp_used2
-                                except:
-                                    pass
+                            # Angel exact-expiry only: wrong-expiry NSE fallback is intentionally disabled.
                             
                             if not is_live_ok or live_ltp_now == 0:
                                 # Keep Angel error as is, don't overwrite with generic NSE_BLOCKED
@@ -7917,12 +7214,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         with x4: st.metric("Expected Move", f"\u00B1{idea.get('expected_move', 0):,.1f} Pts")
 
                     st.markdown(
-                        f"""
-                        <div class="reason-box">
-                            <b>{PIN} Trade Formulation Logic:</b><br>
-                            {idea['why']}
-                        </div>
-                        """,
+                        f""" <div class="reason-box"> <b>{PIN} Trade Formulation Logic:</b><br> {idea['why']} </div> """,
                         unsafe_allow_html=True,
                     )
                     st.write(f"{STOP} **Structural Invalidation Level:** {idea['invalidation']}")
