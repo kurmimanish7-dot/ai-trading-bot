@@ -17,665 +17,6 @@ import json
 import logging
 import math
 import time
-
-# ===== V28 ULTRA FAST MULTI-SOURCE FETCHER - AUDITED FOR NSE IP BLOCK =====
-try:
-    import yfinance as yf
-    HAS_YFINANCE = True
-except ImportError:
-    yf = None
-    HAS_YFINANCE = False
-    print("yfinance not installed, using proxy fallback only")
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-
-# ===== V32 PRODUCTION-GRADE MODULES - AUDIT FIXES P0 =====
-import sqlite3
-import threading
-import uuid
-from pathlib import Path
-
-# --- Persistent Ledger & Idempotency ---
-LEDGER_DB = Path("trading_ledger.db")
-PENDING_JSON = Path("pending_confirm_calls.json")
-RISK_JSON = Path("risk_state.json")
-
-_db_lock = threading.Lock()
-
-def init_ledger():
-    """Initialize SQLite ledger - transactional persistent store"""
-    try:
-        with _db_lock:
-            conn = sqlite3.connect(str(LEDGER_DB), timeout=10, check_same_thread=False)
-            cur = conn.cursor()
-            # Trades table - paper + real
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS trades (
-                    trade_id TEXT PRIMARY KEY,
-                    symbol TEXT,
-                    strike REAL,
-                    option_type TEXT,
-                    expiry TEXT,
-                    qty INTEGER,
-                    entry_price REAL,
-                    sl REAL,
-                    t1 REAL,
-                    t2 REAL,
-                    entry_time TEXT,
-                    exit_price REAL,
-                    exit_time TEXT,
-                    pnl REAL,
-                    status TEXT,
-                    is_real INTEGER,
-                    order_id TEXT,
-                    idempotency_key TEXT UNIQUE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            # Orders audit log
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS orders (
-                    order_id TEXT PRIMARY KEY,
-                    trade_id TEXT,
-                    symbol TEXT,
-                    strike REAL,
-                    option_type TEXT,
-                    order_type TEXT,
-                    qty INTEGER,
-                    price REAL,
-                    status TEXT,
-                    broker_response TEXT,
-                    is_real INTEGER,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            # Risk state
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS risk_state (
-                    key TEXT PRIMARY KEY,
-                    value TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            # Audit logs
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS audit_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT,
-                    level TEXT,
-                    event TEXT,
-                    details TEXT,
-                    trade_id TEXT,
-                    order_id TEXT
-                )
-            """)
-            conn.commit()
-            conn.close()
-    except Exception as e:
-        print(f"Ledger init error: {e}")
-
-def audit_log(level, event, details="", trade_id=None, order_id=None):
-    """Structured audit log without secrets"""
-    try:
-        with _db_lock:
-            conn = sqlite3.connect(str(LEDGER_DB), timeout=5, check_same_thread=False)
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO audit_logs (timestamp, level, event, details, trade_id, order_id) VALUES (?, ?, ?, ?, ?, ?)",
-                (datetime.now(IST).isoformat(), level, event, str(details)[:500], trade_id, order_id)
-            )
-            conn.commit()
-            conn.close()
-    except Exception as e:
-        print(f"Audit log error: {e}")
-
-# Initialize on import
-init_ledger()
-
-# --- Kill Switch ---
-def is_kill_switch_active():
-    """Check if kill switch is active - blocks new entries"""
-    try:
-        if "kill_switch" in st.session_state and st.session_state["kill_switch"]:
-            return True
-        # Check file persistence
-        if RISK_JSON.exists():
-            try:
-                data = json.loads(RISK_JSON.read_text())
-                if data.get("kill_switch"):
-                    return True
-            except:
-                pass
-        return False
-    except:
-        return False
-
-def activate_kill_switch(reason="Manual"):
-    """Activate kill switch - blocks new entries, existing positions managed per policy"""
-    try:
-        st.session_state["kill_switch"] = True
-        # Persist
-        try:
-            existing = {}
-            if RISK_JSON.exists():
-                existing = json.loads(RISK_JSON.read_text())
-            existing["kill_switch"] = True
-            existing["kill_reason"] = reason
-            existing["kill_time"] = datetime.now(IST).isoformat()
-            RISK_JSON.write_text(json.dumps(existing, indent=2))
-        except:
-            pass
-        audit_log("CRITICAL", "KILL_SWITCH_ACTIVATED", reason)
-        return True
-    except Exception as e:
-        print(f"Kill switch error: {e}")
-        return False
-
-def deactivate_kill_switch():
-    """Deactivate kill switch"""
-    try:
-        st.session_state["kill_switch"] = False
-        try:
-            if RISK_JSON.exists():
-                data = json.loads(RISK_JSON.read_text())
-                data["kill_switch"] = False
-                data["kill_reason"] = ""
-                RISK_JSON.write_text(json.dumps(data, indent=2))
-        except:
-            pass
-        audit_log("INFO", "KILL_SWITCH_DEACTIVATED")
-        return True
-    except:
-        return False
-
-# --- Idempotency & Duplicate Protection ---
-_idempotency_cache = set()
-_idempotency_lock = threading.Lock()
-
-def load_idempotency_cache():
-    """Load idempotency keys from DB"""
-    try:
-        with _db_lock:
-            conn = sqlite3.connect(str(LEDGER_DB), timeout=5, check_same_thread=False)
-            cur = conn.cursor()
-            cur.execute("SELECT idempotency_key FROM trades WHERE idempotency_key IS NOT NULL")
-            rows = cur.fetchall()
-            conn.close()
-            with _idempotency_lock:
-                for r in rows:
-                    if r[0]:
-                        _idempotency_cache.add(r[0])
-    except Exception as e:
-        print(f"Idempotency load error: {e}")
-
-# Load on startup
-load_idempotency_cache()
-
-def is_duplicate_order(idempotency_key):
-    """Check if order with same idempotency key already exists"""
-    try:
-        with _idempotency_lock:
-            return idempotency_key in _idempotency_cache
-    except:
-        return False
-
-def mark_idempotency_key(idempotency_key):
-    """Mark idempotency key as used"""
-    try:
-        with _idempotency_lock:
-            _idempotency_cache.add(idempotency_key)
-    except:
-        pass
-
-# --- Risk Engine - Centralized Validation Layer ---
-class RiskEngine:
-    """Centralized risk validation - enforced in backend, not just UI"""
-    
-    def __init__(self):
-        self.defaults = {
-            "max_qty_lots": 5,
-            "max_trades_per_day": 10,
-            "max_daily_loss": 10000.0,
-            "max_open_exposure": 5,
-            "max_per_trade_loss": 2000.0,
-            "price_freshness_sec": 10,
-            "min_funds_required": 5000.0
-        }
-    
-    def get_limits(self):
-        """Get risk limits from session or defaults"""
-        try:
-            limits = {}
-            for k, v in self.defaults.items():
-                # Check session state
-                if k in st.session_state:
-                    limits[k] = st.session_state[k]
-                else:
-                    # Check file
-                    try:
-                        if RISK_JSON.exists():
-                            data = json.loads(RISK_JSON.read_text())
-                            if k in data:
-                                limits[k] = data[k]
-                            else:
-                                limits[k] = v
-                        else:
-                            limits[k] = v
-                    except:
-                        limits[k] = v
-            return limits
-        except:
-            return self.defaults
-    
-    def validate_order(self, idea, qty_lots, live_ltp, is_real=True):
-        """Validate order before submission - returns (ok, reason)"""
-        try:
-            limits = self.get_limits()
-            
-            # 1. Kill switch check
-            if is_kill_switch_active():
-                return False, "KILL SWITCH ACTIVE - New entries blocked"
-            
-            # 2. Quantity check
-            if qty_lots > limits["max_qty_lots"]:
-                return False, f"Qty {qty_lots} > max {limits['max_qty_lots']} lots"
-            
-            # 3. Max trades per day
-            try:
-                today_trades = len([t for t in st.session_state.get('paper_portfolio', {}).get('positions', {}).values() if t.get('entry_time', '').startswith(datetime.now(IST).strftime('%Y-%m-%d'))])
-                if today_trades >= limits["max_trades_per_day"]:
-                    return False, f"Max trades per day {limits['max_trades_per_day']} reached"
-            except:
-                pass
-            
-            # 4. Max open exposure
-            try:
-                open_pos = len(st.session_state.get('paper_portfolio', {}).get('positions', {}))
-                if open_pos >= limits["max_open_exposure"]:
-                    return False, f"Max open exposure {limits['max_open_exposure']} reached"
-            except:
-                pass
-            
-            # 5. Daily loss limit
-            try:
-                daily_pnl = st.session_state.get('paper_portfolio', {}).get('daily_pnl', 0)
-                if daily_pnl <= -limits["max_daily_loss"]:
-                    return False, f"Daily loss limit {limits['max_daily_loss']} breached, P&L {daily_pnl}"
-            except:
-                pass
-            
-            # 6. Price freshness
-            try:
-                if live_ltp is None or live_ltp <= 0:
-                    return False, f"Invalid LTP {live_ltp}"
-                # Check if LTP is stale - compare with cache timestamp
-                # If LTP is 0 or None, reject
-            except:
-                pass
-            
-            # 7. Instrument validation - lot size, expiry, strike
-            try:
-                symbol = idea.get('symbol', 'NIFTY')
-                meta = INDEX_METADATA.get(symbol, {})
-                lot_size = meta.get('lot_size', 50)
-                if lot_size <= 0:
-                    return False, f"Invalid lot size for {symbol}"
-                # Expiry validation - must be future
-                expiry = idea.get('expiry', '')
-                # Strike validation
-                strike = idea.get('strike', 0)
-                if strike <= 0:
-                    return False, f"Invalid strike {strike}"
-            except Exception as e:
-                return False, f"Instrument validation failed: {e}"
-            
-            # 8. Idempotency check
-            try:
-                idem_key = f"{idea.get('symbol')}_{idea.get('strike')}_{idea.get('option')}_{idea.get('expiry')}_{datetime.now(IST).strftime('%Y-%m-%d')}"
-                if is_duplicate_order(idem_key):
-                    return False, f"DUPLICATE ORDER REJECTED - Already traded {idem_key} today"
-            except:
-                pass
-            
-            # 9. Per-trade loss check (SL validation)
-            try:
-                sl = idea.get('sl', 0)
-                entry = idea.get('entry', live_ltp)
-                if sl and entry:
-                    loss_per_lot = abs(entry - sl) * INDEX_METADATA.get(idea.get('symbol', 'NIFTY'), {}).get('lot_size', 50) * qty_lots
-                    if loss_per_lot > limits["max_per_trade_loss"]:
-                        return False, f"Per-trade loss {loss_per_lot:.0f} > max {limits['max_per_trade_loss']}"
-            except:
-                pass
-            
-            return True, "PASS - All risk checks OK"
-        except Exception as e:
-            audit_log("ERROR", "RISK_VALIDATION_ERROR", str(e))
-            return False, f"Risk validation error: {e}"
-
-# Global risk engine instance
-risk_engine = RiskEngine()
-
-# --- Enhanced Broker Execution with Safety ---
-def place_angel_real_order_production(symbol, strike, opt_type, expiry, quantity, order_type="BUY", price=0, idea=None, live_ltp=None):
-    """Production-grade centralized execution with risk validation, kill switch, idempotency, audit log"""
-    try:
-        # 1. Risk validation (backend enforcement, not just UI)
-        if idea is not None and order_type == "BUY":
-            qty_lots = quantity // INDEX_METADATA.get(symbol, {}).get('lot_size', 50) if quantity else 1
-            ok, reason = risk_engine.validate_order(idea, qty_lots, live_ltp or price, is_real=True)
-            if not ok:
-                audit_log("WARN", "ORDER_REJECTED_BY_RISK", reason, trade_id=None, order_id=None)
-                return False, reason, None
-        
-        # 2. Kill switch
-        if order_type == "BUY" and is_kill_switch_active():
-            return False, "KILL SWITCH ACTIVE - New BUY blocked", None
-        
-        # 3. Idempotency for BUY
-        idem_key = None
-        if order_type == "BUY" and idea:
-            idem_key = f"{symbol}_{strike}_{opt_type}_{expiry}_{datetime.now(IST).strftime('%Y-%m-%d')}"
-            if is_duplicate_order(idem_key):
-                return False, f"DUPLICATE - Already traded {idem_key}", None
-        
-        # 4. Price freshness - reject if LTP stale > 10 sec
-        if live_ltp is not None:
-            if live_ltp <= 0:
-                return False, f"Stale/invalid LTP {live_ltp}", None
-        
-        # 5. Call original execution (will be defined later, but we wrap)
-        # For now, delegate to original place_angel_real_order if exists
-        # This will be replaced with actual broker call below
-        audit_log("INFO", f"ORDER_SUBMIT_{order_type}", f"{symbol} {strike} {opt_type} Qty {quantity} Price {price} Idem {idem_key}")
-        
-        # Mark idempotency if BUY
-        if idem_key and order_type == "BUY":
-            mark_idempotency_key(idem_key)
-        
-        # Return placeholder - actual broker call is in original function
-        # This wrapper will be used to enhance original function
-        return True, "Validated - Ready for broker", f"VALIDATED_{uuid.uuid4().hex[:8]}"
-        
-    except Exception as e:
-        audit_log("ERROR", "ORDER_VALIDATION_EXCEPTION", str(e))
-        return False, f"Validation exception: {e}", None
-
-# End of production modules
-
-
-_spot_cache_v28 = {}
-_chain_cache_v28 = {}
-_fii_cache_v28 = {}
-
-def _v28_yahoo_spot(symbol="NIFTY"):
-    """Yahoo Finance - Optional, fallback to proxy if not installed"""
-    if "HAS_YFINANCE" in globals() and not HAS_YFINANCE:
-        return None
-    if yf is None:
-        return None
-    try:
-        mapping = {
-            "NIFTY": "^NSEI",
-            "BANKNIFTY": "^NSEBANK",
-            "FINNIFTY": "^CNXFIN",
-            "MIDCPNIFTY": "^NSEMDCP50",
-            "SENSEX": "^BSESN"
-        }
-        yahoo_symbol = mapping.get(symbol.upper(), "^NSEI")
-        # Fast 1m download with timeout
-        ticker = yf.Ticker(yahoo_symbol)
-        data = ticker.history(period="1d", interval="1m", timeout=3)
-        if not data.empty:
-            price = float(data['Close'].iloc[-1])
-            if price > 0:
-                _spot_cache_v28[symbol] = (price, time.time())
-                return price
-        # Fallback to fast info
-        try:
-            info = ticker.fast_info
-            if hasattr(info, 'last_price') and info.last_price:
-                return float(info.last_price)
-        except:
-            pass
-    except Exception as e:
-        print(f"Yahoo {symbol} failed: {e}")
-    return None
-
-def _v28_nse_proxy_spot(symbol="NIFTY"):
-    """NSE via allorigins proxy - bypass IP block"""
-    try:
-        url = "https://www.nseindia.com/api/allIndices"
-        proxy_url = f"https://api.allorigins.win/raw?url={url}"
-        resp = _FAST_SESSION.get(proxy_url, timeout=3)
-        if resp.status_code == 200:
-            data = resp.json()
-            for idx in data.get('data', []):
-                if symbol.upper() in idx.get('index', '').upper() or (symbol=="NIFTY" and idx.get('index')=="NIFTY 50"):
-                    price = idx.get('last')
-                    if price:
-                        return float(price)
-    except Exception as e:
-        print(f"NSE Proxy {symbol} failed: {e}")
-    return None
-
-def _v28_direct_nse_spot(symbol="NIFTY"):
-    """Direct NSE - may fail on Streamlit Cloud IP block"""
-    try:
-        url = "https://www.nseindia.com/api/allIndices"
-        # Ensure cookies
-        try:
-            _FAST_SESSION.get("https://www.nseindia.com", timeout=2)
-        except:
-            pass
-        resp = _FAST_SESSION.get(url, timeout=3)
-        if resp.status_code == 200:
-            data = resp.json()
-            for idx in data.get('data', []):
-                if symbol.upper() in idx.get('index', '').upper() or (symbol=="NIFTY" and idx.get('index')=="NIFTY 50"):
-                    price = idx.get('last')
-                    if price:
-                        return float(price)
-    except:
-        pass
-    return None
-
-def fetch_verified_spot_v28(symbol="NIFTY"):
-    """V28 ULTRA FAST - 3 sources parallel, 2 sec timeout, cache 5 sec"""
-    cache_key = f"spot_{symbol}"
-    now = time.time()
-    # Check cache first - 5 sec validity for ultra fast
-    if cache_key in _spot_cache_v28:
-        val, ts = _spot_cache_v28[cache_key]
-        if now - ts < 5 and val and val > 0:
-            return {"price": float(val), "source": "CACHE", "time": ts}
-    
-    # Try 3 sources in parallel - fastest wins
-    price = None
-    source = "NONE"
-    
-    # Try Yahoo first (most reliable on Cloud)
-    p = _v28_yahoo_spot(symbol)
-    if p and p > 0:
-        return {"price": float(p), "source": "YAHOO", "time": now}
-    
-    # Try proxy
-    p = _v28_nse_proxy_spot(symbol)
-    if p and p > 0:
-        _spot_cache_v28[cache_key] = (p, now)
-        return {"price": float(p), "source": "NSE_PROXY", "time": now}
-    
-    # Try direct
-    p = _v28_direct_nse_spot(symbol)
-    if p and p > 0:
-        _spot_cache_v28[cache_key] = (p, now)
-        return {"price": float(p), "source": "NSE_DIRECT", "time": now}
-    
-    # Last cache fallback - even if expired
-    if cache_key in _spot_cache_v28:
-        val, ts = _spot_cache_v28[cache_key]
-        if val and val > 0:
-            return {"price": float(val), "source": "STALE_CACHE", "time": ts}
-    
-    # Ultimate fallback - return 0 to avoid crash but log
-    return {"price": None, "source": "FAILED", "time": now}
-
-def get_spot_v28(symbol: str):
-    """Wrapper for compatibility"""
-    try:
-        res = fetch_verified_spot_v28(symbol)
-        return res.get("price")
-    except:
-        return None
-
-# Override old functions
-def fetch_verified_spot(symbol="NIFTY"):
-    return fetch_verified_spot_v28(symbol)
-
-def get_spot(symbol: str):
-    return get_spot_v28(symbol)
-
-def get_spot_safe_for_display(symbol: str):
-    try:
-        p = get_spot_v28(symbol)
-        if p and p > 0:
-            return float(p)
-        # Try stale cache
-        ck = f"spot_{symbol}"
-        if ck in _spot_cache_v28:
-            val, ts = _spot_cache_v28[ck]
-            if val and val > 0:
-                return float(val)
-        return 0.0
-    except:
-        return 0.0
-
-# ===== V29 FINAL FIX - NameError FIXED - EARLY DEFS =====
-def auto_entry_market_price(idea, live_ltp, quantity_lots, enable_real=False):
-    """Auto Entry at MARKET PRICE when setup comes - no click needed - FIXED LOT SIZE"""
-    if not enable_real:
-        return False, "Real trading disabled"
-    
-    try:
-        symbol = idea.get('symbol','NIFTY')
-        # Get correct lot size from INDEX_METADATA
-        lot_size = INDEX_METADATA.get(symbol, {}).get('lot_size', 65)
-        if symbol == 'NIFTY':
-            lot_size = 65
-        elif symbol == 'BANKNIFTY':
-            lot_size = 30
-        elif symbol == 'FINNIFTY':
-            lot_size = 60
-        elif symbol == 'MIDCPNIFTY':
-            lot_size = 120
-        elif symbol == 'SENSEX':
-            lot_size = 20
-        
-        quantity = quantity_lots * lot_size
-        
-        # Place BUY at market
-        ok, msg, order_id = place_angel_real_order(
-            symbol=symbol,
-            strike=idea.get('strike',0),
-            opt_type=idea.get('option','CE'),
-            expiry=idea.get('expiry',''),
-            quantity=quantity,
-            order_type="BUY",
-            price=0  # Market price
-        )
-        
-        if ok:
-            # Also create paper position for tracking
-            try:
-                lot_qty = quantity
-                execute_paper_order(
-                    symbol=idea["symbol"], action="BUY", strike=idea["strike"], option_type=idea["option"],
-                    price=live_ltp, qty=lot_qty, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
-                    expiry=idea["expiry"], reasons=idea["why"] + " | AUTO REAL ENTRY", is_equity=False
-                )
-            except:
-                pass
-        
-        return ok, msg
-        
-    except Exception as e:
-        return False, str(e)[:80]
-
-
-def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
-    """Auto Exit at MARKET PRICE when SL/Target hit"""
-    if not enable_real:
-        return False, "Real trading disabled"
-    
-    try:
-        symbol = position.get('symbol','NIFTY')
-        strike = position.get('strike',0)
-        opt_type = position.get('option_type','CE')
-        expiry = position.get('expiry','')
-        qty = position.get('qty',0)
-        
-        # Place SELL at market
-        ok, msg, order_id = place_angel_real_order(
-            symbol=symbol,
-            strike=strike,
-            opt_type=opt_type,
-            expiry=expiry,
-            quantity=qty,
-            order_type="SELL",
-            price=0  # Market price for exit
-        )
-        
-        if ok:
-            # Close paper position
-            close_paper_position(trade_id, live_ltp, f"AUTO REAL EXIT @ ₹{live_ltp:.2f} | Order: {order_id}")
-        
-        return ok, msg
-        
-    except Exception as e:
-        return False, str(e)[:80]
-
-
-
-# ===== END FIX =====
-
-# ===== V28 FII/DII FAST FETCH WITH FALLBACK =====
-def fetch_fii_dii_v28():
-    """FII/DII with proxy + cache fallback - never show Syncing forever"""
-    cache_key = "fii_dii"
-    now = time.time()
-    if cache_key in _fii_cache_v28:
-        val, ts = _fii_cache_v28[cache_key]
-        if now - ts < 300:  # 5 min cache
-            return val
-    
-    # Try NSE FII/DII API via proxy
-    try:
-        url = "https://www.nseindia.com/api/fiidiiTradeReact"
-        proxy_url = f"https://api.allorigins.win/raw?url={url}"
-        resp = _FAST_SESSION.get(proxy_url, timeout=4)
-        if resp.status_code == 200:
-            data = resp.json()
-            # Parse FII/DII
-            result = {
-                "fii": data.get("fiiBuy", 0) - data.get("fiiSell", 0) if isinstance(data, dict) else 0,
-                "dii": data.get("diiBuy", 0) - data.get("diiSell", 0) if isinstance(data, dict) else 0,
-                "source": "NSE_PROXY"
-            }
-            _fii_cache_v28[cache_key] = (result, now)
-            return result
-    except Exception as e:
-        print(f"FII DII proxy failed: {e}")
-    
-    # Return cached or neutral
-    if cache_key in _fii_cache_v28:
-        val, ts = _fii_cache_v28[cache_key]
-        return val
-    
-    # Fallback - show previous close logic
-    return {"fii": 0, "dii": 0, "source": "PREV_CLOSE", "fii_text": "Market Closed", "dii_text": "Awaiting Open"}
-
-
 import uuid
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
@@ -687,143 +28,17 @@ import requests
 import concurrent.futures
 import streamlit as st
 
-
-# ===== V33 FIX: Session State Initialization - Prevents AttributeError =====
-def init_session_state():
-    """Initialize all session_state keys with safe defaults - called once at startup"""
-    try:
-        if "paper_portfolio" not in st.session_state:
-            st.session_state.paper_portfolio = {
-                "positions": {},
-                "daily_pnl": 0.0,
-                "daily_realized_pnl": 0.0,
-                "total_pnl": 0.0,
-                "session_date": datetime.now(IST).strftime('%Y-%m-%d'),
-                "circuit_broken": False,
-                "trade_history": [],
-                "cash_balance": 500000.0,
-                "starting_balance": 500000.0,
-                "daily_loss_limit": 10000.0,
-            }
-        else:
-            pp = st.session_state.paper_portfolio
-            if not isinstance(pp, dict):
-                st.session_state.paper_portfolio = {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "session_date": datetime.now(IST).strftime('%Y-%m-%d'), "circuit_broken": False, "trade_history": [], "cash_balance": 500000.0}
-            else:
-                pp.setdefault("positions", {})
-                pp.setdefault("daily_pnl", 0.0)
-                pp.setdefault("daily_realized_pnl", 0.0)
-                pp.setdefault("total_pnl", 0.0)
-                pp.setdefault("trade_history", [])
-                pp.setdefault("cash_balance", 500000.0)
-        
-        defaults = {
-            "kill_switch": False,
-            "auto_traded_today": set(),
-            "pending_confirm_calls": {},
-            "enable_real_trading": False,
-            "auto_real_entry_enabled": False,
-            "require_confirm_call": True,
-        }
-        for k, v in defaults.items():
-            if k not in st.session_state:
-                st.session_state[k] = v
-                
-        if st.session_state.paper_portfolio is None:
-            st.session_state.paper_portfolio = {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
-    except Exception as e:
-        print(f"Session init error: {e}")
-        try:
-            st.session_state.paper_portfolio = {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
-        except:
-            pass
-
-def init_session_state_safe():
-    """Safe init that never raises SessionInfo error"""
-    try:
-        # Check if session is available
-        _ = st.session_state
-    except Exception as e:
-        if "SessionInfo" in str(e):
-            # Session not ready yet, skip init, will init later
-            return False
-        pass
-    
-    try:
-        if "paper_portfolio" not in st.session_state:
-            st.session_state.paper_portfolio = {
-                "positions": {},
-                "daily_pnl": 0.0,
-                "daily_realized_pnl": 0.0,
-                "total_pnl": 0.0,
-                "session_date": datetime.now(IST).strftime('%Y-%m-%d') if 'IST' in globals() else "2025-01-01",
-                "circuit_broken": False,
-                "trade_history": [],
-                "cash_balance": 500000.0,
-                "starting_balance": 500000.0,
-                "daily_loss_limit": 10000.0,
-            }
-        else:
-            pp = st.session_state.paper_portfolio
-            if not isinstance(pp, dict):
-                st.session_state.paper_portfolio = {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": [], "cash_balance": 500000.0}
-            else:
-                pp.setdefault("positions", {})
-                pp.setdefault("daily_pnl", 0.0)
-                pp.setdefault("trade_history", [])
-        
-        defaults = {
-            "kill_switch": False,
-            "auto_traded_today": set(),
-            "pending_confirm_calls": {},
-            "enable_real_trading": False,
-            "auto_real_entry_enabled": False,
-            "require_confirm_call": True,
-        }
-        for k, v in defaults.items():
-            if k not in st.session_state:
-                st.session_state[k] = v
-        return True
-    except Exception as e:
-        if "SessionInfo" in str(e):
-            return False
-        print(f"Session init safe error: {e}")
-        return False
-
-# Alias for backward compatibility
-def init_session_state():
-    return init_session_state_safe()
-
-def get_paper_portfolio_safe():
-    """Safe getter - never raises SessionInfo error"""
-    try:
-        # Try to init if needed
-        init_session_state_safe()
-        pp = st.session_state.get("paper_portfolio")
-        if pp is None or not isinstance(pp, dict):
-            init_session_state_safe()
-            pp = st.session_state.get("paper_portfolio", {"positions": {}})
-        return pp
-    except Exception as e:
-        if "SessionInfo" in str(e):
-            # Return dummy to avoid crash during early import
-            return {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
-        return {"positions": {}, "daily_pnl": 0.0, "total_pnl": 0.0, "trade_history": []}
-
-def get_positions_safe():
-    try:
-        pp = get_paper_portfolio_safe()
-        pos = pp.get("positions", {})
-        return pos if isinstance(pos, dict) else {}
-    except Exception as e:
-        if "SessionInfo" in str(e):
-            return {}
-        return {}
-
-
-# V34 FIX: Do NOT call at import time - causes SessionInfo error
-# init_session_state() will be called lazily inside safe getters and inside main UI
-# ===== END V33 FIX =====
+# ===== V40 FINAL FIX: set_page_config FIRST - Fixes Bad Message + SessionInfo =====
+try:
+    st.set_page_config(
+        page_title="AI Institutional Live Trading Advisor (Quantitative GEX & Equity Engine)",
+        page_icon="⚡",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+except:
+    pass
+# ===== END V40 FIX =====
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -846,6 +61,419 @@ except:
     def live_fragment(*args, **kwargs):
         def decorator(func): return func
         return decorator
+
+
+
+# ===== V39 LTP ENGINE (FIXES 2688 + 2000+ BUG) =====
+def get_angel_ltp_V39_AUDITED(symbol="NIFTY", strike=23050, opt_type="CE", expiry="03 Nov 2026"):
+    """
+    V39 AUDITED: Proper LTP fetch with structured field matching
+    Sources:
+    - Angel Master JSON: https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json
+    - Format: token,symbol,name,expiry,strike,lotsize,instrumenttype,exch_seg
+    - Example: NIFTY token 99926000 for index, OPTIDX for options
+    """
+    try:
+        # Get Angel keys from secrets
+        api_key = ""; client_id = ""; password = ""; totp_secret = ""
+        for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
+            if k in st.secrets:
+                api_key = str(st.secrets[k]).strip()
+                break
+        for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"]:
+            if k in st.secrets:
+                client_id = str(st.secrets[k]).strip()
+                break
+        for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"]:
+            if k in st.secrets:
+                password = str(st.secrets[k]).strip()
+                break
+        for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
+            if k in st.secrets:
+                totp_secret = str(st.secrets[k]).strip()
+                break
+        
+        if not api_key or not client_id:
+            return 0, "ANGEL_KEYS_MISSING_CHECK_SECRETS", False
+        
+        try:
+            from SmartApi import SmartConnect
+            import pyotp
+            import requests
+            import re
+            from datetime import datetime
+        except ImportError as e:
+            return 0, f"LIB_MISSING_{str(e)[:30]}_ADD_TO_REQUIREMENTS", False
+        
+        # Login
+        totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
+        obj = SmartConnect(api_key=api_key)
+        session_data = obj.generateSession(client_id, password, totp_code)
+        if not (session_data and session_data.get("status") == True):
+            return 0, f"ANGEL_LOGIN_FAIL_{str(session_data)[:60]}", False
+        
+        # Fetch master
+        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        try:
+            mr = requests.get(master_url, timeout=15)
+            if mr.status_code != 200:
+                return 0, f"MASTER_HTTP_{mr.status_code}", False
+            instruments = mr.json()
+        except Exception as e:
+            return 0, f"MASTER_FETCH_EXC_{str(e)[:60]}", False
+        
+        # Normalize inputs
+        symbol = symbol.upper().strip()
+        target_strike = int(float(strike))
+        target_opt = opt_type.upper().strip()
+        if target_opt == "C":
+            target_opt = "CE"
+        if target_opt == "P":
+            target_opt = "PE"
+        
+        # Parse target expiry
+        target_exp_dt = None
+        target_exp_formats = []
+        try:
+            exp_str = str(expiry).strip()
+            # Try multiple date formats
+            for fmt in ["%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%d-%B-%Y", "%Y-%m-%d", "%d %b %y", "%d-%b-%y", "%d/%m/%Y", "%d-%m-%Y"]:
+                try:
+                    target_exp_dt = datetime.strptime(exp_str, fmt)
+                    break
+                except:
+                    continue
+            if not target_exp_dt:
+                # Try expiry_norm helper if exists
+                try:
+                    if 'expiry_norm' in globals():
+                        exp_norm = expiry_norm(expiry)
+                        if exp_norm:
+                            target_exp_dt = datetime.strptime(exp_norm, "%Y-%m-%d")
+                except:
+                    pass
+            
+            if target_exp_dt:
+                # Create multiple string formats for matching
+                target_exp_formats = [
+                    target_exp_dt.strftime("%d%b%Y").upper(),      # 03NOV2026
+                    target_exp_dt.strftime("%d%b%y").upper(),       # 03NOV26
+                    target_exp_dt.strftime("%d-%b-%Y").upper(),     # 03-NOV-2026
+                    target_exp_dt.strftime("%d%b%y").upper(),       # 03NOV26
+                    target_exp_dt.strftime("%d%m%Y"),                # 03112026
+                    target_exp_dt.strftime("%Y-%m-%d"),             # 2026-11-03
+                    target_exp_dt.strftime("%d%b").upper(),         # 03NOV
+                    str(target_exp_dt.day),                         # 3 or 03
+                ]
+        except Exception as e:
+            target_exp_dt = None
+        
+        # Determine search label and name filter
+        if symbol == "NIFTY":
+            search_label = "NIFTY"
+            valid_names = ["NIFTY"]
+            invalid_substrings = ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "NIFTYNXT", "NIFTY50"]
+        elif symbol == "BANKNIFTY":
+            search_label = "BANKNIFTY"
+            valid_names = ["BANKNIFTY"]
+            invalid_substrings = []
+        elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
+            search_label = "FINNIFTY"
+            valid_names = ["FINNIFTY"]
+            invalid_substrings = []
+        elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
+            search_label = "MIDCPNIFTY"
+            valid_names = ["MIDCPNIFTY"]
+            invalid_substrings = []
+        elif symbol in ["SENSEX", "BSESN"]:
+            search_label = "SENSEX"
+            valid_names = ["SENSEX"]
+            invalid_substrings = []
+        else:
+            search_label = symbol
+            valid_names = [symbol]
+            invalid_substrings = []
+        
+        # === V39: STRUCTURED MATCHING ===
+        candidates = []
+        debug_info = {"total": len(instruments), "filtered_name": 0, "filtered_fut": 0, "filtered_strike": 0, "filtered_opt": 0}
+        
+        for inst in instruments:
+            if not isinstance(inst, dict):
+                continue
+            
+            # Exchange segment must be NFO or BFO
+            exch_seg = str(inst.get("exch_seg", "")).upper()
+            if exch_seg not in ["NFO", "BFO"]:
+                continue
+            
+            # Instrument type - must be OPT, not FUT
+            inst_type = str(inst.get("instrumenttype", "")).upper()
+            if inst_type:
+                if "FUT" in inst_type:
+                    debug_info["filtered_fut"] += 1
+                    continue  # Skip futures - was causing 2000+ bug
+                if "OPT" not in inst_type and inst_type not in ["", "OPTIDX", "OPTSTK"]:
+                    # Allow empty or OPT types only
+                    if inst_type not in ["OPTIDX", "OPTSTK", ""]:
+                        continue
+            
+            # Symbol and name
+            tradingsym = str(inst.get("symbol", "")).strip()
+            tradingsym_upper = tradingsym.upper()
+            inst_name = str(inst.get("name", "")).upper().strip()
+            
+            # Name filter
+            if valid_names:
+                if inst_name and inst_name not in valid_names:
+                    # Allow if tradingsym starts with search_label and name is empty or same
+                    if not tradingsym_upper.startswith(search_label):
+                        debug_info["filtered_name"] += 1
+                        continue
+                # Check invalid substrings
+                is_invalid = False
+                for inv in invalid_substrings:
+                    if inv in tradingsym_upper or inv in inst_name:
+                        is_invalid = True
+                        break
+                if is_invalid:
+                    debug_info["filtered_name"] += 1
+                    continue
+            
+            # Strike check - use structured field first
+            inst_strike_raw = inst.get("strike")
+            extracted_strike = None
+            
+            if inst_strike_raw is not None and str(inst_strike_raw).strip() not in ["", "-1", "-1.000000", "0", "0.000000"]:
+                try:
+                    s_val = float(inst_strike_raw)
+                    # Angel stores strike sometimes as 2310000 (23050*100) or 23100
+                    if s_val > 100000:  # Likely *100
+                        s_val = s_val / 100.0
+                    # Also sometimes *1000?
+                    if s_val > 100000:
+                        s_val = s_val / 10.0
+                    extracted_strike = int(round(s_val))
+                except:
+                    extracted_strike = None
+            
+            # Fallback to parsing from trading symbol if structured fails
+            if extracted_strike is None:
+                # Try regex: symbol ends with strike + CE/PE
+                # Formats: NIFTY09NOV2623100CE, NIFTY 09NOV26 23100 CE, NIFTY23100CE
+                m_patterns = [
+                    r'(\d{4,6})\s*(CE|PE)\s*$',  # 23100 CE at end
+                    r'(\d{4,6})(CE|PE)$',          # 23100CE at end
+                    r'\s(\d{4,6})\s+(CE|PE)',     # space 23100 space CE
+                    r'(C|P)\s*(\d{4,6})\s*$',     # C23100 at end
+                ]
+                for pat in m_patterns:
+                    m = re.search(pat, tradingsym_upper)
+                    if m:
+                        try:
+                            # Find which group is strike
+                            for g in m.groups():
+                                if g and g.isdigit() and len(g) >= 4:
+                                    extracted_strike = int(g)
+                                    break
+                        except:
+                            pass
+                        if extracted_strike:
+                            break
+                
+                # Last resort: check if target strike appears as whole word
+                if extracted_strike is None:
+                    if re.search(rf'\b{target_strike}\b', tradingsym_upper):
+                        extracted_strike = target_strike
+            
+            if extracted_strike is None:
+                debug_info["filtered_strike"] += 1
+                continue
+            
+            if extracted_strike != target_strike:
+                debug_info["filtered_strike"] += 1
+                continue
+            
+            # Option type check
+            inst_opt = None
+            # From trading symbol
+            if "CE" in tradingsym_upper:
+                inst_opt = "CE"
+            elif "PE" in tradingsym_upper:
+                inst_opt = "PE"
+            elif tradingsym_upper.endswith("C"):
+                inst_opt = "CE"
+            elif tradingsym_upper.endswith("P"):
+                inst_opt = "PE"
+            
+            if inst_opt and inst_opt != target_opt:
+                debug_info["filtered_opt"] += 1
+                continue
+            
+            # Expiry scoring
+            exp_score = 0
+            inst_expiry_raw = str(inst.get("expiry", "")).strip()
+            
+            if target_exp_dt and inst_expiry_raw:
+                try:
+                    # Parse inst expiry
+                    inst_exp_dt = None
+                    # Try multiple formats
+                    for fmt in ["%d%b%Y", "%d%b%y", "%d-%b-%Y", "%Y-%m-%d", "%d%m%Y", "%d-%b-%y", "%d %b %Y"]:
+                        try:
+                            # Clean expiry string
+                            clean_exp = inst_expiry_raw.replace(" ", "").upper()
+                            inst_exp_dt = datetime.strptime(clean_exp, fmt)
+                            break
+                        except:
+                            try:
+                                inst_exp_dt = datetime.strptime(inst_expiry_raw, fmt)
+                                break
+                            except:
+                                continue
+                    
+                    # Try from trading symbol if not from expiry field
+                    if not inst_exp_dt:
+                        m_exp = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', tradingsym_upper)
+                        if m_exp:
+                            day = m_exp.group(1)
+                            mon = m_exp.group(2)
+                            yr = m_exp.group(3)
+                            if len(yr) == 2:
+                                yr_full = "20" + yr if int(yr) < 50 else "19" + yr
+                            else:
+                                yr_full = yr
+                            exp_str_sym = f"{day}{mon}{yr_full}"
+                            try:
+                                inst_exp_dt = datetime.strptime(exp_str_sym, "%d%b%Y")
+                            except:
+                                pass
+                    
+                    if inst_exp_dt and target_exp_dt:
+                        if inst_exp_dt.date() == target_exp_dt.date():
+                            exp_score = 100
+                        elif inst_exp_dt.month == target_exp_dt.month and inst_exp_dt.year == target_exp_dt.year:
+                            exp_score = 80 - abs(inst_exp_dt.day - target_exp_dt.day)
+                        elif inst_exp_dt.month == target_exp_dt.month:
+                            exp_score = 30
+                        else:
+                            exp_score = 5
+                    else:
+                        # Fallback: check month in symbol
+                        if target_exp_dt.strftime("%b").upper() in tradingsym_upper or target_exp_dt.strftime("%b").upper() in inst_expiry_raw.upper():
+                            exp_score = 20
+                        else:
+                            exp_score = 1
+                except:
+                    exp_score = 1
+            else:
+                # No target expiry, use generic scoring
+                exp_score = 10
+                if target_exp_dt:
+                    # Try to find month/day in symbol
+                    if target_exp_dt.strftime("%b").upper() in tradingsym_upper:
+                        exp_score += 10
+            
+            candidates.append((exp_score, inst, tradingsym, inst_expiry_raw))
+        
+        # Sort by expiry score descending
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        # Try to fetch LTP for top candidates with sanity check
+        for score, inst, tradingsym, inst_expiry in candidates[:25]:
+            token = str(inst.get("token", ""))
+            exch = str(inst.get("exch_seg", "NFO"))
+            try:
+                ltp_data = obj.ltpData(exch, tradingsym, token)
+                if ltp_data and ltp_data.get("status") == True:
+                    ltp_val = ltp_data.get("data", {}).get("ltp")
+                    if ltp_val is not None:
+                        try:
+                            f_ltp = float(ltp_val)
+                            if f_ltp <= 0:
+                                continue
+                            
+                            # === V39 LTP SANITY CHECK ===
+                            # For NIFTY 23100 CE with spot ~22900, LTP should be:
+                            # - OTM CE: 20-200 (since 23100 > 22900)
+                            # - ATM: 80-200
+                            # - ITM: intrinsic + time, max maybe 500-1000 for weekly
+                            # 2688 is for deep ITM 20200 CE (intrinsic 2723) - WRONG
+                            # So for 23100 CE (OTM), LTP >500 is suspicious, >1000 is wrong
+                            # For safety: if target strike is OTM CE (strike > spot), LTP should be <1000
+                            # We'll allow up to 3000 but log warning
+                            
+                            # Get current spot if available (from global or fetch)
+                            # For now, simple sanity: option LTP should be < 5000, futures ~22900
+                            if f_ltp > 5000:
+                                # Likely futures, skip
+                                continue
+                            
+                            # Additional check: if strike is far OTM (23100 vs spot 22900, 177 OTM), LTP should be < 300
+                            # If LTP 2688 for 23100 CE, it's definitely wrong (that's for 20200 CE)
+                            # So if target strike > 23000 and f_ltp > 1000 for CE, likely wrong instrument
+                            # We'll still return but with warning in source string
+                            warning = ""
+                            if f_ltp > 1500 and target_strike > 22000:
+                                # For NIFTY, 23100 CE should not be >1500 when spot 22900
+                                # This indicates matching 20200 CE (deep ITM)
+                                # Skip this candidate
+                                if target_strike >= 23000 and target_opt == "CE":
+                                    # 23100 CE is OTM, should be < 300, not 2688
+                                    continue
+                            
+                            return f_ltp, f"ANGEL_V39_{search_label}_{target_strike}{target_opt}_SCORE_{score}_EXP_{inst_expiry}_{tradingsym}_{f_ltp}", True
+                        except:
+                            continue
+            except Exception as e:
+                continue
+        
+        # If no valid LTP found, return debug info
+        sample_sym = candidates[0][2] if candidates else "NO_CANDIDATES"
+        return 0, f"NO_LTP_V39_{search_label}_{target_strike}{target_opt}_CAND_{len(candidates)}_FILT_{debug_info}_SAMPLE_{sample_sym[:50]}", False
+    
+    except Exception as e:
+        import traceback
+        return 0, f"EXC_V39_{str(e)[:150]}_{traceback.format_exc()[:100]}", False
+
+
+
+
+
+
+def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
+    """V40 wrapper - calls V39 audited engine"""
+    try:
+        return get_live_premium_V39_FINAL(symbol, strike, opt_type, expiry)
+    except:
+        try:
+            return get_angel_ltp_V39_AUDITED(symbol, strike, opt_type, expiry)
+        except:
+            return 0, "V40_FALLBACK_FAILED", False
+
+def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
+    """V40 wrapper"""
+    try:
+        return get_live_premium_V39_FINAL(symbol, strike, opt_type, expiry)
+    except:
+        try:
+            return get_angel_ltp_V39_AUDITED(symbol, strike, opt_type, expiry)
+        except:
+            return 0, "V40_FALLBACK_FAILED", False
+
+def get_live_premium_V39_FINAL(symbol, strike, opt_type, expiry):
+    """V40 FINAL: Angel + NSE proxy"""
+    ltp, src, ok = get_angel_ltp_V39_AUDITED(symbol, strike, opt_type, expiry)
+    if ok and ltp > 0:
+        return ltp, src, True
+    # Try NSE proxy fallback
+    try:
+        ltp2, src2, ok2 = get_nse_ltp_proxy_V39(symbol, strike, opt_type, expiry)
+        if ok2 and ltp2 > 0:
+            return ltp2, src2, True
+    except:
+        pass
+    return 0, src, False
 
 
 # IST Definition - No external dependency (stdlib only)
@@ -976,18 +604,6 @@ CHART_BAR = "\U0001F4CA"        # 📊
 CHART_UP = "\U0001F4C8"         # 📈
 TARGET = "\U0001F3AF"           # 🎯
 TEMPLE = "\U0001F3DB"           # 🏛️
-
-# ===== V35 FIX: set_page_config MUST be first st. call =====
-try:
-    st.set_page_config(
-        page_title="AI Institutional Live Trading Advisor (Quantitative GEX & Equity Engine)",
-        page_icon="⚡",
-        layout="wide",
-    )
-except Exception as e:
-    print(f"set_page_config error (may already be set): {e}")
-# ===== END V35 FIX =====
-
 COMPASS = "\U0001F9ED"          # 🧭
 GLOBE = "\U0001F310"            # 🌐
 TRAFFIC = "\U0001F6A6"          # 🚦
@@ -1297,7 +913,6 @@ TIMEFRAME_CONFIG = {
 # =====================================================================
 # 6. CONFIGURATION, THEME & STYLES
 # =====================================================================
-
 # ================= V53 PERSISTENT SETTINGS - Fix reset after page close =================
 import os
 import json
@@ -1397,29 +1012,13 @@ def telegram_callback_poller():
         pass
 
 # Call poller on every run - will check Telegram YES/NO
-# V35 FIX: Safe guard for SessionInfo
-try:
-    # Only call if session is initialized
-    try:
-        _ = st.session_state
-        telegram_callback_poller()
-    except Exception as e:
-        if "SessionInfo" not in str(e):
-            telegram_callback_poller()
-except:
-    pass
+# V40: Global poller removed
+pass
 
 
 
-# Show persistent status
-try:
-    ps_count = len(st.session_state.get('persistent_settings', {}))
-    if ps_count > 0:
-        st.sidebar.success(f"💾 Settings Loaded: {ps_count} saved | Page close ke baad bhi rahega")
-    else:
-        st.sidebar.info("💾 First run - Settings ab save honge, page close ke baad bhi rahenge")
-except:
-    pass
+# V40: Persistent status moved to main
+pass
 
 
 
@@ -1716,7 +1315,7 @@ def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
 
 🎯 High Conviction: {conv}% {color}
 📊 {symbol} {strike} {opt}
-💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{(spot or 0):.2f}
+💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{spot:.2f}
 📅 Expiry: {expiry_label_str}
 ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
 ✅ Real order pending - Confirm needed
@@ -1727,7 +1326,6 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
 👇 *Telegram pe hi YES/NO dabao - Direct trade!*"""
 
         # Inline keyboard with YES/NO callback buttons - Direct in Telegram
-        app_url = secret("APP_URL") or secret("STREAMLIT_APP_URL") or "https://4gg.streamlit.app"
         keyboard = {
             "inline_keyboard": [
                 [
@@ -1735,7 +1333,7 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
                     {"text": "❌ NO - Cancel", "callback_data": f"NO_CANCEL_{pending_key}"}
                 ],
                 [
-                    {"text": "📊 App Kholo", "url": app_url}
+                    {"text": "📊 App Kholo", "callback_data": f"OPEN_APP_{pending_key}"}
                 ]
             ]
         }
@@ -1774,163 +1372,129 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
         return False, str(e)[:100]
 
 def handle_telegram_callback_query():
+    """V54 NEW: Handle YES/NO clicks from Telegram - Direct trade without app"""
     try:
         import requests
         from datetime import datetime
+        
         bot_token, chat_id = get_telegram_keys()
         if not bot_token:
             return False
+            
+        # Get last update_id
         last_update_id = st.session_state.get('tg_last_update_id', 0)
+        
         url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
-        params = {"offset": last_update_id + 1, "timeout": 1, "allowed_updates": ["callback_query"]}
-        try:
-            r = requests.get(url, params=params, timeout=3)
-        except:
-            return False
+        params = {"offset": last_update_id + 1, "timeout": 2, "allowed_updates": '["callback_query"]'}
+        
+        r = requests.get(url, params=params, timeout=5)
         if r.status_code != 200:
             return False
+            
         data = r.json()
         if not data.get('ok') or not data.get('result'):
             return False
+            
         for update in data['result']:
             update_id = update.get('update_id', 0)
             st.session_state['tg_last_update_id'] = update_id
+            
             callback = update.get('callback_query')
             if not callback:
                 continue
+                
             callback_id = callback.get('id')
             callback_data = callback.get('data', '')
+            from_user = callback.get('from', {})
             message = callback.get('message', {})
             msg_id = message.get('message_id')
-            chat_id_cb = message.get('chat', {}).get('id', chat_id)
+            
+            # Answer callback query to remove loading
             try:
                 answer_url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
-                requests.post(answer_url, json={"callback_query_id": callback_id, "text": "Processing..."}, timeout=2)
+                requests.post(answer_url, json={"callback_query_id": callback_id}, timeout=3)
             except:
                 pass
-            if callback_data.startswith("OPEN_APP_"):
-                try:
-                    app_url = secret("APP_URL") or secret("STREAMLIT_APP_URL") or "https://4gg.streamlit.app"
-                    edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                    txt_app = "App Link: " + str(app_url)
-                    requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": txt_app}, timeout=3)
-                except:
-                    pass
-                continue
+            
             if callback_data.startswith("YES_BUY_"):
                 pending_key = callback_data.replace("YES_BUY_", "")
                 pdata = st.session_state.get(pending_key)
                 if not pdata:
-                    try:
-                        pdata = load_pending_from_file(pending_key)
-                        if pdata:
-                            st.session_state[pending_key] = pdata
-                    except:
-                        pass
-                if not pdata:
-                    try:
-                        import json as _js, pathlib as _pl
-                        for pf in [_pl.Path("pending_confirms.json"), _pl.Path("/tmp/pending_confirms.json")]:
-                            if pf.exists():
-                                alld = _js.loads(pf.read_text(encoding='utf-8'))
-                                for k,v in alld.items():
-                                    if pending_key in k or k in pending_key:
-                                        pdata = v
-                                        pending_key = k
-                                        st.session_state[pending_key] = pdata
-                                        break
-                            if pdata:
-                                break
-                    except:
-                        pass
-                if not pdata:
-                    try:
-                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                        txt_msg = "EXPIRED Order " + str(pending_key) + " not found. Scan again."
-                        requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": txt_msg}, timeout=3)
-                    except:
-                        pass
-                    continue
+                    pdata = load_pending_from_file(pending_key)
+                    if pdata:
+                        st.session_state[pending_key] = pdata
+                    if not pdata:
+                        continue
+                    
                 idea = pdata.get('idea', {})
                 live_ltp = pdata.get('live_ltp', 0)
                 qty = pdata.get('qty', 1)
+                
+                # Execute real trade
                 try:
-                    is_real = st.session_state.get('enable_real_trading', False) or st.session_state.get('auto_real_entry_enabled', False)
-                    if is_real:
-                        ok, msg = auto_entry_market_price(idea, live_ltp, qty, enable_real=True)
-                        exec_type = "REAL"
-                    else:
-                        try:
-                            lot_size = 30 if idea.get('symbol')=='BANKNIFTY' else 75
-                            execute_paper_order(
-                                symbol=idea.get('symbol','NIFTY'),
-                                action="BUY",
-                                strike=idea.get('strike',0),
-                                option_type=idea.get('option','CE'),
-                                price=live_ltp,
-                                qty=qty * lot_size,
-                                sl=idea.get('sl', live_ltp*0.8),
-                                t1=idea.get('target1', live_ltp*1.2),
-                                t2=idea.get('target2', live_ltp*1.5),
-                                expiry=idea.get('expiry',''),
-                                reasons=str(idea.get('why','')) + " | Telegram YES",
-                                is_equity=False
-                            )
-                            ok = True
-                            msg = "PAPER Trade Placed @ Rs " + str(round(live_ltp,2))
-                        except Exception as e:
-                            ok = False
-                            msg = "Paper error: " + str(e)[:80]
-                        exec_type = "PAPER"
+                    from datetime import datetime
+                    ok, msg = auto_entry_market_price(idea, live_ltp, qty, enable_real=st.session_state.get('enable_real_trading', False))
+                    
+                    # Edit Telegram message to show result
                     try:
-                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
                         if ok:
-                            new_text = exec_type + " ORDER PLACED! " + str(idea.get('symbol')) + " " + str(idea.get('strike')) + " " + str(idea.get('option')) + " Entry Rs " + str(live_ltp) + " Qty " + str(qty) + " - " + str(msg)
+                            new_text = f"✅ *ORDER PLACED!*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\n💰 LTP: ₹{live_ltp:.2f}\nQty: {qty} lots\n\n✅ {msg}\n\nTime: {datetime.now(IST).strftime('%H:%M:%S IST')}"
                         else:
-                            new_text = "FAILED " + str(idea.get('symbol')) + " Error: " + str(msg)
-                        requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": new_text}, timeout=4)
-                    except Exception as e:
-                        print("Edit fail")
-                    try:
-                        if ok:
-                            conf = exec_type + " VIA TELEGRAM " + str(idea.get('symbol')) + " " + str(idea.get('strike')) + " Entry Rs " + str(live_ltp)
-                            try:
-                                ultra_fast_telegram_send(conf, force=True)
-                            except:
-                                send_telegram_message(bot_token, str(chat_id_cb), conf)
+                            new_text = f"❌ *ORDER FAILED*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\nError: {msg}"
+                        
+                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                        edit_payload = {
+                            "chat_id": chat_id,
+                            "message_id": msg_id,
+                            "text": new_text,
+                            "parse_mode": "Markdown"
+                        }
+                        requests.post(edit_url, json=edit_payload, timeout=5)
                     except:
                         pass
+                    
+                    # Send confirmation
+                    try:
+                        if ok:
+                            send_telegram_message(bot_token, chat_id, f"✅ *REAL ORDER EXECUTED VIA TELEGRAM*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\n💰 Entry: ₹{live_ltp:.2f}\nQty: {qty} lots\n\nTelegram YES se direct trade!")
+                    except:
+                        pass
+                    
+                    # Remove pending
                     try:
                         if pending_key in st.session_state:
                             del st.session_state[pending_key]
-                        delete_pending_from_file(pending_key)
                     except:
                         pass
+                        
                 except Exception as e:
                     try:
-                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                        requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": "Error: " + str(e)[:100]}, timeout=3)
+                        send_telegram_message(bot_token, chat_id, f"❌ Error placing order: {str(e)[:100]}")
                     except:
                         pass
+                        
             elif callback_data.startswith("NO_CANCEL_"):
                 pending_key = callback_data.replace("NO_CANCEL_", "")
                 try:
                     if pending_key in st.session_state:
                         del st.session_state[pending_key]
-                    delete_pending_from_file(pending_key)
                 except:
                     pass
                 try:
                     edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                    txt_c = "CANCELLED Order " + str(pending_key)
-                    requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": txt_c}, timeout=3)
+                    edit_payload = {
+                        "chat_id": chat_id,
+                        "message_id": msg_id,
+                        "text": f"❌ *CANCELLED via Telegram*\n\nPending order {pending_key} cancelled.\nTime: {datetime.now(IST).strftime('%H:%M:%S IST')}",
+                        "parse_mode": "Markdown"
+                    }
+                    requests.post(edit_url, json=edit_payload, timeout=5)
                 except:
                     pass
+                    
         return True
     except Exception as e:
-        print("Callback handle error")
-        import traceback
-        traceback.print_exc()
+        print(f"Callback handle error: {e}")
         return False
 
 
@@ -2001,7 +1565,7 @@ Conviction: {conf}% | Expiry: {expiry_label_str}
 🎯 *T1:* ₹{t1:.2f}
 🎯 *T2:* ₹{t2:.2f}
 📈 *R/R:* 1:{rr:.2f}
-📍 *Spot:* {(spot or 0):.2f}
+📍 *Spot:* {spot:.2f}
 
 ⚡ *Buildup:* {idea.get('buildup','')}
 📝 *Why:* {idea.get('why','')[:200]}...
@@ -2269,7 +1833,7 @@ def auto_check_emergency_exit_from_lights(light1, light2):
                         continue
                     
                     # Get live LTP
-                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match_FIXED(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
+                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
                     if not is_ok or live_ltp <= 0:
                         live_ltp = pos.get('entry_price', 0)
                     
@@ -2298,10 +1862,14 @@ Light1: {light1.get('status')} | Light2: {light2.get('status')}
                     # Mark alerted
                     st.session_state[alert_key] = time.time()
                     
-                    # V27 ULTRA FAST: AUTO EXIT ALWAYS - Manual Buy + Auto Sell OTM
+                    # Optionally auto close position if auto exit enabled
                     try:
-                        if st.session_state.get('enable_real_trading', False) or st.session_state.get('auto_real_exit', False):
+                        if st.session_state.get('auto_real_entry_enabled', False):
+                            # Auto exit real + paper
                             auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
+                        else:
+                            # Just close paper and alert
+                            pass
                     except:
                         pass
                         
@@ -2351,7 +1919,7 @@ def auto_check_and_exit_positions():
                 expiry = pos.get('expiry','')
                 
                 # Get live LTP - use broker matched
-                live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match_FIXED(symbol, strike, opt_type, expiry)
+                live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
                 
                 if not is_ok or live_ltp <= 0:
                     # Try fallback proxy if Angel fails
@@ -3187,519 +2755,158 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 
 
-
-# ============================================================================
-# V39 FINAL AUDIT - LTP ENGINE REWRITE - PROPER FIX FOR 2688 BUG
-# Root Cause Audit (with sources):
-# 1. Angel Master JSON format: symbol like "NIFTY09NOV2623100CE" (source: forum discussion)
-#    - Contains expiry DDMMMYY + strike + CE/PE
-#    - Has structured fields: token, symbol, name, expiry, strike, instrumenttype, exch_seg
-# 2. Old bug (V37): str(strike) in sym loose matching caused 23100 to match 20200 
-#    when expiry parsing failed - CAND_0 then fallback matched wrong strike
-# 3. Futures bug: instrumenttype FUTIDX not filtered, caused 2000+ LTP (futures LTP ~22900)
-# 4. No LTP sanity check - allowed 2688 for 23100 CE (should be 80-120)
-# Fix: Use structured fields + exact matching + LTP sanity + NSE proxy fallback
-# ============================================================================
-
-def get_angel_ltp_V39_AUDITED(symbol="NIFTY", strike=23050, opt_type="CE", expiry="03 Nov 2026"):
+def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V39 AUDITED: Proper LTP fetch with structured field matching
-    Sources:
-    - Angel Master JSON: https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json
-    - Format: token,symbol,name,expiry,strike,lotsize,instrumenttype,exch_seg
-    - Example: NIFTY token 99926000 for index, OPTIDX for options
+    V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY
     """
     try:
-        # Get Angel keys from secrets
         api_key = ""; client_id = ""; password = ""; totp_secret = ""
         for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
             if k in st.secrets:
-                api_key = str(st.secrets[k]).strip()
-                break
+                api_key = str(st.secrets[k]).strip(); break
         for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"]:
             if k in st.secrets:
-                client_id = str(st.secrets[k]).strip()
-                break
+                client_id = str(st.secrets[k]).strip(); break
         for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"]:
             if k in st.secrets:
-                password = str(st.secrets[k]).strip()
-                break
+                password = str(st.secrets[k]).strip(); break
         for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
             if k in st.secrets:
-                totp_secret = str(st.secrets[k]).strip()
-                break
-        
+                totp_secret = str(st.secrets[k]).strip(); break
         if not api_key or not client_id:
-            return 0, "ANGEL_KEYS_MISSING_CHECK_SECRETS", False
-        
+            return 0, "ANGEL_KEYS_MISSING", False
         try:
             from SmartApi import SmartConnect
             import pyotp
             import requests
             import re
-            from datetime import datetime
         except ImportError as e:
-            return 0, f"LIB_MISSING_{str(e)[:30]}_ADD_TO_REQUIREMENTS", False
-        
-        # Login
+            return 0, f"LIB_MISSING_{str(e)[:20]}", False
         totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
         obj = SmartConnect(api_key=api_key)
-        session_data = obj.generateSession(client_id, password, totp_code)
-        if not (session_data and session_data.get("status") == True):
-            return 0, f"ANGEL_LOGIN_FAIL_{str(session_data)[:60]}", False
-        
-        # Fetch master
-        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        data = obj.generateSession(client_id, password, totp_code)
+        if not (data and data.get("status") == True):
+            return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
         try:
-            mr = requests.get(master_url, timeout=15)
+            master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+            mr = requests.get(master_url, timeout=12)
             if mr.status_code != 200:
-                return 0, f"MASTER_HTTP_{mr.status_code}", False
+                return 0, "MASTER_FETCH_FAILED", False
             instruments = mr.json()
-        except Exception as e:
-            return 0, f"MASTER_FETCH_EXC_{str(e)[:60]}", False
-        
-        # Normalize inputs
-        symbol = symbol.upper().strip()
-        target_strike = int(float(strike))
-        target_opt = opt_type.upper().strip()
-        if target_opt == "C":
-            target_opt = "CE"
-        if target_opt == "P":
-            target_opt = "PE"
-        
-        # Parse target expiry
-        target_exp_dt = None
-        target_exp_formats = []
-        try:
-            exp_str = str(expiry).strip()
-            # Try multiple date formats
-            for fmt in ["%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%d-%B-%Y", "%Y-%m-%d", "%d %b %y", "%d-%b-%y", "%d/%m/%Y", "%d-%m-%Y"]:
-                try:
-                    target_exp_dt = datetime.strptime(exp_str, fmt)
-                    break
-                except:
-                    continue
-            if not target_exp_dt:
-                # Try expiry_norm helper if exists
-                try:
-                    if 'expiry_norm' in globals():
-                        exp_norm = expiry_norm(expiry)
-                        if exp_norm:
-                            target_exp_dt = datetime.strptime(exp_norm, "%Y-%m-%d")
-                except:
-                    pass
-            
-            if target_exp_dt:
-                # Create multiple string formats for matching
-                target_exp_formats = [
-                    target_exp_dt.strftime("%d%b%Y").upper(),      # 03NOV2026
-                    target_exp_dt.strftime("%d%b%y").upper(),       # 03NOV26
-                    target_exp_dt.strftime("%d-%b-%Y").upper(),     # 03-NOV-2026
-                    target_exp_dt.strftime("%d%b%y").upper(),       # 03NOV26
-                    target_exp_dt.strftime("%d%m%Y"),                # 03112026
-                    target_exp_dt.strftime("%Y-%m-%d"),             # 2026-11-03
-                    target_exp_dt.strftime("%d%b").upper(),         # 03NOV
-                    str(target_exp_dt.day),                         # 3 or 03
-                ]
-        except Exception as e:
-            target_exp_dt = None
-        
-        # Determine search label and name filter
-        if symbol == "NIFTY":
-            search_label = "NIFTY"
-            valid_names = ["NIFTY"]
-            invalid_substrings = ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "NIFTYNXT", "NIFTY50"]
-        elif symbol == "BANKNIFTY":
-            search_label = "BANKNIFTY"
-            valid_names = ["BANKNIFTY"]
-            invalid_substrings = []
-        elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
-            search_label = "FINNIFTY"
-            valid_names = ["FINNIFTY"]
-            invalid_substrings = []
-        elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
-            search_label = "MIDCPNIFTY"
-            valid_names = ["MIDCPNIFTY"]
-            invalid_substrings = []
-        elif symbol in ["SENSEX", "BSESN"]:
-            search_label = "SENSEX"
-            valid_names = ["SENSEX"]
-            invalid_substrings = []
-        else:
-            search_label = symbol
-            valid_names = [symbol]
-            invalid_substrings = []
-        
-        # === V39: STRUCTURED MATCHING ===
-        candidates = []
-        debug_info = {"total": len(instruments), "filtered_name": 0, "filtered_fut": 0, "filtered_strike": 0, "filtered_opt": 0}
-        
-        for inst in instruments:
-            if not isinstance(inst, dict):
-                continue
-            
-            # Exchange segment must be NFO or BFO
-            exch_seg = str(inst.get("exch_seg", "")).upper()
-            if exch_seg not in ["NFO", "BFO"]:
-                continue
-            
-            # Instrument type - must be OPT, not FUT
-            inst_type = str(inst.get("instrumenttype", "")).upper()
-            if inst_type:
-                if "FUT" in inst_type:
-                    debug_info["filtered_fut"] += 1
-                    continue  # Skip futures - was causing 2000+ bug
-                if "OPT" not in inst_type and inst_type not in ["", "OPTIDX", "OPTSTK"]:
-                    # Allow empty or OPT types only
-                    if inst_type not in ["OPTIDX", "OPTSTK", ""]:
-                        continue
-            
-            # Symbol and name
-            tradingsym = str(inst.get("symbol", "")).strip()
-            tradingsym_upper = tradingsym.upper()
-            inst_name = str(inst.get("name", "")).upper().strip()
-            
-            # Name filter
-            if valid_names:
-                if inst_name and inst_name not in valid_names:
-                    # Allow if tradingsym starts with search_label and name is empty or same
-                    if not tradingsym_upper.startswith(search_label):
-                        debug_info["filtered_name"] += 1
-                        continue
-                # Check invalid substrings
-                is_invalid = False
-                for inv in invalid_substrings:
-                    if inv in tradingsym_upper or inv in inst_name:
-                        is_invalid = True
-                        break
-                if is_invalid:
-                    debug_info["filtered_name"] += 1
-                    continue
-            
-            # Strike check - use structured field first
-            inst_strike_raw = inst.get("strike")
-            extracted_strike = None
-            
-            if inst_strike_raw is not None and str(inst_strike_raw).strip() not in ["", "-1", "-1.000000", "0", "0.000000"]:
-                try:
-                    s_val = float(inst_strike_raw)
-                    # Angel stores strike sometimes as 2310000 (23050*100) or 23100
-                    if s_val > 100000:  # Likely *100
-                        s_val = s_val / 100.0
-                    # Also sometimes *1000?
-                    if s_val > 100000:
-                        s_val = s_val / 10.0
-                    extracted_strike = int(round(s_val))
-                except:
-                    extracted_strike = None
-            
-            # Fallback to parsing from trading symbol if structured fails
-            if extracted_strike is None:
-                # Try regex: symbol ends with strike + CE/PE
-                # Formats: NIFTY09NOV2623100CE, NIFTY 09NOV26 23100 CE, NIFTY23100CE
-                m_patterns = [
-                    r'(\d{4,6})\s*(CE|PE)\s*$',  # 23100 CE at end
-                    r'(\d{4,6})(CE|PE)$',          # 23100CE at end
-                    r'\s(\d{4,6})\s+(CE|PE)',     # space 23100 space CE
-                    r'(C|P)\s*(\d{4,6})\s*$',     # C23100 at end
-                ]
-                for pat in m_patterns:
-                    m = re.search(pat, tradingsym_upper)
-                    if m:
-                        try:
-                            # Find which group is strike
-                            for g in m.groups():
-                                if g and g.isdigit() and len(g) >= 4:
-                                    extracted_strike = int(g)
-                                    break
-                        except:
-                            pass
-                        if extracted_strike:
-                            break
-                
-                # Last resort: check if target strike appears as whole word
-                if extracted_strike is None:
-                    if re.search(rf'\b{target_strike}\b', tradingsym_upper):
-                        extracted_strike = target_strike
-            
-            if extracted_strike is None:
-                debug_info["filtered_strike"] += 1
-                continue
-            
-            if extracted_strike != target_strike:
-                debug_info["filtered_strike"] += 1
-                continue
-            
-            # Option type check
-            inst_opt = None
-            # From trading symbol
-            if "CE" in tradingsym_upper:
-                inst_opt = "CE"
-            elif "PE" in tradingsym_upper:
-                inst_opt = "PE"
-            elif tradingsym_upper.endswith("C"):
-                inst_opt = "CE"
-            elif tradingsym_upper.endswith("P"):
-                inst_opt = "PE"
-            
-            if inst_opt and inst_opt != target_opt:
-                debug_info["filtered_opt"] += 1
-                continue
-            
-            # Expiry scoring
-            exp_score = 0
-            inst_expiry_raw = str(inst.get("expiry", "")).strip()
-            
-            if target_exp_dt and inst_expiry_raw:
-                try:
-                    # Parse inst expiry
-                    inst_exp_dt = None
-                    # Try multiple formats
-                    for fmt in ["%d%b%Y", "%d%b%y", "%d-%b-%Y", "%Y-%m-%d", "%d%m%Y", "%d-%b-%y", "%d %b %Y"]:
-                        try:
-                            # Clean expiry string
-                            clean_exp = inst_expiry_raw.replace(" ", "").upper()
-                            inst_exp_dt = datetime.strptime(clean_exp, fmt)
-                            break
-                        except:
-                            try:
-                                inst_exp_dt = datetime.strptime(inst_expiry_raw, fmt)
-                                break
-                            except:
-                                continue
-                    
-                    # Try from trading symbol if not from expiry field
-                    if not inst_exp_dt:
-                        m_exp = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', tradingsym_upper)
-                        if m_exp:
-                            day = m_exp.group(1)
-                            mon = m_exp.group(2)
-                            yr = m_exp.group(3)
-                            if len(yr) == 2:
-                                yr_full = "20" + yr if int(yr) < 50 else "19" + yr
-                            else:
-                                yr_full = yr
-                            exp_str_sym = f"{day}{mon}{yr_full}"
-                            try:
-                                inst_exp_dt = datetime.strptime(exp_str_sym, "%d%b%Y")
-                            except:
-                                pass
-                    
-                    if inst_exp_dt and target_exp_dt:
-                        if inst_exp_dt.date() == target_exp_dt.date():
-                            exp_score = 100
-                        elif inst_exp_dt.month == target_exp_dt.month and inst_exp_dt.year == target_exp_dt.year:
-                            exp_score = 80 - abs(inst_exp_dt.day - target_exp_dt.day)
-                        elif inst_exp_dt.month == target_exp_dt.month:
-                            exp_score = 30
-                        else:
-                            exp_score = 5
-                    else:
-                        # Fallback: check month in symbol
-                        if target_exp_dt.strftime("%b").upper() in tradingsym_upper or target_exp_dt.strftime("%b").upper() in inst_expiry_raw.upper():
-                            exp_score = 20
-                        else:
-                            exp_score = 1
-                except:
-                    exp_score = 1
+            symbol = symbol.upper().strip()
+            if symbol == "NIFTY":
+                def is_match(sym):
+                    sym_u = sym.upper()
+                    if "FINNIFTY" in sym_u or "BANKNIFTY" in sym_u or "MIDCPNIFTY" in sym_u or "NIFTYNXT" in sym_u:
+                        return False
+                    return sym_u.startswith("NIFTY") and str(strike) in sym_u and opt_type.upper() in sym_u
+                search_label = "NIFTY"
+            elif symbol == "BANKNIFTY":
+                def is_match(sym):
+                    return "BANKNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "BANKNIFTY"
+            elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
+                def is_match(sym):
+                    sym_u = sym.upper()
+                    return ("FINNIFTY" in sym_u or (sym_u.startswith("FIN") and "NIFTY" in sym_u)) and str(strike) in sym_u and opt_type.upper() in sym_u
+                search_label = "FINNIFTY"
+            elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
+                def is_match(sym):
+                    return "MIDCPNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "MIDCPNIFTY"
+            elif symbol in ["SENSEX", "BSESN"]:
+                def is_match(sym):
+                    return "SENSEX" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "SENSEX"
             else:
-                # No target expiry, use generic scoring
-                exp_score = 10
-                if target_exp_dt:
-                    # Try to find month/day in symbol
-                    if target_exp_dt.strftime("%b").upper() in tradingsym_upper:
-                        exp_score += 10
-            
-            candidates.append((exp_score, inst, tradingsym, inst_expiry_raw))
-        
-        # Sort by expiry score descending
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        
-        # Try to fetch LTP for top candidates with sanity check
-        for score, inst, tradingsym, inst_expiry in candidates[:25]:
-            token = str(inst.get("token", ""))
-            exch = str(inst.get("exch_seg", "NFO"))
+                def is_match(sym):
+                    return symbol in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = symbol
+            target_exp_norm = ""
             try:
-                ltp_data = obj.ltpData(exch, tradingsym, token)
-                if ltp_data and ltp_data.get("status") == True:
-                    ltp_val = ltp_data.get("data", {}).get("ltp")
-                    if ltp_val is not None:
-                        try:
-                            f_ltp = float(ltp_val)
-                            if f_ltp <= 0:
-                                continue
-                            
-                            # === V39 LTP SANITY CHECK ===
-                            # For NIFTY 23100 CE with spot ~22900, LTP should be:
-                            # - OTM CE: 20-200 (since 23100 > 22900)
-                            # - ATM: 80-200
-                            # - ITM: intrinsic + time, max maybe 500-1000 for weekly
-                            # 2688 is for deep ITM 20200 CE (intrinsic 2723) - WRONG
-                            # So for 23100 CE (OTM), LTP >500 is suspicious, >1000 is wrong
-                            # For safety: if target strike is OTM CE (strike > spot), LTP should be <1000
-                            # We'll allow up to 3000 but log warning
-                            
-                            # Get current spot if available (from global or fetch)
-                            # For now, simple sanity: option LTP should be < 5000, futures ~22900
-                            if f_ltp > 5000:
-                                # Likely futures, skip
-                                continue
-                            
-                            # Additional check: if strike is far OTM (23100 vs spot 22900, 177 OTM), LTP should be < 300
-                            # If LTP 2688 for 23100 CE, it's definitely wrong (that's for 20200 CE)
-                            # So if target strike > 23000 and f_ltp > 1000 for CE, likely wrong instrument
-                            # We'll still return but with warning in source string
-                            warning = ""
-                            if f_ltp > 1500 and target_strike > 22000:
-                                # For NIFTY, 23100 CE should not be >1500 when spot 22900
-                                # This indicates matching 20200 CE (deep ITM)
-                                # Skip this candidate
-                                if target_strike >= 23000 and target_opt == "CE":
-                                    # 23100 CE is OTM, should be < 300, not 2688
-                                    continue
-                            
-                            return f_ltp, f"ANGEL_V39_{search_label}_{target_strike}{target_opt}_SCORE_{score}_EXP_{inst_expiry}_{tradingsym}_{f_ltp}", True
-                        except:
-                            continue
-            except Exception as e:
-                continue
-        
-        # If no valid LTP found, return debug info
-        sample_sym = candidates[0][2] if candidates else "NO_CANDIDATES"
-        return 0, f"NO_LTP_V39_{search_label}_{target_strike}{target_opt}_CAND_{len(candidates)}_FILT_{debug_info}_SAMPLE_{sample_sym[:50]}", False
-    
-    except Exception as e:
-        import traceback
-        return 0, f"EXC_V39_{str(e)[:150]}_{traceback.format_exc()[:100]}", False
-
-
-
-def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    """V39 wrapper - calls audited engine"""
-    return get_live_premium_V39_FINAL(symbol, strike, opt_type, expiry)
-
-def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
-    """V39 wrapper"""
-    return get_live_premium_V39_FINAL(symbol, strike, opt_type, expiry)
-
-
-def get_nse_ltp_proxy_V39(symbol="NIFTY", strike=23100, opt_type="CE", expiry="03 Nov 2026"):
-    """
-    V39: NSE proxy fallback with proper expiry matching
-    Uses allorigins proxy to bypass NSE IP block on Streamlit Cloud
-    """
-    try:
-        import requests
-        import json
-        import urllib.parse
-        from datetime import datetime
-        
-        target_strike = int(strike)
-        target_opt = opt_type.upper()
-        
-        # Parse target expiry
-        target_exp_dt = None
-        try:
-            exp_str = str(expiry).strip()
-            for fmt in ["%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%Y-%m-%d"]:
+                target_exp_norm = expiry_norm(expiry) if expiry else ""
+                target_exp_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d") if target_exp_norm else None
+            except:
+                target_exp_dt = None
+            candidates = []
+            for inst in instruments:
+                if not isinstance(inst, dict):
+                    continue
+                sym = str(inst.get("symbol", "")).upper()
+                if not is_match(sym):
+                    continue
+                if inst.get("exch_seg") not in ["NFO", "BFO"]:
+                    continue
+                exp_score = 0
+                if target_exp_dt:
+                    try:
+                        m = re.search(r"(\d{2})([A-Z]{3})(\d{2,4})", sym)
+                        if m:
+                            if target_exp_dt.strftime("%b").upper() in sym:
+                                exp_score += 10
+                            if str(target_exp_dt.day) in sym:
+                                exp_score += 5
+                            if str(target_exp_dt.year)[-2:] in sym or str(target_exp_dt.year) in sym:
+                                exp_score += 3
+                    except:
+                        pass
+                else:
+                    exp_score = 1
+                candidates.append((exp_score, inst))
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            for score, inst in candidates[:10]:
+                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
                 try:
-                    target_exp_dt = datetime.strptime(exp_str, fmt)
-                    break
+                    ltp_data = obj.ltpData(exch, sym, token)
+                    if ltp_data and ltp_data.get("status") == True:
+                        ltp_val = ltp_data.get("data", {}).get("ltp")
+                        if ltp_val and float(ltp_val) > 0:
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}{expiry.replace('-','').upper() if expiry else ''}{strike}{opt_type.upper()}_{ltp_val}", True
                 except:
                     continue
-        except:
-            pass
-        
-        # Try proxies
-        proxies = [
-            "https://api.allorigins.win/raw?url=",
-            "https://corsproxy.io/?url=",
-        ]
-        
-        nse_url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
-        
-        for proxy_base in proxies:
-            try:
-                full_url = proxy_base + urllib.parse.quote(nse_url, safe='')
-                r = requests.get(full_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-                if r.status_code == 200:
-                    try:
-                        data = r.json()
-                    except:
-                        try:
-                            data = json.loads(r.text)
-                        except:
-                            continue
-                    
-                    # Find matching expiry and strike
-                    # NSE data has records.data with expiryDates and strikePrice
-                    records = data.get("records", {})
-                    expiry_dates = records.get("expiryDates", [])
-                    
-                    # Find target expiry in NSE format
-                    target_exp_nse = None
-                    if target_exp_dt:
-                        # NSE format: 03-Nov-2026 or 30-Oct-2025
-                        target_exp_nse = target_exp_dt.strftime("%d-%b-%Y")
-                    
-                    # Get data for all expiries or filter by target
-                    for item in records.get("data", []):
-                        item_exp = item.get("expiryDate", "")
-                        # If target expiry specified, filter
-                        if target_exp_nse and item_exp != target_exp_nse:
-                            # Try flexible matching
-                            if target_exp_dt and target_exp_dt.strftime("%b").lower() not in item_exp.lower():
-                                continue
-                        
-                        if item.get("strikePrice") == target_strike:
-                            opt_data = item.get(target_opt, {})
-                            if not opt_data:
-                                # Try CE/PE vs ce/pe
-                                opt_data = item.get(target_opt.lower(), {})
-                            ltp = opt_data.get("lastPrice", 0)
-                            if ltp and float(ltp) > 0:
-                                f_ltp = float(ltp)
-                                # Sanity check
-                                if f_ltp > 5000:
-                                    continue
-                                return f_ltp, f"NSE_PROXY_V39_{symbol}_{target_strike}{target_opt}_{item_exp}_{f_ltp}", True
-                    
-                    # If exact expiry not found, try without expiry filter (nearest)
-                    for item in records.get("data", []):
-                        if item.get("strikePrice") == target_strike:
-                            opt_data = item.get(target_opt, {})
-                            ltp = opt_data.get("lastPrice", 0)
-                            if ltp and float(ltp) > 0:
-                                f_ltp = float(ltp)
-                                if f_ltp > 5000:
-                                    continue
-                                return f_ltp, f"NSE_PROXY_NEAR_{symbol}_{target_strike}{target_opt}_{item.get('expiryDate','')}_{f_ltp}", True
-            except Exception as e:
-                continue
-        
-        return 0, "NSE_PROXY_V39_ALL_FAILED", False
+            for score, inst in candidates[:20]:
+                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
+                try:
+                    ltp_data = obj.ltpData(exch, sym, token)
+                    if ltp_data and ltp_data.get("status") == True:
+                        ltp_val = ltp_data.get("data", {}).get("ltp")
+                        if ltp_val and float(ltp_val) > 0:
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}_FALLBACK_{strike}{opt_type}_{ltp_val}", True
+                except:
+                    continue
+            return 0, f"NO_LTP_FOUND_{search_label}_{strike}{opt_type}", False
+        except Exception as e:
+            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:50]}", False
     except Exception as e:
-        return 0, f"NSE_PROXY_EXC_{str(e)[:80]}", False
+        return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
 
 
-def get_live_premium_V39_FINAL(symbol, strike, opt_type, expiry):
+def get_live_premium_V20_FINAL_OLD_DISABLED(symbol, strike, opt_type, expiry):
     """
-    V39 FINAL: Angel first, then NSE proxy, then 0 with clear message
+    V20: Tries Angel first (100% broker matched), then proxy, then NSE
     """
-    # Try Angel first
-    ltp, src, ok = get_angel_ltp_V39_AUDITED(symbol, strike, opt_type, expiry)
+    # Try Angel first - 100% broker matched, works on Cloud
+    ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
     if ok and ltp > 0:
         return ltp, src, True
     
-    # If Angel missing keys, try NSE proxy
-    if "KEYS_MISSING" in src or "NO_LTP" in src or "NO_MATCH" in src:
-        ltp2, src2, ok2 = get_nse_ltp_proxy_V39(symbol, strike, opt_type, expiry)
-        if ok2 and ltp2 > 0:
-            return ltp2, src2, True
+    # If Angel keys missing, try proxy
+    ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
+    if ok2 and ltp2 > 0:
+        return ltp2, src2, True
     
-    # Both failed
+    # Try ultimate
+    try:
+        ltp3, src3, ok3 = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
+        if ok3 and ltp3 > 0:
+            return ltp3, src3, True
+    except:
+        pass
+    
+    # All failed - return 0 with clear message
+    if "ANGEL_KEYS_MISSING" in src:
+        return 0, "ADD_ANGEL_KEYS_IN_SECRETS_FOR_108.20", False
     return 0, src, False
-
 
 
 def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
@@ -4390,12 +3597,7 @@ if "paper_portfolio" not in st.session_state:
 
 def check_daily_reset():
     today_str = datetime.now(IST).date().isoformat()
-    # V33: Safe check with get
-    try:
-        pp_date = get_paper_portfolio_safe().get("session_date")
-    except:
-        pp_date = None
-    if pp_date != today_str:
+    if st.session_state.paper_portfolio.get("session_date") != today_str:
         st.session_state.paper_portfolio["session_date"] = today_str
         st.session_state.paper_portfolio["daily_realized_pnl"] = 0.0
         st.session_state.paper_portfolio["circuit_broken"] = False
@@ -4474,311 +3676,6 @@ def get_nse_session() -> NSEExchangeSession:
     return NSEExchangeSession()
 
 nse_client = get_nse_session()
-
-# ===== V21 TURBO DATA FIX - NSE BLOCK FIX FOR STREAMLIT CLOUD =====
-import random as _rand_v21
-_V21_UAS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-]
-
-def _v21_yahoo(symbol):
-    try:
-        import requests as _rq
-        mp = {"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK","FINNIFTY":"^NSEBANK","SENSEX":"^BSESN","INDIA_VIX":"^INDIAVIX"}
-        ysym = mp.get(symbol,"^NSEI")
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}?interval=1m&range=1d"
-        r = _rq.get(url, headers={"User-Agent": _rand_v21.choice(_V21_UAS)}, timeout=4)
-        if r.status_code==200:
-            j=r.json()
-            p=j['chart']['result'][0]['meta']['regularMarketPrice']
-            if p and float(p)>0:
-                return float(p)
-    except:
-        pass
-    return None
-
-def _v21_proxy_spot(symbol):
-    try:
-        import requests as _rq, json as _js, urllib.parse as _up
-        pu = f"https://api.allorigins.win/raw?url={_up.quote('https://www.nseindia.com/api/allIndices', safe='')}"
-        r=_rq.get(pu, timeout=6, headers={"User-Agent": _rand_v21.choice(_V21_UAS)})
-        if r.status_code==200:
-            data=_js.loads(r.text)
-            if "data" in data:
-                chk="NIFTY 50" if symbol=="NIFTY" else ("NIFTY BANK" if symbol=="BANKNIFTY" else symbol)
-                for it in data["data"]:
-                    if chk in str(it.get("index","")).upper() or chk in str(it.get("indexSymbol","")).upper():
-                        try:
-                            fv=float(it.get("last"))
-                            if fv>0:
-                                return fv
-                        except:
-                            pass
-    except:
-        pass
-    return None
-
-# Override fetch_verified_spot with turbo version
-def fetch_verified_spot(symbol: str):
-    now_str=datetime.now(IST).strftime("%H:%M:%S IST")
-    try:
-        ck=f"_spot_{symbol}"
-        if ck in _spot_cache_v19:
-            val,ts=_spot_cache_v19[ck]
-            import time as _tt
-            if _tt.time()-ts<2 and val and val>0:
-                return {"price":val,"change":0.0,"p_change":0.0,"source":"CACHE","status":"CACHED","timestamp":now_str}
-    except:
-        pass
-    yp=_v21_yahoo(symbol)
-    if yp and yp>0:
-        try:
-            _spot_cache_v19[f"_spot_{symbol}"]=(yp,time.time())
-        except:
-            pass
-        return {"price":yp,"change":0.0,"p_change":0.0,"source":"YAHOO","status":"LIVE_YAHOO","timestamp":now_str}
-    pp=_v21_proxy_spot(symbol)
-    if pp and pp>0:
-        try:
-            _spot_cache_v19[f"_spot_{symbol}"]=(pp,time.time())
-        except:
-            pass
-        return {"price":pp,"change":0.0,"p_change":0.0,"source":"PROXY","status":"LIVE_PROXY","timestamp":now_str}
-    for _ in range(2):
-        try:
-            import requests as _rq
-            sess=_rq.Session()
-            sess.headers.update({"User-Agent":_rand_v21.choice(_V21_UAS),"Referer":"https://www.nseindia.com/option-chain"})
-            try:
-                sess.get("https://www.nseindia.com", timeout=3)
-            except:
-                pass
-            ts=int(time.time()*1000)
-            url=f"https://www.nseindia.com/api/allIndices?_={ts}"
-            r=sess.get(url, timeout=5)
-            if r.status_code==200:
-                data=r.json()
-                if "data" in data:
-                    chk="NIFTY BANK" if symbol=="BANKNIFTY" else ("NIFTY 50" if symbol=="NIFTY" else symbol)
-                    for it in data["data"]:
-                        if str(it.get("indexSymbol","")).upper()==chk or str(it.get("index","")).upper()==chk:
-                            try:
-                                fv=float(it.get("last"))
-                                if fv>0:
-                                    try:
-                                        _spot_cache_v19[f"_spot_{symbol}"]=(fv,time.time())
-                                    except:
-                                        pass
-                                    return {"price":fv,"change":float(it.get("variation",0)),"p_change":float(it.get("percentChange",0)),"source":"NSE","status":"LIVE_NSE","timestamp":now_str}
-                            except:
-                                pass
-        except:
-            time.sleep(0.2)
-            continue
-    try:
-        ck=f"_spot_{symbol}"
-        if ck in _spot_cache_v19:
-            val,_=_spot_cache_v19[ck]
-            if val and val>0:
-                return {"price":val,"change":0.0,"p_change":0.0,"source":"STALE","status":"STALE","timestamp":now_str}
-    except:
-        pass
-    return {"price":None,"change":0.0,"p_change":0.0,"source":"FAILED","status":"FAILED","timestamp":now_str}
-
-def get_spot(symbol: str):
-    try:
-        res = fetch_verified_spot(symbol)
-        p = res.get("price")
-        if p is None or p <= 0:
-            # Try cache fallback
-            try:
-                ck = f"_spot_{symbol}"
-                if ck in _spot_cache_v19:
-                    val, ts = _spot_cache_v19[ck]
-                    if val and val > 0:
-                        return float(val)
-            except:
-                pass
-            # Last resort - try Yahoo direct
-            try:
-                y = _v21_yahoo(symbol)
-                if y and y > 0:
-                    return float(y)
-            except:
-                pass
-        return p
-    except:
-        return None
-
-def get_spot_safe_for_display(symbol: str):
-    try:
-        p = get_spot(symbol)
-        if p and p > 0:
-            return float(p)
-        return 0.0
-    except:
-        return 0.0
-
-def get_spot_cached(symbol):
-    return get_spot(symbol)
-
-def get_chain(symbol: str, expiry):
-    try:
-        url=f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
-        raw=nse_client.get_json(url)
-        if raw and isinstance(raw, dict):
-            rec=raw.get("records",{})
-            items=rec.get("data",[])
-            if items:
-                import pandas as pd
-                rows=[]
-                sync_tag=datetime.now(IST).strftime("%H:%M:%S")
-                for item in items:
-                    strike=item.get("strikePrice")
-                    try:
-                        sf=float(strike)
-                    except:
-                        continue
-                    if "CE" in item and isinstance(item["CE"], dict):
-                        ce=item["CE"]
-                        rows.append({"strikePrice":sf,"option_type":"CE","lastPrice":float(ce.get("lastPrice",0) or 0),"openInterest":int(ce.get("openInterest",0) or 0),"changeinOpenInterest":int(ce.get("changeinOpenInterest",0) or 0),"change":float(ce.get("change",0) or 0),"impliedVolatility":float(ce.get("impliedVolatility",0) or 0),"bidQty":0,"bidprice":0,"askQty":0,"askPrice":0,"lastUpdateTime":sync_tag,"expiryDate":item.get("expiryDate",expiry),"price_source":"NSE_LIVE"})
-                    if "PE" in item and isinstance(item["PE"], dict):
-                        pe=item["PE"]
-                        rows.append({"strikePrice":sf,"option_type":"PE","lastPrice":float(pe.get("lastPrice",0) or 0),"openInterest":int(pe.get("openInterest",0) or 0),"changeinOpenInterest":int(pe.get("changeinOpenInterest",0) or 0),"change":float(pe.get("change",0) or 0),"impliedVolatility":float(pe.get("impliedVolatility",0) or 0),"bidQty":0,"bidprice":0,"askQty":0,"askPrice":0,"lastUpdateTime":sync_tag,"expiryDate":item.get("expiryDate",expiry),"price_source":"NSE_LIVE"})
-                if rows:
-                    import pandas as pd
-                    df=pd.DataFrame(rows)
-                    return df, df.copy()
-    except:
-        pass
-    try:
-        import requests as _rq, json as _js, urllib.parse as _up
-        chain_url=f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
-        proxy_url=f"https://api.allorigins.win/raw?url={_up.quote(chain_url, safe='')}"
-        r=_rq.get(proxy_url, timeout=8, headers={"User-Agent":_rand_v21.choice(_V21_UAS)})
-        if r.status_code==200:
-            data=_js.loads(r.text)
-            if isinstance(data, dict) and "records" in data:
-                rec=data.get("records",{})
-                items=rec.get("data",[])
-                rows=[]
-                sync_tag=datetime.now(IST).strftime("%H:%M:%S")
-                for item in items:
-                    strike=item.get("strikePrice")
-                    try:
-                        sf=float(strike)
-                    except:
-                        continue
-                    if "CE" in item and isinstance(item["CE"], dict):
-                        ce=item["CE"]
-                        rows.append({"strikePrice":sf,"option_type":"CE","lastPrice":float(ce.get("lastPrice",0) or 0),"openInterest":int(ce.get("openInterest",0) or 0),"changeinOpenInterest":int(ce.get("changeinOpenInterest",0) or 0),"change":float(ce.get("change",0) or 0),"impliedVolatility":float(ce.get("impliedVolatility",0) or 0),"bidQty":0,"bidprice":0,"askQty":0,"askPrice":0,"lastUpdateTime":sync_tag,"expiryDate":item.get("expiryDate",expiry),"price_source":"PROXY"})
-                    if "PE" in item and isinstance(item["PE"], dict):
-                        pe=item["PE"]
-                        rows.append({"strikePrice":sf,"option_type":"PE","lastPrice":float(pe.get("lastPrice",0) or 0),"openInterest":int(pe.get("openInterest",0) or 0),"changeinOpenInterest":int(pe.get("changeinOpenInterest",0) or 0),"change":float(pe.get("change",0) or 0),"impliedVolatility":float(pe.get("impliedVolatility",0) or 0),"bidQty":0,"bidprice":0,"askQty":0,"askPrice":0,"lastUpdateTime":sync_tag,"expiryDate":item.get("expiryDate",expiry),"price_source":"PROXY"})
-                if rows:
-                    import pandas as pd
-                    df=pd.DataFrame(rows)
-                    return df, df.copy()
-    except:
-        pass
-    import pandas as pd
-    empty=pd.DataFrame()
-    return empty, empty.copy()
-
-def get_chain_cached(symbol, expiry):
-    return get_chain(symbol, expiry)
-
-def get_india_vix():
-    try:
-        vix_data=fetch_verified_spot("INDIA_VIX")
-        vix=vix_data.get("price")
-        if vix is None or vix<=0:
-            vix=_v21_yahoo("INDIA_VIX")
-            if not vix:
-                vix=13.5
-        regime="NORMAL"
-        if vix:
-            if vix<12:
-                regime="LOW_VOL"
-            elif vix>20:
-                regime="HIGH_VOL"
-            elif vix>16:
-                regime="ELEVATED"
-        return {"vix":vix,"regime":regime,"source":"V21_TURBO","timestamp":datetime.now(IST).strftime("%H:%M:%S IST")}
-    except:
-        return {"vix":13.5,"regime":"NORMAL","source":"FALLBACK","timestamp":datetime.now(IST).strftime("%H:%M:%S IST")}
-# ===== END V21 TURBO =====
-
-# ===== V22 ULTRA FAST TELEGRAM & MARKET RESPONSE =====
-from concurrent.futures import ThreadPoolExecutor as _TPE_V22
-import threading as _threading_v22
-
-_telegram_executor_v22 = _TPE_V22(max_workers=8)
-_telegram_last_sent_v22 = {}
-_telegram_bot_cache_v22 = {"token": None, "chat": None, "time": 0}
-
-def _v22_get_bot_cached():
-    try:
-        import time as _tt
-        now = _tt.time()
-        if _telegram_bot_cache_v22["token"] and now - _telegram_bot_cache_v22["time"] < 30:
-            return _telegram_bot_cache_v22["token"], _telegram_bot_cache_v22["chat"]
-        t, c = get_telegram_keys()
-        if t and c:
-            _telegram_bot_cache_v22["token"] = t
-            _telegram_bot_cache_v22["chat"] = c
-            _telegram_bot_cache_v22["time"] = now
-            return t, c
-    except:
-        pass
-    return None, None
-
-def _v22_ultra_send_raw(bot_token, chat_id, message):
-    try:
-        import requests as _rq
-        # Ultra fast - no fancy parsing, direct send
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True
-        }
-        # Fast timeout 3 sec
-        r = _rq.post(url, json=payload, timeout=3)
-        return r.status_code == 200
-    except Exception as e:
-        print(f"Ultra send fail {e}")
-        return False
-
-def ultra_fast_telegram_send(message, force=False):
-    """V22 ULTRA FAST - Non-blocking telegram send in background thread"""
-    try:
-        bot_t, chat_t = _v22_get_bot_cached()
-        if not bot_t or not chat_t:
-            return False
-        # Deduplicate - don't send same message within 2 sec
-        import time as _tt
-        msg_hash = hash(message[:100])
-        now = _tt.time()
-        if not force and msg_hash in _telegram_last_sent_v22:
-            if now - _telegram_last_sent_v22[msg_hash] < 2:
-                return True
-        _telegram_last_sent_v22[msg_hash] = now
-        # Send in background thread - INSTANT return
-        _telegram_executor_v22.submit(_v22_ultra_send_raw, bot_t, chat_t, message)
-        return True
-    except Exception as e:
-        print(f"Ultra fast queue fail {e}")
-        return False
-
-# Patch execute_paper_order to ultra fast
-def _v22_patch_execute_paper():
-    pass
-
-# ===== END V22 ULTRA FAST =====
-
-
 
 def secret(name: str) -> str:
     """V21: Robust secret finder - tries multiple cases"""
@@ -6149,7 +5046,7 @@ def calculate_trade_friction(buy_price: float, sell_price: float, qty: int, is_o
 # 17. STATEFUL PAPER-TRADING RISK CONTROLS & EXECUTION
 # =====================================================================
 def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float, is_equity: bool = False) -> Tuple[bool, str]:
-    port = get_paper_portfolio_safe()  # V33 safe
+    port = st.session_state.paper_portfolio
     check_daily_reset()
 
     if port.get("circuit_broken", False):
@@ -6180,60 +5077,7 @@ def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float, is_eq
 
 # ===== V33 REAL AUTO TRADING WITH ANGEL ONE - Direct Broker Execution =====
 
-
-def place_angel_real_order(symbol, strike, opt_type, expiry, quantity, order_type="BUY", price=0, idea=None, live_ltp=None):
-    """Production-grade wrapper with risk, kill switch, idempotency, audit log"""
-    try:
-        # Build idea dict if not provided
-        if idea is None:
-            idea = {"symbol": symbol, "strike": strike, "option": opt_type, "expiry": expiry, "entry": price, "sl": 0, "target1": 0, "target2": 0}
-        
-        # 1. Risk validation
-        if order_type == "BUY":
-            qty_lots = quantity // INDEX_METADATA.get(symbol, {}).get('lot_size', 50) if quantity else 1
-            ok, reason = risk_engine.validate_order(idea, qty_lots, live_ltp or price, is_real=True)
-            if not ok:
-                audit_log("WARN", "ORDER_REJECTED_RISK", reason)
-                return False, reason, None
-        
-        # 2. Kill switch
-        if order_type == "BUY" and is_kill_switch_active():
-            audit_log("CRITICAL", "ORDER_BLOCKED_KILL_SWITCH", f"{symbol} {strike}")
-            return False, "KILL SWITCH ACTIVE", None
-        
-        # 3. Idempotency
-        idem_key = f"{symbol}_{strike}_{opt_type}_{expiry}_{datetime.now(IST).strftime('%Y-%m-%d')}" if order_type == "BUY" else None
-        if idem_key and is_duplicate_order(idem_key):
-            return False, f"DUPLICATE REJECTED {idem_key}", None
-        
-        # 4. Call original
-        ok, msg, order_id = place_angel_real_order_original(symbol, strike, opt_type, expiry, quantity, order_type, price)
-        
-        # 5. Audit log and idempotency mark
-        if ok:
-            audit_log("INFO", f"ORDER_PLACED_{order_type}", f"{symbol} {strike} {opt_type} {quantity}@{price} ID {order_id}", order_id=order_id)
-            if idem_key:
-                mark_idempotency_key(idem_key)
-                # Also save to DB
-                try:
-                    with _db_lock:
-                        conn = sqlite3.connect(str(LEDGER_DB), timeout=5, check_same_thread=False)
-                        cur = conn.cursor()
-                        cur.execute("INSERT OR IGNORE INTO trades (trade_id, symbol, strike, option_type, expiry, qty, entry_price, status, is_real, order_id, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                   (str(uuid.uuid4()), symbol, strike, opt_type, expiry, quantity, price, "OPEN" if order_type=="BUY" else "CLOSED", 1, order_id, idem_key))
-                        conn.commit()
-                        conn.close()
-                except Exception as e:
-                    print(f"DB save error {e}")
-        else:
-            audit_log("ERROR", f"ORDER_FAILED_{order_type}", msg)
-        
-        return ok, msg, order_id
-    except Exception as e:
-        audit_log("ERROR", "ORDER_WRAPPER_EXCEPTION", str(e))
-        return False, f"Wrapper error: {e}", None
-
-def place_angel_real_order_original(symbol, strike, opt_type, expiry, quantity, order_type="BUY", price=0):
+def place_angel_real_order(symbol, strike, opt_type, expiry, quantity, order_type="BUY", price=0):
     """
     Place REAL order on Angel One via SmartAPI
     WARNING: This places REAL money order!
@@ -6407,24 +5251,31 @@ def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str,
 
     st.session_state.paper_portfolio["positions"][trade_id] = position_entry
     st.success(f"{CHECK} Paper Trade Placed #{trade_id}: {action} {symbol} {strike} {option_type} @ ₹{fill_price:,.2f} [Qty: {qty}]")
-    # V22 ULTRA FAST - Active Call Exit Rules Instant
     try:
-        msg_rules = f"🚀 ACTIVE CALL ENTRY\n\n📊 {symbol} {strike} {option_type}\n💰 Entry: Rs {fill_price:.2f} Qty: {qty}\n🛑 SL: Rs {sl:.2f}\n🎯 T1: Rs {t1:.2f}\n🎯 T2: Rs {t2:.2f}\n📅 {expiry}\n⏰ {datetime.now(IST).strftime('%H:%M:%S IST')}\n\n⚡ EXIT RULES ULTRA FAST:\n• SL {sl:.2f} = EXIT\n• T1 {t1:.2f} = 50% BOOK\n• T2 {t2:.2f} = FULL EXIT\n• 15:15 FORCE CLOSE\n\nID: {trade_id} | OPEN"
-        # Send ultra fast in background thread - returns instantly
-        ultra_fast_telegram_send(msg_rules, force=True)
-        # Also try direct for backup
-        try:
-            bot_t, chat_t = get_telegram_keys()
-            if bot_t and chat_t:
-                _telegram_executor_v22.submit(_v22_ultra_send_raw, bot_t, chat_t, msg_rules)
-        except:
-            pass
+        bot_t, chat_t = get_telegram_keys()
+        if bot_t and chat_t:
+            msg_rules = f"""ACTIVE CALL - ENTRY DONE
+Symbol {symbol} {strike} {option_type}
+Entry Rs {fill_price:.2f} Qty {qty}
+SL Rs {sl:.2f}
+T1 Rs {t1:.2f}
+T2 Rs {t2:.2f}
+Expiry {expiry}
+Time {datetime.now(IST).strftime('%H:%M:%S IST')}
+
+EXIT RULES INSTANT:
+- SL Rs {sl:.2f} -> EXIT
+- T1 Rs {t1:.2f} -> 50pct Book
+- T2 Rs {t2:.2f} -> FULL EXIT
+- 15:15 Force Close
+Trade ID {trade_id}"""
+            send_telegram_message(bot_t, chat_t, msg_rules)
     except Exception as e:
-        print(f"V22 active call fail {e}")
+        print(f"Active call telegram fail {e}")
     return True
 
 def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
-    port = get_paper_portfolio_safe()  # V33 safe
+    port = st.session_state.paper_portfolio
     if trade_id not in port["positions"]: return
 
     pos = port["positions"].pop(trade_id)
@@ -6443,12 +5294,6 @@ def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
     pos["exit_reason"] = exit_reason
     pos.update(costs)
 
-    # V22 ULTRA FAST EXIT TELEGRAM
-    try:
-        exit_msg = f"⚡ EXIT {pos.get('symbol')} {pos.get('strike')} {pos.get('option_type')} Entry Rs {pos.get('entry_price',0):.2f} -> Exit Rs {fill_exit:.2f} P&L Rs {costs.get('net_pnl',0):+.2f} Reason: {exit_reason} Time: {datetime.now(IST).strftime('%H:%M:%S IST')}"
-        ultra_fast_telegram_send(exit_msg, force=True)
-    except:
-        pass
     port["trade_history"].append(pos)
     port["daily_realized_pnl"] += costs["net_pnl"]
     port["cash_balance"] += costs["net_pnl"]
@@ -7761,20 +6606,6 @@ else:
     default_enable_real = ps_real.get('enable_real_trading', False)
     real_trading_qty = st.sidebar.number_input("Real Trading Qty (Lots)", min_value=1, max_value=10, value=default_qty, help="Number of lots for REAL trading - Persistent")
     enable_real_trading = st.sidebar.checkbox("⚠️ Enable REAL Money Trading", value=default_enable_real, help="WARNING: Places REAL orders with REAL money on Angel One! - Persistent, save hoga")
-    # V32 KILL SWITCH
-    try:
-        kill_active = is_kill_switch_active()
-        if kill_active:
-            st.sidebar.error('🚨 KILL SWITCH ACTIVE')
-            if st.sidebar.button('✅ Deactivate Kill Switch'):
-                deactivate_kill_switch()
-                st.rerun()
-        else:
-            if st.sidebar.button('🚨 KILL SWITCH - BLOCK BUY'):
-                activate_kill_switch('Manual')
-                st.rerun()
-    except Exception as e:
-        print(f'Kill UI error {e}')
     # Save real trading settings AFTER both defined
     try:
         save_persistent_settings({'enable_real_trading': enable_real_trading, 'real_trading_qty_lots': real_trading_qty, 'real_trading_qty': real_trading_qty})
@@ -7951,8 +6782,6 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         st.session_state['auto_real_entry_enabled'] = False
     
     st.sidebar.divider()
-    st.sidebar.info("🚀 V27 ULTRA FAST: 3-5 sec LIVE | Manual BUY (YES) + Auto EXIT Matrix | OTM Allowed ✅")
-    st.sidebar.divider()
 
     # V52 NEW: Render Pending Confirmations with YES/NO in MAIN AREA (bhai ka request - dummy click pe aata hai)
     def render_pending_confirmations_ui():
@@ -7988,7 +6817,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             st.markdown(f"""
                             **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}**
                             Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'}
-                            LTP: ₹{live_ltp:.2f} | Spot: {(spot or 0):.2f} | Qty: {qty} lots | Time: {time_str}
+                            LTP: ₹{live_ltp:.2f} | Spot: {spot:.2f} | Qty: {qty} lots | Time: {time_str}
                             """)
                             if not is_pass:
                                 st.error(f"Conviction {conv}% < Filter {min_conv}% - Isliye BLOCK hoga real me")
@@ -8030,15 +6859,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     # Call it before ticker
     render_pending_confirmations_ui()
 
-    @live_fragment(run_every=0.5)
-    def _instant_exit_v22():
-        try:
-            auto_check_and_exit_positions()
-        except:
-            pass
-    _instant_exit_v22()
-
-    @live_fragment(run_every=0.5)
+    @live_fragment(run_every=1)
     def _instant_exit_v19():
         try:
             auto_check_and_exit_positions()
@@ -8046,7 +6867,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             pass
     _instant_exit_v19()
 
-    @live_fragment(run_every=1)
+    @live_fragment(run_every=2)
     def _tg_poll_v19():
         try:
             handle_telegram_callback_query()
@@ -8061,7 +6882,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @live_fragment(run_every=1)
+    @live_fragment(run_every=2)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
@@ -8074,24 +6895,10 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         s1, s2, s3, s4 = st.columns(4)
         with s1:
-            try:
-                if spot is not None and spot > 0:
-                    st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(spot), delta="Verified Exchange Feed" if market_open() else "Official Session Close", delta_color="normal")
-                else:
-                    # Try fallback display
-                    try:
-                        fb = get_spot_safe_for_display(selected_underlying)
-                        if fb and fb > 0:
-                            st.metric(f"{selected_underlying} Spot (Yahoo Fallback)", fmt(fb), delta="Yahoo Finance", delta_color="normal")
-                        else:
-                            st.metric(f"{selected_underlying} Spot", "Syncing... " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds - Retrying")
-                    except:
-                        st.metric(f"{selected_underlying} Spot", "₹22800.00 " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds")
-            except Exception as e:
-                try:
-                    st.metric(f"{selected_underlying} Spot", "Error: " + str(e)[:30], delta="Retrying")
-                except:
-                    st.metric(f"{selected_underlying} Spot", "Syncing...", delta="Connecting")
+            if spot is not None and spot > 0:
+                st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(spot), delta="Verified Exchange Feed" if market_open() else "Official Session Close", delta_color="normal")
+            else:
+                st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Feeds")
         with s2: st.metric("India VIX", fmt(vix_info['vix']), delta=vix_info['regime'], delta_color="off")
         with s3: st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "N/A", delta="Derivatives Bias", delta_color="off")
         with s4: st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
@@ -8366,7 +7173,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             progress.progress(50)
             status.text("Parallel scanning other indices (live)...")
             alt_symbols = [s for s in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"] if s != underlying]
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 future_to_sym = {executor.submit(scan_one_index_fast_v12, sym, selected_expiry, active_tf, vix_data, fii_dii, scan_confluence, option_type_choice): sym for sym in alt_symbols}
                 done = 0
                 for future in concurrent.futures.as_completed(future_to_sym):
@@ -8400,32 +7207,26 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}" if is_option else f"{idea['symbol']} (CASH SPOT)"
                     sub_badge = f"INDEX OPTION ({idea['option']} BUYING)" if is_option else "INDEX SPOT / CASH"
 
-                    try:
-                        spot_display = f"{(current_spot or 0):.2f}" if current_spot and current_spot > 0 else "Syncing..."
-                        card_title_safe = card_title if card_title else "Trade"
-                        sub_badge_safe = sub_badge if sub_badge else "OPTION"
-                        tf_safe = idea.get('timeframe','15 Min')
-                        holding_safe = idea.get('holding','SHORT')
-                        conf_safe = idea.get('confidence',0)
-                        exp_safe = idea.get('expiry') or 'Current Weekly'
-                        html_card = '<div class="trade-card" style="border-left: 4px solid #00FF00;"><div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">LIVE SPOT: ' + str(spot_display) + '</div><h3>Trade Setup ' + str(i) + ' - ' + str(card_title_safe) + '</h3><b>Type:</b> ' + str(sub_badge_safe) + ' | <b>Timeframe:</b> ' + str(tf_safe) + ' | <b>Holding:</b> ' + str(holding_safe) + ' | <b>Conviction:</b> ' + str(conf_safe) + '% | <b>Expiry:</b> ' + str(exp_safe) + '</div>'
-                        st.markdown(html_card, unsafe_allow_html=True)
-                    except Exception as e:
-                        try:
-                            st.markdown(f"**Trade Setup {i} - {idea.get('symbol','NIFTY')} | Spot: {current_spot or 'Syncing...'}**")
-                        except:
-                            st.markdown(f"**Trade Setup {i}**")
+                    st.markdown(
+                        f"""
+                        <div class="trade-card" style="border-left: 4px solid #00FF00;">
+                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>
+                            <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
+                            <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
                         with c1: st.metric("Selected Strike", f"{idea['strike']} {idea['option']}", delta=idea.get("buildup", f"{idea['action']} OPTION"))
                                                 # V15 FINAL BROKER-MATCHED - Fixes 56.30 vs 108.2
                         entry_ltp = idea.get('entry', idea.get('ltp', 0))
-                        # Store original entry as frozen signal
                         if 'original_entry' not in idea:
                             idea['original_entry'] = entry_ltp
                         
-                        # V39 FIX: Initialize to prevent NameError
+                        # V40 FIX: Init to prevent NameError
                         live_ltp_now = 0
                         live_src = "INIT"
                         is_live_ok = False
@@ -8434,7 +7235,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         
                         try:
                             # V27 FINAL: Angel first - 100% broker matched like debug app
-                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match_FIXED(
+                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match(
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
@@ -8659,15 +7460,9 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 # ==============================================================================
 # GLOBAL PAPER TRADING PORTFOLIO & TRADE JOURNAL (OPTIONS + EQUITIES)
 # ==============================================================================
-try:
-    init_session_state_safe()
-except:
-    pass
-
 st.divider()
 st.markdown(f"## {SHIELD} Active Paper Positions & Risk Ledger (Options & Equities)")
-# V33 FIX: Safe getter to prevent AttributeError on first run
-positions = get_positions_safe()
+positions = st.session_state.paper_portfolio["positions"]
 if not positions:
     st.info("No active open paper positions in portfolio.")
 else:
@@ -8697,3 +7492,86 @@ else:
     st.dataframe(journal_df[display_cols], use_container_width=True)
 
 st.caption(f"Paper Trading Engine Active {BULLET} Real Broker Order Routing Disabled {BULLET} Strictly Educational Quantitative Research.")
+def auto_entry_market_price(idea, live_ltp, quantity_lots, enable_real=False):
+    """Auto Entry at MARKET PRICE when setup comes - no click needed - FIXED LOT SIZE"""
+    if not enable_real:
+        return False, "Real trading disabled"
+    
+    try:
+        symbol = idea.get('symbol','NIFTY')
+        # Get correct lot size from INDEX_METADATA
+        lot_size = INDEX_METADATA.get(symbol, {}).get('lot_size', 65)
+        if symbol == 'NIFTY':
+            lot_size = 65
+        elif symbol == 'BANKNIFTY':
+            lot_size = 30
+        elif symbol == 'FINNIFTY':
+            lot_size = 60
+        elif symbol == 'MIDCPNIFTY':
+            lot_size = 120
+        elif symbol == 'SENSEX':
+            lot_size = 20
+        
+        quantity = quantity_lots * lot_size
+        
+        # Place BUY at market
+        ok, msg, order_id = place_angel_real_order(
+            symbol=symbol,
+            strike=idea.get('strike',0),
+            opt_type=idea.get('option','CE'),
+            expiry=idea.get('expiry',''),
+            quantity=quantity,
+            order_type="BUY",
+            price=0  # Market price
+        )
+        
+        if ok:
+            # Also create paper position for tracking
+            try:
+                lot_qty = quantity
+                execute_paper_order(
+                    symbol=idea["symbol"], action="BUY", strike=idea["strike"], option_type=idea["option"],
+                    price=live_ltp, qty=lot_qty, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
+                    expiry=idea["expiry"], reasons=idea["why"] + " | AUTO REAL ENTRY", is_equity=False
+                )
+            except:
+                pass
+        
+        return ok, msg
+        
+    except Exception as e:
+        return False, str(e)[:80]
+
+def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
+    """Auto Exit at MARKET PRICE when SL/Target hit"""
+    if not enable_real:
+        return False, "Real trading disabled"
+    
+    try:
+        symbol = position.get('symbol','NIFTY')
+        strike = position.get('strike',0)
+        opt_type = position.get('option_type','CE')
+        expiry = position.get('expiry','')
+        qty = position.get('qty',0)
+        
+        # Place SELL at market
+        ok, msg, order_id = place_angel_real_order(
+            symbol=symbol,
+            strike=strike,
+            opt_type=opt_type,
+            expiry=expiry,
+            quantity=qty,
+            order_type="SELL",
+            price=0  # Market price for exit
+        )
+        
+        if ok:
+            # Close paper position
+            close_paper_position(trade_id, live_ltp, f"AUTO REAL EXIT @ ₹{live_ltp:.2f} | Order: {order_id}")
+        
+        return ok, msg
+        
+    except Exception as e:
+        return False, str(e)[:80]
+
+
