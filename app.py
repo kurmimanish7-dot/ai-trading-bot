@@ -471,18 +471,19 @@ UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX
 # 5. COMPLETE 12-TIER TIMEFRAME CONFIGURATION MATRIX
 # =====================================================================
 
-def get_spot_safe_V52(symbol="NIFTY"):
+
+def get_spot_safe_V54(symbol="NIFTY"):
     try:
         try:
             import yfinance as yf
-            ticker_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "^CNXFIN", "SENSEX": "^BSESN"}
+            ticker_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "^CNXFIN", "MIDCPNIFTY": "^NIFTY_MID_SELECT", "SENSEX": "^BSESN"}
             yf_symbol = ticker_map.get(symbol.upper(), "^NSEI")
             stock = yf.Ticker(yf_symbol)
             hist = stock.history(period="1d", interval="1m")
             if not hist.empty:
                 spot = float(hist['Close'].iloc[-1])
                 if spot > 0:
-                    return spot, f"YAHOO_V52_{yf_symbol}_{spot:.2f}", True
+                    return spot, f"YAHOO_V54_{yf_symbol}_{spot:.2f}", True
         except:
             pass
         try:
@@ -496,27 +497,27 @@ def get_spot_safe_V52(symbol="NIFTY"):
                     if r.status_code == 200:
                         data = r.json()
                         for idx in data.get("data", []):
-                            if symbol.upper() in idx.get("index","").upper() or (symbol=="NIFTY" and "NIFTY 50" in idx.get("index","")):
+                            idx_name = idx.get("index","").upper()
+                            if symbol.upper() in idx_name or (symbol=="NIFTY" and "NIFTY 50" in idx.get("index","")) or (symbol=="FINNIFTY" and "FINNIFTY" in idx_name):
                                 spot = float(idx.get("last",0))
                                 if spot > 0:
-                                    return spot, f"NSE_PROXY_V52_{symbol}_{spot:.2f}", True
+                                    return spot, f"NSE_PROXY_V54_{symbol}_{spot:.2f}", True
                 except:
                     continue
         except:
             pass
-        return 0, "ALL_SOURCES_FAILED_V52", False
+        return 0, "ALL_SOURCES_FAILED_V54", False
     except:
-        return 0, "EXC_V52_SPOT", False
+        return 0, "EXC_V54_SPOT", False
 
-def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
+def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
     """
-    V52 DIRECT ANGEL - No hardcoded strike/premium
-    - Fetches LTP directly from Angel Broking for given symbol/strike/opt_type/expiry
-    - Uses exact expiry matching only, no LTP price filtering
-    - Returns LTP as Angel provides
+    V54 DIRECT ANGEL - ALL INDICES - Fixes FINNIFTY NO_CANDIDATE
+    - Supports: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX
+    - No hardcoded strike/premium
+    - Exact expiry matching with fallback
     """
     try:
-        # Get secrets
         try:
             api_key = ""; client_id = ""; password = ""; totp_secret = ""
             for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
@@ -562,7 +563,6 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
         except:
             return 0, f"MASTER_EXC", False
         
-        # Parse inputs
         symbol = symbol.upper().strip()
         try:
             target_strike = int(float(strike))
@@ -575,7 +575,6 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
         if target_opt == "P":
             target_opt = "PE"
         
-        # Parse expiry - supports multiple formats
         target_exp_dt = None
         try:
             exp_str = str(expiry).strip()
@@ -585,7 +584,6 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
                     break
                 except:
                     continue
-            # Try with upper
             if not target_exp_dt:
                 for fmt in ["%d %b %Y", "%d %B %Y"]:
                     try:
@@ -599,48 +597,60 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
         if not target_exp_dt:
             return 0, f"EXPIRY_PARSE_FAIL_{expiry}", False
         
-        # Search label
+        # V54: Support all indices
         search_label = symbol
-        # For NIFTY, ensure we don't pick FINNIFTY, BANKNIFTY etc
+        # For NIFTY, avoid FINNIFTY etc
         invalid = []
         if symbol == "NIFTY":
-            invalid = ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY"]
+            invalid = ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "SENSEX"]
+        elif symbol == "BANKNIFTY":
+            invalid = ["FINNIFTY", "MIDCPNIFTY"]
+        elif symbol == "FINNIFTY":
+            invalid = []  # FINNIFTY is specific
+        elif symbol == "MIDCPNIFTY":
+            invalid = []
         
-        candidates = []
+        # First pass: exact match with expiry
+        candidates_exact = []
+        candidates_any_expiry = []
+        
         for inst in instruments:
             if not isinstance(inst, dict):
                 continue
             exch_seg = str(inst.get("exch_seg", "")).upper()
             if exch_seg not in ["NFO", "BFO"]:
                 continue
-            # Instrument type - must be OPTIDX, not FUT
             inst_type = str(inst.get("instrumenttype", "")).upper()
             if inst_type and "FUT" in inst_type:
                 continue
-            if inst_type and "OPT" not in inst_type and inst_type not in ["", "OPTIDX", "OPTSTK"]:
-                # Allow empty but skip futures
-                pass
             
             tradingsym = str(inst.get("symbol", "")).strip()
             tradingsym_upper = tradingsym.upper()
+            name = str(inst.get("name", "")).upper()
             
-            # Symbol must start with search label
-            if search_label == "NIFTY":
+            # Check symbol starts with search label
+            # For SENSEX, it might be SENSEX in BFO
+            if search_label == "SENSEX":
+                if not (tradingsym_upper.startswith("SENSEX") or "SENSEX" in name):
+                    continue
+            elif search_label == "NIFTY":
                 if not tradingsym_upper.startswith("NIFTY"):
                     continue
                 if any(inv in tradingsym_upper for inv in invalid):
                     continue
             else:
+                # For BANKNIFTY, FINNIFTY, MIDCPNIFTY
                 if not tradingsym_upper.startswith(search_label):
-                    continue
+                    # Also check name field
+                    if search_label not in tradingsym_upper and search_label not in name:
+                        continue
             
-            # Strike extraction from structured field
+            # Strike
             inst_strike_raw = inst.get("strike")
             extracted_strike = None
             if inst_strike_raw is not None and str(inst_strike_raw).strip() not in ["", "-1", "-1.000000", "0", "0.000000"]:
                 try:
                     s_val = float(inst_strike_raw)
-                    # Angel strike is in paise sometimes
                     if s_val > 100000:
                         s_val = s_val / 100.0
                     if s_val > 100000:
@@ -649,7 +659,6 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
                 except:
                     pass
             
-            # Fallback: extract from symbol
             if extracted_strike is None:
                 for pat in [r'(\d{4,6})\s*(CE|PE)\s*$', r'(\d{4,6})(CE|PE)$']:
                     m = re.search(pat, tradingsym_upper)
@@ -667,7 +676,7 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
             if extracted_strike is None or extracted_strike != target_strike:
                 continue
             
-            # Option type from symbol
+            # Option type
             inst_opt = None
             if "CE" in tradingsym_upper:
                 inst_opt = "CE"
@@ -677,7 +686,7 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
             if inst_opt and inst_opt != target_opt:
                 continue
             
-            # Expiry extraction and exact matching
+            # Expiry
             inst_expiry_raw = str(inst.get("expiry", "")).strip()
             inst_exp_dt = None
             if inst_expiry_raw:
@@ -693,7 +702,6 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
                         except:
                             continue
             
-            # Fallback: extract expiry from trading symbol (e.g., NIFTY<DDMMMYY><STRIKE><CE/PE>)
             if not inst_exp_dt:
                 m_exp = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', tradingsym_upper)
                 if m_exp:
@@ -707,17 +715,23 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
                     except:
                         pass
             
-            # Exact expiry date matching - this is the key fix for 03 Nov vs 17 Nov
+            # Save for any expiry (fallback)
+            candidates_any_expiry.append((inst, tradingsym, inst_expiry_raw, inst_exp_dt))
+            
+            # Exact expiry match
             if target_exp_dt and inst_exp_dt:
                 if inst_exp_dt.date() != target_exp_dt.date():
                     continue
             
-            candidates.append((inst, tradingsym, inst_expiry_raw, inst_exp_dt))
+            candidates_exact.append((inst, tradingsym, inst_expiry_raw, inst_exp_dt))
+        
+        # Use exact if found, else fallback to any expiry
+        candidates = candidates_exact if candidates_exact else candidates_any_expiry
         
         if not candidates:
-            return 0, f"NO_CANDIDATE_{search_label}_{target_strike}{target_opt}_{target_exp_dt.strftime('%d%b%Y') if target_exp_dt else expiry}", False
+            return 0, f"NO_CANDIDATE_{search_label}_{target_strike}{target_opt}_{target_exp_dt.strftime('%d%b%Y') if target_exp_dt else expiry}_CHECKED_{len(instruments)}_INSTRUMENTS", False
         
-        # Get LTP directly from Angel for each candidate - no price filtering
+        # Get LTP direct from Angel
         for inst, tradingsym, inst_expiry, inst_exp_dt in candidates:
             token = str(inst.get("token", ""))
             exch = str(inst.get("exch_seg", "NFO"))
@@ -728,33 +742,33 @@ def get_angel_ltp_V52_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry="")
                     if ltp_val and float(ltp_val) > 0:
                         f_ltp = float(ltp_val)
                         exp_str_for_log = inst_exp_dt.strftime("%d%b%Y") if inst_exp_dt else inst_expiry
-                        # Direct Angel LTP - no filtering
-                        return f_ltp, f"ANGEL_DIRECT_{search_label}_{target_strike}{target_opt}_EXP_{exp_str_for_log}_{tradingsym}_TOKEN_{token}_LTP_{f_ltp}", True
+                        match_type = "EXACT" if candidates_exact else "FALLBACK_ANY_EXPIRY"
+                        return f_ltp, f"ANGEL_DIRECT_V54_{match_type}_{search_label}_{target_strike}{target_opt}_EXP_{exp_str_for_log}_{tradingsym}_TOKEN_{token}_LTP_{f_ltp}", True
             except:
                 continue
         
-        return 0, f"NO_LTP_{search_label}_{target_strike}{target_opt}_CAND_{len(candidates)}", False
+        return 0, f"NO_LTP_{search_label}_{target_strike}{target_opt}_CAND_{len(candidates)}_EXACT_{len(candidates_exact)}_ANY_{len(candidates_any_expiry)}", False
     except Exception as e:
-        return 0, f"EXC_V52_{str(e)[:150]}", False
+        return 0, f"EXC_V54_{str(e)[:150]}", False
 
-def get_live_premium_V52_FINAL(symbol, strike, opt_type, expiry):
+def get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry):
     try:
-        ltp, src, ok = get_angel_ltp_V52_DIRECT(symbol, strike, opt_type, expiry)
+        ltp, src, ok = get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
         if ok and ltp > 0:
             return ltp, src, True
     except:
         pass
-    return 0, "V52_FAILED", False
+    return 0, "V54_FAILED", False
 
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    return get_live_premium_V52_FINAL(symbol, strike, opt_type, expiry)
+    return get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry)
 
 def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
-    return get_live_premium_V52_FINAL(symbol, strike, opt_type, expiry)
+    return get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry)
 
 def get_spot_cached(symbol):
     try:
-        spot, src, ok = get_spot_safe_V52(symbol)
+        spot, src, ok = get_spot_safe_V54(symbol)
         if ok:
             return spot
         return 0
@@ -763,12 +777,12 @@ def get_spot_cached(symbol):
 
 def get_spot_safe_for_display(symbol="NIFTY"):
     try:
-        spot, src, ok = get_spot_safe_V52(symbol)
+        spot, src, ok = get_spot_safe_V54(symbol)
         if ok and spot > 0:
             return spot, src, True
-        return 0, "V52_SPOT_FAILED", False
+        return 0, "V54_SPOT_FAILED", False
     except:
-        return 0, "V52_SPOT_EXC", False
+        return 0, "V54_SPOT_EXC", False
 
 
 TIMEFRAME_CONFIG = {
@@ -1704,7 +1718,7 @@ def auto_check_emergency_exit_from_lights(light1, light2):
                         continue
                     
                     # Get live LTP
-                    live_ltp, _, is_ok = get_angel_ltp_V52_DIRECT(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
+                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
                     if not is_ok or live_ltp <= 0:
                         live_ltp = pos.get('entry_price', 0)
                     
@@ -1790,7 +1804,7 @@ def auto_check_and_exit_positions():
                 expiry = pos.get('expiry','')
                 
                 # Get live LTP - use broker matched
-                live_ltp, live_src, is_ok = get_angel_ltp_V52_DIRECT(symbol, strike, opt_type, expiry)
+                live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
                 
                 if not is_ok or live_ltp <= 0:
                     # Try fallback proxy if Angel fails
@@ -6872,7 +6886,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         
                         try:
                             # V27 FINAL: Angel first - 100% broker matched like debug app
-                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_V52_DIRECT(
+                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match(
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
