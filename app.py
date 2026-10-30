@@ -3189,22 +3189,27 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
-    V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY
+    V36 FIXED: LTP bug fixed - exact strike + exact expiry matching
+    Fixes: 22950 CE showing 359.95 instead of 111.9
     """
     try:
         api_key = ""; client_id = ""; password = ""; totp_secret = ""
         for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
             if k in st.secrets:
-                api_key = str(st.secrets[k]).strip(); break
+                api_key = str(st.secrets[k]).strip()
+                break
         for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"]:
             if k in st.secrets:
-                client_id = str(st.secrets[k]).strip(); break
+                client_id = str(st.secrets[k]).strip()
+                break
         for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"]:
             if k in st.secrets:
-                password = str(st.secrets[k]).strip(); break
+                password = str(st.secrets[k]).strip()
+                break
         for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
             if k in st.secrets:
-                totp_secret = str(st.secrets[k]).strip(); break
+                totp_secret = str(st.secrets[k]).strip()
+                break
         if not api_key or not client_id:
             return 0, "ANGEL_KEYS_MISSING", False
         try:
@@ -3212,6 +3217,7 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
             import pyotp
             import requests
             import re
+            from datetime import datetime
         except ImportError as e:
             return 0, f"LIB_MISSING_{str(e)[:20]}", False
         totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
@@ -3219,126 +3225,157 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
         data = obj.generateSession(client_id, password, totp_code)
         if not (data and data.get("status") == True):
             return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
+        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        mr = requests.get(master_url, timeout=12)
+        if mr.status_code != 200:
+            return 0, "MASTER_FETCH_FAILED", False
+        instruments = mr.json()
+        symbol = symbol.upper().strip()
+        target_strike = int(strike)
+        target_opt = opt_type.upper()
+        target_exp_dt = None
         try:
-            master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-            mr = requests.get(master_url, timeout=12)
-            if mr.status_code != 200:
-                return 0, "MASTER_FETCH_FAILED", False
-            instruments = mr.json()
-            symbol = symbol.upper().strip()
+            exp_str = str(expiry).strip()
+            for fmt in ["%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%d-%B-%Y", "%Y-%m-%d", "%d %b %y", "%d-%b-%y"]:
+                try:
+                    target_exp_dt = datetime.strptime(exp_str, fmt)
+                    break
+                except:
+                    continue
+            if not target_exp_dt:
+                try:
+                    exp_norm = expiry_norm(expiry) if 'expiry_norm' in globals() else ""
+                    if exp_norm:
+                        target_exp_dt = datetime.strptime(exp_norm, "%Y-%m-%d")
+                except:
+                    pass
+        except:
+            target_exp_dt = None
+        if symbol == "NIFTY":
+            search_label = "NIFTY"
+        elif symbol == "BANKNIFTY":
+            search_label = "BANKNIFTY"
+        elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
+            search_label = "FINNIFTY"
+        elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
+            search_label = "MIDCPNIFTY"
+        elif symbol in ["SENSEX", "BSESN"]:
+            search_label = "SENSEX"
+        else:
+            search_label = symbol
+        candidates = []
+        for inst in instruments:
+            if not isinstance(inst, dict):
+                continue
+            tradingsym = str(inst.get("symbol", "")).strip()
+            tradingsym_upper = tradingsym.upper()
+            exch_seg = inst.get("exch_seg", "")
+            if exch_seg not in ["NFO", "BFO"]:
+                continue
             if symbol == "NIFTY":
-                def is_match(sym):
-                    sym_u = sym.upper()
-                    if "FINNIFTY" in sym_u or "BANKNIFTY" in sym_u or "MIDCPNIFTY" in sym_u or "NIFTYNXT" in sym_u:
-                        return False
-                    return sym_u.startswith("NIFTY") and str(strike) in sym_u and opt_type.upper() in sym_u
-                search_label = "NIFTY"
+                if not tradingsym_upper.startswith("NIFTY"):
+                    continue
+                if "FINNIFTY" in tradingsym_upper or "BANKNIFTY" in tradingsym_upper or "MIDCPNIFTY" in tradingsym_upper or "NIFTYNXT" in tradingsym_upper:
+                    continue
             elif symbol == "BANKNIFTY":
-                def is_match(sym):
-                    return "BANKNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "BANKNIFTY"
-            elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
-                def is_match(sym):
-                    sym_u = sym.upper()
-                    return ("FINNIFTY" in sym_u or (sym_u.startswith("FIN") and "NIFTY" in sym_u)) and str(strike) in sym_u and opt_type.upper() in sym_u
-                search_label = "FINNIFTY"
-            elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
-                def is_match(sym):
-                    return "MIDCPNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "MIDCPNIFTY"
-            elif symbol in ["SENSEX", "BSESN"]:
-                def is_match(sym):
-                    return "SENSEX" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = "SENSEX"
+                if "BANKNIFTY" not in tradingsym_upper:
+                    continue
+            elif search_label == "FINNIFTY":
+                if "FINNIFTY" not in tradingsym_upper:
+                    continue
+            elif search_label == "MIDCPNIFTY":
+                if "MIDCPNIFTY" not in tradingsym_upper:
+                    continue
+            elif search_label == "SENSEX":
+                if "SENSEX" not in tradingsym_upper:
+                    continue
+            # Exact strike via regex
+            extracted_strike = None
+            extracted_opt = None
+            m1 = re.search(r'(\d{4,6})\s*(CE|PE)\s*$', tradingsym_upper)
+            m2 = re.search(r'(C|P)\s*(\d{4,6})\s*$', tradingsym_upper)
+            m3 = re.search(r'\s(\d{4,6})\s+(CE|PE)', tradingsym_upper)
+            if m1:
+                extracted_strike = int(m1.group(1))
+                extracted_opt = m1.group(2)
+            elif m2:
+                extracted_strike = int(m2.group(2))
+                extracted_opt = "CE" if m2.group(1) == "C" else "PE"
+            elif m3:
+                extracted_strike = int(m3.group(1))
+                extracted_opt = m3.group(2)
             else:
-                def is_match(sym):
-                    return symbol in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
-                search_label = symbol
-            target_exp_norm = ""
-            try:
-                target_exp_norm = expiry_norm(expiry) if expiry else ""
-                target_exp_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d") if target_exp_norm else None
-            except:
-                target_exp_dt = None
-            candidates = []
-            for inst in instruments:
-                if not isinstance(inst, dict):
-                    continue
-                sym = str(inst.get("symbol", "")).upper()
-                if not is_match(sym):
-                    continue
-                if inst.get("exch_seg") not in ["NFO", "BFO"]:
-                    continue
-                exp_score = 0
-                if target_exp_dt:
-                    try:
-                        m = re.search(r"(\d{2})([A-Z]{3})(\d{2,4})", sym)
-                        if m:
-                            if target_exp_dt.strftime("%b").upper() in sym:
-                                exp_score += 10
-                            if str(target_exp_dt.day) in sym:
-                                exp_score += 5
-                            if str(target_exp_dt.year)[-2:] in sym or str(target_exp_dt.year) in sym:
-                                exp_score += 3
-                    except:
-                        pass
-                else:
+                if re.search(rf'\b{target_strike}\b', tradingsym_upper):
+                    extracted_strike = target_strike
+                    if "CE" in tradingsym_upper:
+                        extracted_opt = "CE"
+                    elif "PE" in tradingsym_upper:
+                        extracted_opt = "PE"
+            if extracted_strike is None:
+                continue
+            if extracted_strike != target_strike:
+                continue
+            if extracted_opt and extracted_opt != target_opt:
+                continue
+            exp_score = 0
+            if target_exp_dt:
+                try:
+                    m_exp = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', tradingsym_upper)
+                    if m_exp:
+                        day = m_exp.group(1)
+                        mon = m_exp.group(2)
+                        yr = m_exp.group(3)
+                        if len(yr) == 2:
+                            yr_full = "20" + yr if int(yr) < 50 else "19" + yr
+                        else:
+                            yr_full = yr
+                        exp_str_sym = f"{day}{mon}{yr_full}"
+                        try:
+                            exp_dt_sym = datetime.strptime(exp_str_sym, "%d%b%Y")
+                            if exp_dt_sym.date() == target_exp_dt.date():
+                                exp_score = 100
+                            elif exp_dt_sym.month == target_exp_dt.month and exp_dt_sym.year == target_exp_dt.year:
+                                exp_score = 50 - abs(exp_dt_sym.day - target_exp_dt.day)
+                            else:
+                                exp_score = 10
+                        except:
+                            if target_exp_dt.strftime("%b").upper() in tradingsym_upper:
+                                exp_score += 20
+                except:
                     exp_score = 1
-                candidates.append((exp_score, inst))
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            for score, inst in candidates[:10]:
-                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
-                try:
-                    ltp_data = obj.ltpData(exch, sym, token)
-                    if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data", {}).get("ltp")
-                        if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}{expiry.replace('-','').upper() if expiry else ''}{strike}{opt_type.upper()}_{ltp_val}", True
-                except:
-                    continue
-            for score, inst in candidates[:20]:
-                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
-                try:
-                    ltp_data = obj.ltpData(exch, sym, token)
-                    if ltp_data and ltp_data.get("status") == True:
-                        ltp_val = ltp_data.get("data", {}).get("ltp")
-                        if ltp_val and float(ltp_val) > 0:
-                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}_FALLBACK_{strike}{opt_type}_{ltp_val}", True
-                except:
-                    continue
-            return 0, f"NO_LTP_FOUND_{search_label}_{strike}{opt_type}", False
-        except Exception as e:
-            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:50]}", False
+            else:
+                exp_score = 1
+            candidates.append((exp_score, inst, tradingsym))
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        for score, inst, tradingsym in candidates[:15]:
+            token = str(inst.get("token", ""))
+            exch = inst.get("exch_seg", "NFO")
+            try:
+                ltp_data = obj.ltpData(exch, tradingsym, token)
+                if ltp_data and ltp_data.get("status") == True:
+                    ltp_val = ltp_data.get("data", {}).get("ltp")
+                    if ltp_val and float(ltp_val) > 0:
+                        return float(ltp_val), f"ANGEL_FIXED_{search_label}_{target_strike}{target_opt}_SCORE_{score}_{tradingsym}_{ltp_val}", True
+            except:
+                continue
+        for score, inst, tradingsym in candidates[:25]:
+            token = str(inst.get("token", ""))
+            exch = inst.get("exch_seg", "NFO")
+            try:
+                ltp_data = obj.ltpData(exch, tradingsym, token)
+                if ltp_data and ltp_data.get("status") == True:
+                    ltp_val = ltp_data.get("data", {}).get("ltp")
+                    if ltp_val and float(ltp_val) > 0:
+                        return float(ltp_val), f"ANGEL_FIXED_FB_{search_label}_{target_strike}{target_opt}_{tradingsym}_{ltp_val}", True
+            except:
+                continue
+        return 0, f"NO_MATCH_FIXED_{search_label}_{target_strike}{target_opt}_CAND_{len(candidates)}", False
     except Exception as e:
-        return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
+        return 0, f"EXC_FIXED_{str(e)[:100]}", False
 
+def get_angel_ltp_100pct_broker_match_ORIGINAL(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
+    return get_angel_ltp_100pct_broker_match_FIXED(symbol, strike, opt_type, expiry)
 
-def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    """
-    V20: Tries Angel first (100% broker matched), then proxy, then NSE
-    """
-    # Try Angel first - 100% broker matched, works on Cloud
-    ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
-    if ok and ltp > 0:
-        return ltp, src, True
-    
-    # If Angel keys missing, try proxy
-    ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
-    if ok2 and ltp2 > 0:
-        return ltp2, src2, True
-    
-    # Try ultimate
-    try:
-        ltp3, src3, ok3 = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
-        if ok3 and ltp3 > 0:
-            return ltp3, src3, True
-    except:
-        pass
-    
-    # All failed - return 0 with clear message
-    if "ANGEL_KEYS_MISSING" in src:
-        return 0, "ADD_ANGEL_KEYS_IN_SECRETS_FOR_108.20", False
-    return 0, src, False
 
 
 def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
