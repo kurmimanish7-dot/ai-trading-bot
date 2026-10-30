@@ -904,7 +904,7 @@ def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
 
 🎯 High Conviction: {conv}% {color}
 📊 {symbol} {strike} {opt}
-💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{(spot or 0):.2f}
+💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{spot:.2f}
 📅 Expiry: {expiry_label_str}
 ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
 ✅ Real order pending - Confirm needed
@@ -915,7 +915,6 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
 👇 *Telegram pe hi YES/NO dabao - Direct trade!*"""
 
         # Inline keyboard with YES/NO callback buttons - Direct in Telegram
-        app_url = secret("APP_URL") or secret("STREAMLIT_APP_URL") or "https://4gg.streamlit.app"
         keyboard = {
             "inline_keyboard": [
                 [
@@ -923,7 +922,7 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
                     {"text": "❌ NO - Cancel", "callback_data": f"NO_CANCEL_{pending_key}"}
                 ],
                 [
-                    {"text": "📊 App Kholo", "url": app_url}
+                    {"text": "📊 App Kholo", "callback_data": f"OPEN_APP_{pending_key}"}
                 ]
             ]
         }
@@ -962,163 +961,129 @@ Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
         return False, str(e)[:100]
 
 def handle_telegram_callback_query():
+    """V54 NEW: Handle YES/NO clicks from Telegram - Direct trade without app"""
     try:
         import requests
         from datetime import datetime
+        
         bot_token, chat_id = get_telegram_keys()
         if not bot_token:
             return False
+            
+        # Get last update_id
         last_update_id = st.session_state.get('tg_last_update_id', 0)
+        
         url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
-        params = {"offset": last_update_id + 1, "timeout": 1, "allowed_updates": ["callback_query"]}
-        try:
-            r = requests.get(url, params=params, timeout=3)
-        except:
-            return False
+        params = {"offset": last_update_id + 1, "timeout": 2, "allowed_updates": '["callback_query"]'}
+        
+        r = requests.get(url, params=params, timeout=5)
         if r.status_code != 200:
             return False
+            
         data = r.json()
         if not data.get('ok') or not data.get('result'):
             return False
+            
         for update in data['result']:
             update_id = update.get('update_id', 0)
             st.session_state['tg_last_update_id'] = update_id
+            
             callback = update.get('callback_query')
             if not callback:
                 continue
+                
             callback_id = callback.get('id')
             callback_data = callback.get('data', '')
+            from_user = callback.get('from', {})
             message = callback.get('message', {})
             msg_id = message.get('message_id')
-            chat_id_cb = message.get('chat', {}).get('id', chat_id)
+            
+            # Answer callback query to remove loading
             try:
                 answer_url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
-                requests.post(answer_url, json={"callback_query_id": callback_id, "text": "Processing..."}, timeout=2)
+                requests.post(answer_url, json={"callback_query_id": callback_id}, timeout=3)
             except:
                 pass
-            if callback_data.startswith("OPEN_APP_"):
-                try:
-                    app_url = secret("APP_URL") or secret("STREAMLIT_APP_URL") or "https://4gg.streamlit.app"
-                    edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                    txt_app = "App Link: " + str(app_url)
-                    requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": txt_app}, timeout=3)
-                except:
-                    pass
-                continue
+            
             if callback_data.startswith("YES_BUY_"):
                 pending_key = callback_data.replace("YES_BUY_", "")
                 pdata = st.session_state.get(pending_key)
                 if not pdata:
-                    try:
-                        pdata = load_pending_from_file(pending_key)
-                        if pdata:
-                            st.session_state[pending_key] = pdata
-                    except:
-                        pass
-                if not pdata:
-                    try:
-                        import json as _js, pathlib as _pl
-                        for pf in [_pl.Path("pending_confirms.json"), _pl.Path("/tmp/pending_confirms.json")]:
-                            if pf.exists():
-                                alld = _js.loads(pf.read_text(encoding='utf-8'))
-                                for k,v in alld.items():
-                                    if pending_key in k or k in pending_key:
-                                        pdata = v
-                                        pending_key = k
-                                        st.session_state[pending_key] = pdata
-                                        break
-                            if pdata:
-                                break
-                    except:
-                        pass
-                if not pdata:
-                    try:
-                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                        txt_msg = "EXPIRED Order " + str(pending_key) + " not found. Scan again."
-                        requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": txt_msg}, timeout=3)
-                    except:
-                        pass
-                    continue
+                    pdata = load_pending_from_file(pending_key)
+                    if pdata:
+                        st.session_state[pending_key] = pdata
+                    if not pdata:
+                        continue
+                    
                 idea = pdata.get('idea', {})
                 live_ltp = pdata.get('live_ltp', 0)
                 qty = pdata.get('qty', 1)
+                
+                # Execute real trade
                 try:
-                    is_real = st.session_state.get('enable_real_trading', False) or st.session_state.get('auto_real_entry_enabled', False)
-                    if is_real:
-                        ok, msg = auto_entry_market_price(idea, live_ltp, qty, enable_real=True)
-                        exec_type = "REAL"
-                    else:
-                        try:
-                            lot_size = 30 if idea.get('symbol')=='BANKNIFTY' else 75
-                            execute_paper_order(
-                                symbol=idea.get('symbol','NIFTY'),
-                                action="BUY",
-                                strike=idea.get('strike',0),
-                                option_type=idea.get('option','CE'),
-                                price=live_ltp,
-                                qty=qty * lot_size,
-                                sl=idea.get('sl', live_ltp*0.8),
-                                t1=idea.get('target1', live_ltp*1.2),
-                                t2=idea.get('target2', live_ltp*1.5),
-                                expiry=idea.get('expiry',''),
-                                reasons=str(idea.get('why','')) + " | Telegram YES",
-                                is_equity=False
-                            )
-                            ok = True
-                            msg = "PAPER Trade Placed @ Rs " + str(round(live_ltp,2))
-                        except Exception as e:
-                            ok = False
-                            msg = "Paper error: " + str(e)[:80]
-                        exec_type = "PAPER"
+                    from datetime import datetime
+                    ok, msg = auto_entry_market_price(idea, live_ltp, qty, enable_real=st.session_state.get('enable_real_trading', False))
+                    
+                    # Edit Telegram message to show result
                     try:
-                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
                         if ok:
-                            new_text = exec_type + " ORDER PLACED! " + str(idea.get('symbol')) + " " + str(idea.get('strike')) + " " + str(idea.get('option')) + " Entry Rs " + str(live_ltp) + " Qty " + str(qty) + " - " + str(msg)
+                            new_text = f"✅ *ORDER PLACED!*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\n💰 LTP: ₹{live_ltp:.2f}\nQty: {qty} lots\n\n✅ {msg}\n\nTime: {datetime.now(IST).strftime('%H:%M:%S IST')}"
                         else:
-                            new_text = "FAILED " + str(idea.get('symbol')) + " Error: " + str(msg)
-                        requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": new_text}, timeout=4)
-                    except Exception as e:
-                        print("Edit fail")
-                    try:
-                        if ok:
-                            conf = exec_type + " VIA TELEGRAM " + str(idea.get('symbol')) + " " + str(idea.get('strike')) + " Entry Rs " + str(live_ltp)
-                            try:
-                                ultra_fast_telegram_send(conf, force=True)
-                            except:
-                                send_telegram_message(bot_token, str(chat_id_cb), conf)
+                            new_text = f"❌ *ORDER FAILED*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\nError: {msg}"
+                        
+                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                        edit_payload = {
+                            "chat_id": chat_id,
+                            "message_id": msg_id,
+                            "text": new_text,
+                            "parse_mode": "Markdown"
+                        }
+                        requests.post(edit_url, json=edit_payload, timeout=5)
                     except:
                         pass
+                    
+                    # Send confirmation
+                    try:
+                        if ok:
+                            send_telegram_message(bot_token, chat_id, f"✅ *REAL ORDER EXECUTED VIA TELEGRAM*\n\n📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}\n💰 Entry: ₹{live_ltp:.2f}\nQty: {qty} lots\n\nTelegram YES se direct trade!")
+                    except:
+                        pass
+                    
+                    # Remove pending
                     try:
                         if pending_key in st.session_state:
                             del st.session_state[pending_key]
-                        delete_pending_from_file(pending_key)
                     except:
                         pass
+                        
                 except Exception as e:
                     try:
-                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                        requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": "Error: " + str(e)[:100]}, timeout=3)
+                        send_telegram_message(bot_token, chat_id, f"❌ Error placing order: {str(e)[:100]}")
                     except:
                         pass
+                        
             elif callback_data.startswith("NO_CANCEL_"):
                 pending_key = callback_data.replace("NO_CANCEL_", "")
                 try:
                     if pending_key in st.session_state:
                         del st.session_state[pending_key]
-                    delete_pending_from_file(pending_key)
                 except:
                     pass
                 try:
                     edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
-                    txt_c = "CANCELLED Order " + str(pending_key)
-                    requests.post(edit_url, json={"chat_id": chat_id_cb, "message_id": msg_id, "text": txt_c}, timeout=3)
+                    edit_payload = {
+                        "chat_id": chat_id,
+                        "message_id": msg_id,
+                        "text": f"❌ *CANCELLED via Telegram*\n\nPending order {pending_key} cancelled.\nTime: {datetime.now(IST).strftime('%H:%M:%S IST')}",
+                        "parse_mode": "Markdown"
+                    }
+                    requests.post(edit_url, json=edit_payload, timeout=5)
                 except:
                     pass
+                    
         return True
     except Exception as e:
-        print("Callback handle error")
-        import traceback
-        traceback.print_exc()
+        print(f"Callback handle error: {e}")
         return False
 
 
@@ -1189,7 +1154,7 @@ Conviction: {conf}% | Expiry: {expiry_label_str}
 🎯 *T1:* ₹{t1:.2f}
 🎯 *T2:* ₹{t2:.2f}
 📈 *R/R:* 1:{rr:.2f}
-📍 *Spot:* {(spot or 0):.2f}
+📍 *Spot:* {spot:.2f}
 
 ⚡ *Buildup:* {idea.get('buildup','')}
 📝 *Why:* {idea.get('why','')[:200]}...
@@ -1486,10 +1451,14 @@ Light1: {light1.get('status')} | Light2: {light2.get('status')}
                     # Mark alerted
                     st.session_state[alert_key] = time.time()
                     
-                    # V27 ULTRA FAST: AUTO EXIT ALWAYS - Manual Buy + Auto Sell OTM
+                    # Optionally auto close position if auto exit enabled
                     try:
-                        if st.session_state.get('enable_real_trading', False) or st.session_state.get('auto_real_exit', False):
+                        if st.session_state.get('auto_real_entry_enabled', False):
+                            # Auto exit real + paper
                             auto_exit_market_price(trade_id, pos, live_ltp, enable_real=True)
+                        else:
+                            # Just close paper and alert
+                            pass
                     except:
                         pass
                         
@@ -3408,38 +3377,7 @@ def fetch_verified_spot(symbol: str):
     return {"price":None,"change":0.0,"p_change":0.0,"source":"FAILED","status":"FAILED","timestamp":now_str}
 
 def get_spot(symbol: str):
-    try:
-        res = fetch_verified_spot(symbol)
-        p = res.get("price")
-        if p is None or p <= 0:
-            # Try cache fallback
-            try:
-                ck = f"_spot_{symbol}"
-                if ck in _spot_cache_v19:
-                    val, ts = _spot_cache_v19[ck]
-                    if val and val > 0:
-                        return float(val)
-            except:
-                pass
-            # Last resort - try Yahoo direct
-            try:
-                y = _v21_yahoo(symbol)
-                if y and y > 0:
-                    return float(y)
-            except:
-                pass
-        return p
-    except:
-        return None
-
-def get_spot_safe_for_display(symbol: str):
-    try:
-        p = get_spot(symbol)
-        if p and p > 0:
-            return float(p)
-        return 0.0
-    except:
-        return 0.0
+    return fetch_verified_spot(symbol).get("price")
 
 def get_spot_cached(symbol):
     return get_spot(symbol)
@@ -3535,7 +3473,7 @@ def get_india_vix():
 from concurrent.futures import ThreadPoolExecutor as _TPE_V22
 import threading as _threading_v22
 
-_telegram_executor_v22 = _TPE_V22(max_workers=8)
+_telegram_executor_v22 = _TPE_V22(max_workers=3)
 _telegram_last_sent_v22 = {}
 _telegram_bot_cache_v22 = {"token": None, "chat": None, "time": 0}
 
@@ -6706,8 +6644,6 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         st.session_state['auto_real_entry_enabled'] = False
     
     st.sidebar.divider()
-    st.sidebar.info("🚀 V27 ULTRA FAST: 3-5 sec LIVE | Manual BUY (YES) + Auto EXIT Matrix | OTM Allowed ✅")
-    st.sidebar.divider()
 
     # V52 NEW: Render Pending Confirmations with YES/NO in MAIN AREA (bhai ka request - dummy click pe aata hai)
     def render_pending_confirmations_ui():
@@ -6743,7 +6679,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             st.markdown(f"""
                             **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}**
                             Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'}
-                            LTP: ₹{live_ltp:.2f} | Spot: {(spot or 0):.2f} | Qty: {qty} lots | Time: {time_str}
+                            LTP: ₹{live_ltp:.2f} | Spot: {spot:.2f} | Qty: {qty} lots | Time: {time_str}
                             """)
                             if not is_pass:
                                 st.error(f"Conviction {conv}% < Filter {min_conv}% - Isliye BLOCK hoga real me")
@@ -6829,24 +6765,10 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         s1, s2, s3, s4 = st.columns(4)
         with s1:
-            try:
-                if spot is not None and spot > 0:
-                    st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(spot), delta="Verified Exchange Feed" if market_open() else "Official Session Close", delta_color="normal")
-                else:
-                    # Try fallback display
-                    try:
-                        fb = get_spot_safe_for_display(selected_underlying)
-                        if fb and fb > 0:
-                            st.metric(f"{selected_underlying} Spot (Yahoo Fallback)", fmt(fb), delta="Yahoo Finance", delta_color="normal")
-                        else:
-                            st.metric(f"{selected_underlying} Spot", "Syncing... " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds - Retrying")
-                    except:
-                        st.metric(f"{selected_underlying} Spot", "Awaiting Tick... " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds")
-            except Exception as e:
-                try:
-                    st.metric(f"{selected_underlying} Spot", "Error: " + str(e)[:30], delta="Retrying")
-                except:
-                    st.metric(f"{selected_underlying} Spot", "Syncing...", delta="Connecting")
+            if spot is not None and spot > 0:
+                st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(spot), delta="Verified Exchange Feed" if market_open() else "Official Session Close", delta_color="normal")
+            else:
+                st.metric(f"{selected_underlying} Spot", "Awaiting Tick...", delta="Connecting Feeds")
         with s2: st.metric("India VIX", fmt(vix_info['vix']), delta=vix_info['regime'], delta_color="off")
         with s3: st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "N/A", delta="Derivatives Bias", delta_color="off")
         with s4: st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
@@ -7121,7 +7043,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             progress.progress(50)
             status.text("Parallel scanning other indices (live)...")
             alt_symbols = [s for s in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"] if s != underlying]
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 future_to_sym = {executor.submit(scan_one_index_fast_v12, sym, selected_expiry, active_tf, vix_data, fii_dii, scan_confluence, option_type_choice): sym for sym in alt_symbols}
                 done = 0
                 for future in concurrent.futures.as_completed(future_to_sym):
@@ -7155,21 +7077,16 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     card_title = f"{idea['symbol']} {idea['strike']} {idea['option']}" if is_option else f"{idea['symbol']} (CASH SPOT)"
                     sub_badge = f"INDEX OPTION ({idea['option']} BUYING)" if is_option else "INDEX SPOT / CASH"
 
-                    try:
-                        spot_display = f"{(current_spot or 0):.2f}" if current_spot and current_spot > 0 else "Syncing..."
-                        card_title_safe = card_title if card_title else "Trade"
-                        sub_badge_safe = sub_badge if sub_badge else "OPTION"
-                        tf_safe = idea.get('timeframe','15 Min')
-                        holding_safe = idea.get('holding','SHORT')
-                        conf_safe = idea.get('confidence',0)
-                        exp_safe = idea.get('expiry') or 'Current Weekly'
-                        html_card = '<div class="trade-card" style="border-left: 4px solid #00FF00;"><div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">LIVE SPOT: ' + str(spot_display) + '</div><h3>Trade Setup ' + str(i) + ' - ' + str(card_title_safe) + '</h3><b>Type:</b> ' + str(sub_badge_safe) + ' | <b>Timeframe:</b> ' + str(tf_safe) + ' | <b>Holding:</b> ' + str(holding_safe) + ' | <b>Conviction:</b> ' + str(conf_safe) + '% | <b>Expiry:</b> ' + str(exp_safe) + '</div>'
-                        st.markdown(html_card, unsafe_allow_html=True)
-                    except Exception as e:
-                        try:
-                            st.markdown(f"**Trade Setup {i} - {idea.get('symbol','NIFTY')} | Spot: {current_spot or 'Syncing...'}**")
-                        except:
-                            st.markdown(f"**Trade Setup {i}**")
+                    st.markdown(
+                        f"""
+                        <div class="trade-card" style="border-left: 4px solid #00FF00;">
+                            <div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">🔴 LIVE SPOT: {current_spot:.2f}</div>
+                            <h3 style="margin-bottom: 0.3rem;">Trade Setup {i} - <span style="color: #4CAF50;">{card_title}</span></h3>
+                            <b>Type:</b> {sub_badge} | <b>Timeframe:</b> {idea['timeframe']} | <b>Holding:</b> {idea['holding']} | <b>Conviction:</b> {idea['confidence']}% | <b>Expiry:</b> {idea.get('expiry') or 'Current Weekly'}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
                     if is_option:
                         c1, c2, c3, c4 = st.columns(4)
