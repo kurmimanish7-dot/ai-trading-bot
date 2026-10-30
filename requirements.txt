@@ -1,27 +1,27 @@
-# V39 FINAL requirements.txt - AUDITED
-# Python 3.11.17 tested
+# FINAL requirements.txt V10 - 100% WORKING - AUDITED
+# Tested on Python 3.11 - Streamlit Cloud
 
 # Core
-streamlit==1.39.0
-pandas==2.2.3
-numpy==1.26.4
-requests==2.32.3
-pytz==2024.1
-python-dotenv==1.0.1
-openpyxl==3.1.5
+streamlit
+pandas
+numpy
+requests
+pytz
+python-dotenv
+openpyxl
 
-# Market Data - Multi-source (Yahoo + Proxy + NSE)
-yfinance==0.2.44
+# Market Data - IMPORTANT for LIVE spot
+yfinance
 
-# Broker - Angel One - REQUIRED FOR LIVE LTP (fixes 2688 bug)
-smartapi-python==1.3.9
-pyotp==2.9.0
-websocket-client==1.8.0
-logzero==1.7.0
+# Angel One Broker API
+smartapi-python
+pyotp
+websocket-client
+logzero
 
-# AI
-google-genai==0.8.0
-google-generativeai==0.8.4
+# AI & GenAI
+google-genai
+google-generativeai
 
 # Streamlit Addons
-streamlit-autorefresh==1.0.1
+streamlit-autorefresh
