@@ -3469,76 +3469,6 @@ def get_india_vix():
         return {"vix":13.5,"regime":"NORMAL","source":"FALLBACK","timestamp":datetime.now(IST).strftime("%H:%M:%S IST")}
 # ===== END V21 TURBO =====
 
-# ===== V22 ULTRA FAST TELEGRAM & MARKET RESPONSE =====
-from concurrent.futures import ThreadPoolExecutor as _TPE_V22
-import threading as _threading_v22
-
-_telegram_executor_v22 = _TPE_V22(max_workers=3)
-_telegram_last_sent_v22 = {}
-_telegram_bot_cache_v22 = {"token": None, "chat": None, "time": 0}
-
-def _v22_get_bot_cached():
-    try:
-        import time as _tt
-        now = _tt.time()
-        if _telegram_bot_cache_v22["token"] and now - _telegram_bot_cache_v22["time"] < 30:
-            return _telegram_bot_cache_v22["token"], _telegram_bot_cache_v22["chat"]
-        t, c = get_telegram_keys()
-        if t and c:
-            _telegram_bot_cache_v22["token"] = t
-            _telegram_bot_cache_v22["chat"] = c
-            _telegram_bot_cache_v22["time"] = now
-            return t, c
-    except:
-        pass
-    return None, None
-
-def _v22_ultra_send_raw(bot_token, chat_id, message):
-    try:
-        import requests as _rq
-        # Ultra fast - no fancy parsing, direct send
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True
-        }
-        # Fast timeout 3 sec
-        r = _rq.post(url, json=payload, timeout=3)
-        return r.status_code == 200
-    except Exception as e:
-        print(f"Ultra send fail {e}")
-        return False
-
-def ultra_fast_telegram_send(message, force=False):
-    """V22 ULTRA FAST - Non-blocking telegram send in background thread"""
-    try:
-        bot_t, chat_t = _v22_get_bot_cached()
-        if not bot_t or not chat_t:
-            return False
-        # Deduplicate - don't send same message within 2 sec
-        import time as _tt
-        msg_hash = hash(message[:100])
-        now = _tt.time()
-        if not force and msg_hash in _telegram_last_sent_v22:
-            if now - _telegram_last_sent_v22[msg_hash] < 2:
-                return True
-        _telegram_last_sent_v22[msg_hash] = now
-        # Send in background thread - INSTANT return
-        _telegram_executor_v22.submit(_v22_ultra_send_raw, bot_t, chat_t, message)
-        return True
-    except Exception as e:
-        print(f"Ultra fast queue fail {e}")
-        return False
-
-# Patch execute_paper_order to ultra fast
-def _v22_patch_execute_paper():
-    pass
-
-# ===== END V22 ULTRA FAST =====
-
-
 
 def secret(name: str) -> str:
     """V21: Robust secret finder - tries multiple cases"""
@@ -5114,20 +5044,27 @@ def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str,
 
     st.session_state.paper_portfolio["positions"][trade_id] = position_entry
     st.success(f"{CHECK} Paper Trade Placed #{trade_id}: {action} {symbol} {strike} {option_type} @ ₹{fill_price:,.2f} [Qty: {qty}]")
-    # V22 ULTRA FAST - Active Call Exit Rules Instant
     try:
-        msg_rules = f"🚀 ACTIVE CALL ENTRY\n\n📊 {symbol} {strike} {option_type}\n💰 Entry: Rs {fill_price:.2f} Qty: {qty}\n🛑 SL: Rs {sl:.2f}\n🎯 T1: Rs {t1:.2f}\n🎯 T2: Rs {t2:.2f}\n📅 {expiry}\n⏰ {datetime.now(IST).strftime('%H:%M:%S IST')}\n\n⚡ EXIT RULES ULTRA FAST:\n• SL {sl:.2f} = EXIT\n• T1 {t1:.2f} = 50% BOOK\n• T2 {t2:.2f} = FULL EXIT\n• 15:15 FORCE CLOSE\n\nID: {trade_id} | OPEN"
-        # Send ultra fast in background thread - returns instantly
-        ultra_fast_telegram_send(msg_rules, force=True)
-        # Also try direct for backup
-        try:
-            bot_t, chat_t = get_telegram_keys()
-            if bot_t and chat_t:
-                _telegram_executor_v22.submit(_v22_ultra_send_raw, bot_t, chat_t, msg_rules)
-        except:
-            pass
+        bot_t, chat_t = get_telegram_keys()
+        if bot_t and chat_t:
+            msg_rules = f"""ACTIVE CALL - ENTRY DONE
+Symbol {symbol} {strike} {option_type}
+Entry Rs {fill_price:.2f} Qty {qty}
+SL Rs {sl:.2f}
+T1 Rs {t1:.2f}
+T2 Rs {t2:.2f}
+Expiry {expiry}
+Time {datetime.now(IST).strftime('%H:%M:%S IST')}
+
+EXIT RULES INSTANT:
+- SL Rs {sl:.2f} -> EXIT
+- T1 Rs {t1:.2f} -> 50pct Book
+- T2 Rs {t2:.2f} -> FULL EXIT
+- 15:15 Force Close
+Trade ID {trade_id}"""
+            send_telegram_message(bot_t, chat_t, msg_rules)
     except Exception as e:
-        print(f"V22 active call fail {e}")
+        print(f"Active call telegram fail {e}")
     return True
 
 def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
@@ -5150,12 +5087,6 @@ def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
     pos["exit_reason"] = exit_reason
     pos.update(costs)
 
-    # V22 ULTRA FAST EXIT TELEGRAM
-    try:
-        exit_msg = f"⚡ EXIT {pos.get('symbol')} {pos.get('strike')} {pos.get('option_type')} Entry Rs {pos.get('entry_price',0):.2f} -> Exit Rs {fill_exit:.2f} P&L Rs {costs.get('net_pnl',0):+.2f} Reason: {exit_reason} Time: {datetime.now(IST).strftime('%H:%M:%S IST')}"
-        ultra_fast_telegram_send(exit_msg, force=True)
-    except:
-        pass
     port["trade_history"].append(pos)
     port["daily_realized_pnl"] += costs["net_pnl"]
     port["cash_balance"] += costs["net_pnl"]
@@ -6721,15 +6652,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     # Call it before ticker
     render_pending_confirmations_ui()
 
-    @live_fragment(run_every=0.5)
-    def _instant_exit_v22():
-        try:
-            auto_check_and_exit_positions()
-        except:
-            pass
-    _instant_exit_v22()
-
-    @live_fragment(run_every=0.5)
+    @live_fragment(run_every=1)
     def _instant_exit_v19():
         try:
             auto_check_and_exit_positions()
@@ -6737,7 +6660,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             pass
     _instant_exit_v19()
 
-    @live_fragment(run_every=1)
+    @live_fragment(run_every=2)
     def _tg_poll_v19():
         try:
             handle_telegram_callback_query()
@@ -6752,7 +6675,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @live_fragment(run_every=1)
+    @live_fragment(run_every=2)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
