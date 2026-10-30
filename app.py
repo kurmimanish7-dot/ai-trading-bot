@@ -1,5 +1,15 @@
 # -*- coding: utf-8 -*-
-""" AI Institutional Live Trading Advisor (Quantitative GEX & Multi-Factor Equity Engine) ===================================================================================== Production Institutional Release: - Universal 5,000+ Equity Universe (NSE & BSE) - Multi-Factor Equity Setup Engine: Technicals, Fundamentals, Official Corporate/Insider Disclosures, Future Plans/Capex, Arithmetic/Mathematical Models, Volume/Investment Flow - Dual Entry Call & Active Exit Call Engine with Target Price & Mathematical Target Time (ETA) - 12-Tier Multi-Timeframe Matrix, SEBI Regulatory Metadata, Analytical Greeks, Dealer GEX Radar - Stateful Paper-Trading Risk Engine (Supports both Index Options & Equity Shares) """
+"""
+AI Institutional Live Trading Advisor (Quantitative GEX & Multi-Factor Equity Engine)
+=====================================================================================
+Production Institutional Release:
+- Universal 5,000+ Equity Universe (NSE & BSE)
+- Multi-Factor Equity Setup Engine: Technicals, Fundamentals, Official Corporate/Insider
+  Disclosures, Future Plans/Capex, Arithmetic/Mathematical Models, Volume/Investment Flow
+- Dual Entry Call & Active Exit Call Engine with Target Price & Mathematical Target Time (ETA)
+- 12-Tier Multi-Timeframe Matrix, SEBI Regulatory Metadata, Analytical Greeks, Dealer GEX Radar
+- Stateful Paper-Trading Risk Engine (Supports both Index Options & Equity Shares)
+"""
 
 import datetime
 from datetime import datetime, date, time as dtime, timedelta
@@ -9,14 +19,7 @@ import math
 import time
 
 # ===== V28 ULTRA FAST MULTI-SOURCE FETCHER - AUDITED FOR NSE IP BLOCK =====
-try:
-    import yfinance as yf
-    HAS_YFINANCE = True
-except ImportError:
-    yf = None
-    HAS_YFINANCE = False
-    print("yfinance not installed, using proxy fallback only")
-
+import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 _spot_cache_v28 = {}
@@ -24,11 +27,7 @@ _chain_cache_v28 = {}
 _fii_cache_v28 = {}
 
 def _v28_yahoo_spot(symbol="NIFTY"):
-    """Yahoo Finance - Optional, fallback to proxy if not installed"""
-    if "HAS_YFINANCE" in globals() and not HAS_YFINANCE:
-        return None
-    if yf is None:
-        return None
+    """Yahoo Finance - Most reliable on Streamlit Cloud - Never blocked"""
     try:
         mapping = {
             "NIFTY": "^NSEI",
@@ -1173,7 +1172,19 @@ def send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str):
         pending_key = f"pending_confirm_{symbol}_{strike}_{opt}"
         
         # V54 NEW: Telegram pe direct YES/NO buttons
-        msg = f"""📞 *CONFIRM CALL - {conv}% {symbol}* 🎯 High Conviction: {conv}% {color} 📊 {symbol} {strike} {opt} 💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{(spot or 0):.2f} 📅 Expiry: {expiry_label_str} ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')} ✅ Real order pending - Confirm needed Qty: {qty} lots Conviction Range: {st.session_state.get('min_conviction',65)}%+ required 👇 *Telegram pe hi YES/NO dabao - Direct trade!*"""
+        msg = f"""📞 *CONFIRM CALL - {conv}% {symbol}*
+
+🎯 High Conviction: {conv}% {color}
+📊 {symbol} {strike} {opt}
+💰 LTP: ₹{live_ltp:.2f} | Spot: ₹{(spot or 0):.2f}
+📅 Expiry: {expiry_label_str}
+⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
+✅ Real order pending - Confirm needed
+
+Qty: {qty} lots
+Conviction Range: {st.session_state.get('min_conviction',65)}%+ required
+
+👇 *Telegram pe hi YES/NO dabao - Direct trade!*"""
 
         # Inline keyboard with YES/NO callback buttons - Direct in Telegram
         app_url = secret("APP_URL") or secret("STREAMLIT_APP_URL") or "https://4gg.streamlit.app"
@@ -1437,7 +1448,26 @@ def format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str):
     rr = idea.get('risk_reward',0)
     conf = idea.get('confidence',0)
     
-    msg = f"""🚀 *NEW TRADE SETUP - {symbol}* 📊 *{symbol} {strike} {opt}* Type: INDEX OPTION (CE BUYING) Timeframe: 15 Min (Institutional Breakout) Holding: NEXT SESSION Conviction: {conf}% | Expiry: {expiry_label_str} 💰 *Entry:* ₹{entry:.2f} (LIVE Broker: ₹{live_ltp:.2f}) 🛑 *SL:* ₹{sl:.2f} 🎯 *T1:* ₹{t1:.2f} 🎯 *T2:* ₹{t2:.2f} 📈 *R/R:* 1:{rr:.2f} 📍 *Spot:* {(spot or 0):.2f} ⚡ *Buildup:* {idea.get('buildup','')} 📝 *Why:* {idea.get('why','')[:200]}... ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} 🤖 Auto Alert from AI Trading Bot"""
+    msg = f"""🚀 *NEW TRADE SETUP - {symbol}*
+
+📊 *{symbol} {strike} {opt}*
+Type: INDEX OPTION (CE BUYING)
+Timeframe: 15 Min (Institutional Breakout)
+Holding: NEXT SESSION
+Conviction: {conf}% | Expiry: {expiry_label_str}
+
+💰 *Entry:* ₹{entry:.2f} (LIVE Broker: ₹{live_ltp:.2f})
+🛑 *SL:* ₹{sl:.2f}
+🎯 *T1:* ₹{t1:.2f}
+🎯 *T2:* ₹{t2:.2f}
+📈 *R/R:* 1:{rr:.2f}
+📍 *Spot:* {(spot or 0):.2f}
+
+⚡ *Buildup:* {idea.get('buildup','')}
+📝 *Why:* {idea.get('why','')[:200]}...
+
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+🤖 Auto Alert from AI Trading Bot"""
     return msg
 
 def format_telegram_exit_alert(position, exit_price, pnl, reason):
@@ -1449,7 +1479,15 @@ def format_telegram_exit_alert(position, exit_price, pnl, reason):
     
     pnl_emoji = "✅" if pnl > 0 else "❌"
     
-    msg = f"""{pnl_emoji} *TRADE EXIT - {symbol}* 📊 *{symbol} {strike} {opt}* Entry: ₹{entry:.2f} → Exit: ₹{exit_price:.2f} 💰 *P&L:* ₹{pnl:+.2f} 📝 *Reason:* {reason} ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} 🤖 Auto Exit Alert"""
+    msg = f"""{pnl_emoji} *TRADE EXIT - {symbol}*
+
+📊 *{symbol} {strike} {opt}*
+Entry: ₹{entry:.2f} → Exit: ₹{exit_price:.2f}
+💰 *P&L:* ₹{pnl:+.2f}
+📝 *Reason:* {reason}
+
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+🤖 Auto Exit Alert"""
     return msg
 
 def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
@@ -1574,7 +1612,14 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
                 if auto_ok:
                     # Send confirmation telegram
                     try:
-                        confirm_msg = f"""🔴 *AUTO REAL ENTRY EXECUTED* 📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')} 💰 Entry: ₹{live_ltp:.2f} x {real_qty} qty @ MARKET 🆔 {auto_msg} ⏰ {datetime.now(IST).strftime('%H:%M:%S IST')} ✅ Auto entry at market price!"""
+                        confirm_msg = f"""🔴 *AUTO REAL ENTRY EXECUTED*
+
+📊 {idea.get('symbol')} {idea.get('strike')} {idea.get('option')}
+💰 Entry: ₹{live_ltp:.2f} x {real_qty} qty @ MARKET
+🆔 {auto_msg}
+⏰ {datetime.now(IST).strftime('%H:%M:%S IST')}
+
+✅ Auto entry at market price!"""
                         send_telegram_message(bot_token, chat_id, confirm_msg)
                     except:
                         pass
@@ -1592,7 +1637,10 @@ def auto_send_entry_alert_if_new(idea, live_ltp, spot, expiry_label_str):
         return False, str(e)[:80]
 
 def check_momentum_reversal(pos, current_rsi=60, current_trend="BULLISH"):
-    """ V39 MOMENTUM REVERSAL DETECTION Returns: (is_reversal, reversal_type, severity) """
+    """
+    V39 MOMENTUM REVERSAL DETECTION
+    Returns: (is_reversal, reversal_type, severity)
+    """
     try:
         entry_rsi = pos.get('entry_rsi', 65)
         entry_trend = pos.get('entry_trend', 'BULLISH')
@@ -1689,7 +1737,20 @@ def auto_check_emergency_exit_from_lights(light1, light2):
                     pnl = (live_ltp - entry) * pos.get('qty', 0) if opt_type == "CE" else (entry - live_ltp) * pos.get('qty', 0)
                     
                     # Send emergency exit telegram
-                    msg = f"""🚨 *EMERGENCY EXIT - {symbol} {pos.get('strike')} {opt_type}* 📊 *{symbol} {pos.get('strike')} {opt_type}* Entry: ₹{entry:.2f} → Exit: ₹{live_ltp:.2f} 💰 *P&L:* ₹{pnl:+.2f} 🔥 *Reason:* {reason} Pattern: {light1.get('pattern')} Vol: {light1.get('vol_ratio',0):.2f}x Light1: {light1.get('status')} | Light2: {light2.get('status')} ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} 🤖 Emergency Exit from Traffic Light System"""
+                    msg = f"""🚨 *EMERGENCY EXIT - {symbol} {pos.get('strike')} {opt_type}*
+
+📊 *{symbol} {pos.get('strike')} {opt_type}*
+Entry: ₹{entry:.2f} → Exit: ₹{live_ltp:.2f}
+💰 *P&L:* ₹{pnl:+.2f}
+
+🔥 *Reason:* {reason}
+
+Pattern: {light1.get('pattern')}
+Vol: {light1.get('vol_ratio',0):.2f}x
+Light1: {light1.get('status')} | Light2: {light2.get('status')}
+
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+🤖 Emergency Exit from Traffic Light System"""
                     
                     ok, resp = send_telegram_message(bot_token, chat_id, msg)
                     print(f"Emergency exit alert sent for {trade_id}: ok={ok} resp={resp}")
@@ -2169,7 +2230,10 @@ class HighConvictionMathEngine:
             return 60, "🟡"
     
     def calculate(self, spot, strike, ce_pe, prices, highs, lows, volumes, oi_data, iv=15, time_to_expiry_days=3, premium_ltp=0):
-        """ Main Math Engine - All permutation & combination Returns: detailed setups, overall conviction, EV, Kelly, Probability """
+        """
+        Main Math Engine - All permutation & combination
+        Returns: detailed setups, overall conviction, EV, Kelly, Probability
+        """
         setups = {}
         scores = {}
         
@@ -2450,7 +2514,10 @@ import time as time_fix
 import random
 
 def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", expiry="27-Oct-2026"):
-    """ V14 ULTRA: Completely fresh session every call, bypasses Cloudflare/CDN cache, retries 3 times with different UAs. This fixes the 78.40 stuck vs 130+ live issue. """
+    """
+    V14 ULTRA: Completely fresh session every call, bypasses Cloudflare/CDN cache,
+    retries 3 times with different UAs. This fixes the 78.40 stuck vs 130+ live issue.
+    """
     # Normalize
     try:
         target_exp_norm = expiry_norm(expiry)
@@ -2543,7 +2610,10 @@ def get_nse_option_ltp_ULTRA_FRESH(symbol="NIFTY", strike=22450, opt_type="CE", 
 
 
 def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
-    """ V15 FINAL: Guarantees broker match (108.2 vs 56.30 issue fixed) Tries selected expiry first, then all expiries, returns first non-zero LTP that matches broker. """
+    """
+    V15 FINAL: Guarantees broker match (108.2 vs 56.30 issue fixed)
+    Tries selected expiry first, then all expiries, returns first non-zero LTP that matches broker.
+    """
     # Try selected expiry with ultra fresh fetcher
     ltp, src, ok, exp_used = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, selected_expiry)
     if ok and ltp > 0:
@@ -2578,7 +2648,9 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 
 def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
-    """ V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY """
+    """
+    V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY
+    """
     try:
         api_key = ""; client_id = ""; password = ""; totp_secret = ""
         for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
@@ -2702,7 +2774,9 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
 
 
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    """ V20: Tries Angel first (100% broker matched), then proxy, then NSE """
+    """
+    V20: Tries Angel first (100% broker matched), then proxy, then NSE
+    """
     # Try Angel first - 100% broker matched, works on Cloud
     ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
     if ok and ltp > 0:
@@ -2728,7 +2802,10 @@ def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
 
 
 def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
-    """ V19 FINAL: Uses proxy to bypass NSE IP block on Streamlit Cloud This WILL show 108.20 even on Cloud """
+    """
+    V19 FINAL: Uses proxy to bypass NSE IP block on Streamlit Cloud
+    This WILL show 108.20 even on Cloud
+    """
     import urllib.parse
     target_strike = int(strike)
     target_type = opt_type.upper()
@@ -2808,7 +2885,10 @@ def get_live_premium_V19_FINAL(symbol, strike, opt_type, expiry):
 
 
 def get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
-    """ V18 ULTIMATE: Works on Streamlit Cloud even when nseindia.com blocks IP Tries 4 sources to get broker-matched LTP like 108.2 """
+    """
+    V18 ULTIMATE: Works on Streamlit Cloud even when nseindia.com blocks IP
+    Tries 4 sources to get broker-matched LTP like 108.2
+    """
     import random, json
     target_strike = int(strike)
     target_type = opt_type.upper()
@@ -3248,11 +3328,138 @@ with st.sidebar.expander("📱 Telegram EMERGENCY EXIT Alert", expanded=False):
         else:
             st.warning("Token + Chat ID daalo pehle")
     
-    st.markdown(""" **Kaise banaye:** 1. Telegram pe @BotFather search karo 2. /newbot → Name do → Token milega (123456:ABC...) 3. Apne bot ko /start karo 4. Chat ID: @userinfobot pe /start → ID milega 5. Yaha Token + Chat ID daalo + Enable karo """)
+    st.markdown("""
+    **Kaise banaye:**
+    1. Telegram pe @BotFather search karo
+    2. /newbot → Name do → Token milega (123456:ABC...)
+    3. Apne bot ko /start karo
+    4. Chat ID: @userinfobot pe /start → ID milega
+    5. Yaha Token + Chat ID daalo + Enable karo
+    """)
 
 
 st.markdown(
-    """ <style> .block-container { padding-top: 0.8rem !important; padding-left: 0.5rem !important; padding-right: 0.5rem !important; max-width: 100% !important; } @media(max-width: 768px) { [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; gap: 0.35rem !important; width: 100% !important; } [data-testid="column"] { min-width: 48% !important; max-width: 48% !important; flex: 1 1 48% !important; width: 48% !important; } [data-testid="stMetricValue"], [data-testid="stMetricValue"] * { font-size: 1.05rem !important; line-height: 1.15 !important; } [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * { font-size: 0.72rem !important; line-height: 1.1 !important; } [data-testid="stMetricDelta"], [data-testid="stMetricDelta"] * { font-size: 0.68rem !important; line-height: 1.0 !important; } } .trade-card { width: 100%; box-sizing: border-box; border: 1px solid rgba(128, 128, 128, 0.30); border-radius: 12px; padding: 1rem; margin: 0.7rem 0; background-color: rgba(255, 255, 255, 0.02); } .light-box { border: 1px solid rgba(128, 128, 128, 0.25); border-radius: 12px; padding: 0.8rem; text-align: center; background-color: rgba(255, 255, 255, 0.02); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); } .reason-box { background-color: rgba(128, 128, 128, 0.08); border-left: 4px solid #4CAF50; padding: 0.75rem; border-radius: 4px; margin: 0.5rem 0; line-height: 1.45; } .exit-box { background-color: rgba(244, 67, 54, 0.08); border-left: 4px solid #F44336; padding: 0.75rem; border-radius: 4px; margin: 0.5rem 0; line-height: 1.45; } .prediction-card-green { background: linear-gradient(135deg, rgba(76, 175, 80, 0.15), rgba(76, 175, 80, 0.05)); border: 1.5px solid #4CAF50; border-radius: 12px; padding: 1rem 1.1rem; margin: 0.5rem 0 0.8rem 0; } .prediction-card-red { background: linear-gradient(135deg, rgba(244, 67, 54, 0.15), rgba(244, 67, 54, 0.05)); border: 1.5px solid #F44336; border-radius: 12px; padding: 1rem 1.1rem; margin: 0.5rem 0 0.8rem 0; } .prediction-card-gold { background: linear-gradient(135deg, rgba(255, 193, 7, 0.15), rgba(255, 193, 7, 0.05)); border: 1.5px solid #FFC107; border-radius: 12px; padding: 1rem 1.1rem; margin: 0.5rem 0 0.8rem 0; } div[data-stale="true"], div[data-stale="true"] *, .stale-element, .stale-element *, .element-container, .element-container * { opacity: 1 !important; filter: none !important; transition: none !important; animation: none !important; } [data-testid="stMetric"], [data-testid="stMetric"] * { opacity: 1 !important; transition: none !important; animation: none !important; } [data-testid="stMetric"] { background-color: rgba(255, 255, 255, 0.02) !important; border: 1px solid rgba(128, 128, 128, 0.25) !important; border-radius: 10px !important; padding: 0.5rem 0.55rem !important; min-height: 82px !important; display: flex !important; flex-direction: column !important; justify-content: center !important; overflow: hidden !important; } [data-testid="stStatusWidget"] { visibility: hidden !important; display: none !important; } </style> """,
+    """
+    <style>
+    .block-container {
+        padding-top: 0.8rem !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        max-width: 100% !important;
+    }
+    
+    @media(max-width: 768px) {
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+            gap: 0.35rem !important;
+            width: 100% !important;
+        }
+        [data-testid="column"] {
+            min-width: 48% !important;
+            max-width: 48% !important;
+            flex: 1 1 48% !important;
+            width: 48% !important;
+        }
+        [data-testid="stMetricValue"], [data-testid="stMetricValue"] * {
+            font-size: 1.05rem !important;
+            line-height: 1.15 !important;
+        }
+        [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * {
+            font-size: 0.72rem !important;
+            line-height: 1.1 !important;
+        }
+        [data-testid="stMetricDelta"], [data-testid="stMetricDelta"] * {
+            font-size: 0.68rem !important;
+            line-height: 1.0 !important;
+        }
+    }
+    
+    .trade-card {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid rgba(128, 128, 128, 0.30);
+        border-radius: 12px;
+        padding: 1rem;
+        margin: 0.7rem 0;
+        background-color: rgba(255, 255, 255, 0.02);
+    }
+    .light-box {
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: 12px;
+        padding: 0.8rem;
+        text-align: center;
+        background-color: rgba(255, 255, 255, 0.02);
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .reason-box {
+        background-color: rgba(128, 128, 128, 0.08);
+        border-left: 4px solid #4CAF50;
+        padding: 0.75rem;
+        border-radius: 4px;
+        margin: 0.5rem 0;
+        line-height: 1.45;
+    }
+    .exit-box {
+        background-color: rgba(244, 67, 54, 0.08);
+        border-left: 4px solid #F44336;
+        padding: 0.75rem;
+        border-radius: 4px;
+        margin: 0.5rem 0;
+        line-height: 1.45;
+    }
+    .prediction-card-green {
+        background: linear-gradient(135deg, rgba(76, 175, 80, 0.15), rgba(76, 175, 80, 0.05));
+        border: 1.5px solid #4CAF50;
+        border-radius: 12px;
+        padding: 1rem 1.1rem;
+        margin: 0.5rem 0 0.8rem 0;
+    }
+    .prediction-card-red {
+        background: linear-gradient(135deg, rgba(244, 67, 54, 0.15), rgba(244, 67, 54, 0.05));
+        border: 1.5px solid #F44336;
+        border-radius: 12px;
+        padding: 1rem 1.1rem;
+        margin: 0.5rem 0 0.8rem 0;
+    }
+    .prediction-card-gold {
+        background: linear-gradient(135deg, rgba(255, 193, 7, 0.15), rgba(255, 193, 7, 0.05));
+        border: 1.5px solid #FFC107;
+        border-radius: 12px;
+        padding: 1rem 1.1rem;
+        margin: 0.5rem 0 0.8rem 0;
+    }
+
+    div[data-stale="true"], div[data-stale="true"] *, .stale-element, .stale-element *, .element-container, .element-container * {
+        opacity: 1 !important;
+        filter: none !important;
+        transition: none !important;
+        animation: none !important;
+    }
+
+    [data-testid="stMetric"], [data-testid="stMetric"] * {
+        opacity: 1 !important;
+        transition: none !important;
+        animation: none !important;
+    }
+
+    [data-testid="stMetric"] {
+        background-color: rgba(255, 255, 255, 0.02) !important;
+        border: 1px solid rgba(128, 128, 128, 0.25) !important;
+        border-radius: 10px !important;
+        padding: 0.5rem 0.55rem !important;
+        min-height: 82px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+        overflow: hidden !important;
+    }
+
+    [data-testid="stStatusWidget"] {
+        visibility: hidden !important;
+        display: none !important;
+    }
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -4995,7 +5202,12 @@ def calculate_indian_market_prediction(macro_data: Dict[str, Any], domestic_pcr:
 # 16. REGULATORY TRANSACTION FRICTION ENGINE (OPTIONS & EQUITIES)
 # =====================================================================
 def calculate_trade_friction(buy_price: float, sell_price: float, qty: int, is_option: bool = True, is_delivery_equity: bool = False) -> Dict[str, float]:
-    """ Computes exact Indian regulatory charges: - Options: STT on sell turnover, Exchange 0.05%, GST 18%, Stamp 0.003% - Equity Intraday: STT 0.025% on sell, Exchange 0.00345%, Stamp 0.003% - Equity Delivery: STT 0.1% on BOTH buy and sell, Stamp 0.015% on buy """
+    """
+    Computes exact Indian regulatory charges:
+    - Options: STT on sell turnover, Exchange 0.05%, GST 18%, Stamp 0.003%
+    - Equity Intraday: STT 0.025% on sell, Exchange 0.00345%, Stamp 0.003%
+    - Equity Delivery: STT 0.1% on BOTH buy and sell, Stamp 0.015% on buy
+    """
     buy_turnover = buy_price * qty
     sell_turnover = sell_price * qty
     total_turnover = buy_turnover + sell_turnover
@@ -5063,7 +5275,10 @@ def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float, is_eq
 # ===== V33 REAL AUTO TRADING WITH ANGEL ONE - Direct Broker Execution =====
 
 def place_angel_real_order(symbol, strike, opt_type, expiry, quantity, order_type="BUY", price=0):
-    """ Place REAL order on Angel One via SmartAPI WARNING: This places REAL money order! """
+    """
+    Place REAL order on Angel One via SmartAPI
+    WARNING: This places REAL money order!
+    """
     try:
         # Get secrets
         api_key = ""
@@ -5196,7 +5411,14 @@ def execute_real_trade_with_confirmation(idea, live_ltp, quantity, enable_real=F
                 bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN","")
                 chat_id = st.secrets.get("TELEGRAM_CHAT_ID","")
                 if bot_token and chat_id:
-                    real_msg = f"""🔴 *REAL ORDER PLACED - {symbol}* 📊 *{symbol} {strike} {opt_type}* 💰 Entry: ₹{live_ltp:.2f} x {quantity} qty 🆔 Order ID: {order_id} ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} ⚠️ REAL MONEY ORDER - Check Angel One app!"""
+                    real_msg = f"""🔴 *REAL ORDER PLACED - {symbol}*
+
+📊 *{symbol} {strike} {opt_type}*
+💰 Entry: ₹{live_ltp:.2f} x {quantity} qty
+🆔 Order ID: {order_id}
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+
+⚠️ REAL MONEY ORDER - Check Angel One app!"""
                     send_telegram_message(bot_token, chat_id, real_msg)
             except:
                 pass
@@ -5485,7 +5707,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
 
 # =====================================================================
 # 19. MULTI-FACTOR EQUITY INTELLIGENCE ENGINE (TECHNICAL, FUNDAMENTAL,
-# CORPORATE/INSIDER FILINGS, FUTURE PLANS, MATH & TARGET TIME ETA)
+#     CORPORATE/INSIDER FILINGS, FUTURE PLANS, MATH & TARGET TIME ETA)
 # =====================================================================
 @st.cache_data(ttl=20, show_spinner=False)
 def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: str = "NSE", yf_sym: Optional[str] = None) -> Dict[str, Any]:
@@ -5529,7 +5751,9 @@ def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Optional[str] = None, current_price: Optional[float] = None) -> Dict[str, Any]:
-    """ Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary. """
+    """
+    Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary.
+    """
     clean_sym = symbol.replace("-EQ", "").strip().upper()
     target_yf = yf_sym or f"{clean_sym}.{'NS' if exchange=='NSE' else 'BO'}"
     
@@ -5626,7 +5850,10 @@ def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Option
 
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_corporate_filings_and_future_plans(symbol: str, stock_name: str) -> Dict[str, Any]:
-    """ Ingests official exchange corporate disclosures (NSE corporate-announcements API), promoter/institutional bulk & insider disclosures, and company future plans (Capex/Orders). """
+    """
+    Ingests official exchange corporate disclosures (NSE corporate-announcements API),
+    promoter/institutional bulk & insider disclosures, and company future plans (Capex/Orders).
+    """
     clean_sym = symbol.replace("-EQ", "").strip().upper()
     exchange_filings = []
     future_plans_news = []
@@ -5751,7 +5978,15 @@ def fetch_equity_candles(symbol: str, token: Optional[str] = None, exchange: str
     return pd.DataFrame()
 
 def compute_equity_math_and_eta(df: pd.DataFrame, last_price: float, target1: float, target2: float, atr: float, adx: float, tf_cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """ Computes Arithmetic & Mathematical metrics: - Linear Regression Slope & R-Squared over 20 periods - Statistical Z-Score (Mean Reversion distance) - Annualized Volatility (%) - Fibonacci Retracement & Extension Levels - Relative Volume (RVOL) & Money Flow Accumulation Score - Mathematical Target Time Estimation (ETA in candles and exact Date/Time window) """
+    """
+    Computes Arithmetic & Mathematical metrics:
+    - Linear Regression Slope & R-Squared over 20 periods
+    - Statistical Z-Score (Mean Reversion distance)
+    - Annualized Volatility (%)
+    - Fibonacci Retracement & Extension Levels
+    - Relative Volume (RVOL) & Money Flow Accumulation Score
+    - Mathematical Target Time Estimation (ETA in candles and exact Date/Time window)
+    """
     closes = df["close"].tail(20).values
     n = len(closes)
     if n >= 5:
@@ -5859,7 +6094,15 @@ def compute_equity_math_and_eta(df: pd.DataFrame, last_price: float, target1: fl
     }
 
 def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: pd.DataFrame, tf_cfg: Optional[Dict[str, Any]] = None, fundamentals: Optional[Dict[str, Any]] = None, corp_intel: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """ Comprehensive Multi-Factor Equity Setup & Exit Engine combining: 1. Technicals (EMA20/50/200, Wilder RSI/ADX, Anchored VWAP, Candlesticks) 2. Fundamentals (P/E, ROE, Debt/Equity, Market Cap) 3. Corporate Filings, Legal Insider Disclosures & Future Plans 4. Arithmetic & Mathematical Models (Z-Score, Linear Regression, Fibonacci, Quarter-Kelly) 5. Volume & Institutional Investment Flow (RVOL, CMF) 6. Explicit Entry Call AND Active Exit Call with Target Price & Mathematical Target Time (ETA) """
+    """
+    Comprehensive Multi-Factor Equity Setup & Exit Engine combining:
+    1. Technicals (EMA20/50/200, Wilder RSI/ADX, Anchored VWAP, Candlesticks)
+    2. Fundamentals (P/E, ROE, Debt/Equity, Market Cap)
+    3. Corporate Filings, Legal Insider Disclosures & Future Plans
+    4. Arithmetic & Mathematical Models (Z-Score, Linear Regression, Fibonacci, Quarter-Kelly)
+    5. Volume & Institutional Investment Flow (RVOL, CMF)
+    6. Explicit Entry Call AND Active Exit Call with Target Price & Mathematical Target Time (ETA)
+    """
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
     last = quote.get("price")
     if last is None or df.empty or len(df) < 5: return None
@@ -6136,7 +6379,17 @@ def ask_gemini(ideas, market_data):
     except:
         pass
     
-    prompt = f""" You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY) and equities. Explain the generated trade setups in detail in Hindi + English mix (Hinglish) for retail trader. Focus on timeframe, GEX regime, Greeks, Max Pain, Expected Move, Kelly sizing. Keep tone educational, paper-trading safe, no financial advice. DATA: {__import__('json').dumps(payload, default=str)[:10000]} """
+    prompt = f"""
+You are a senior institutional quantitative researcher for Indian derivatives (NIFTY/BANKNIFTY) and equities.
+Explain the generated trade setups in detail in Hindi + English mix (Hinglish) for retail trader.
+
+Focus on timeframe, GEX regime, Greeks, Max Pain, Expected Move, Kelly sizing.
+
+Keep tone educational, paper-trading safe, no financial advice.
+
+DATA:
+{__import__('json').dumps(payload, default=str)[:10000]}
+"""
     result = call_gemini_cascade(prompt)
     if not result or len(result.strip()) < 20:
         return ""
@@ -6255,7 +6508,7 @@ if "Universal 5,000+" in segment_mode:
     if selected_stock:
         st.divider()
 
-@live_fragment(run_every=10)
+        @live_fragment(run_every=10)
         def render_live_equity_view(stock, tf):
             quote = fetch_equity_live_quote(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"))
             df = add_indicators(fetch_equity_candles(symbol=stock["symbol"], token=stock.get("token"), exchange=stock["exchange"], yf_sym=stock.get("yfinance"), tf_cfg=tf), current_live_price=quote.get("price"))
@@ -6277,13 +6530,32 @@ if "Universal 5,000+" in segment_mode:
 
                 # 1. ENTRY CALL & TARGET TIME (ETA) BANNER
                 st.markdown(
-                    f""" <div class="{analysis['badge']}"> <h3 style="margin: 0; padding: 0;">{icon} Institutional Entry Call: <b>{analysis['stance']}</b> ({tf['label']})</h3> <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;"> <b>Ideal Entry Zone:</b> {RUPEE}{fmt(analysis['entry_zone_low'])} – {RUPEE}{fmt(analysis['entry_zone_high'])} | <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])} | <b>Recommended Size:</b> {analysis['recommended_qty']} Shares ({RUPEE}{analysis['alloc_capital']:,.0f} | Kelly: {analysis['kelly_pct']}%) </p> <p style="margin: 0.25rem 0; font-size: 14.5px;"> <b>🎯 Target 1:</b> {RUPEE}{fmt(analysis['t1'])} (<b>ETA:</b> <code>{math_m['t1_eta']}</code>) | <b>🎯 Target 2:</b> {RUPEE}{fmt(analysis['t2'])} (<b>ETA:</b> <code>{math_m['t2_eta']}</code>) </p> <span style="font-size: 13.5px;"><b>Regime Status:</b> {analysis['sideways_notes']}</span> </div> """,
+                    f"""
+                    <div class="{analysis['badge']}">
+                        <h3 style="margin: 0; padding: 0;">{icon} Institutional Entry Call: <b>{analysis['stance']}</b> ({tf['label']})</h3>
+                        <p style="margin: 0.4rem 0 0.2rem 0; font-size: 15px;">
+                            <b>Ideal Entry Zone:</b> {RUPEE}{fmt(analysis['entry_zone_low'])} – {RUPEE}{fmt(analysis['entry_zone_high'])} | 
+                            <b>Strict Stop Loss:</b> {RUPEE}{fmt(analysis['sl'])} | 
+                            <b>Recommended Size:</b> {analysis['recommended_qty']} Shares ({RUPEE}{analysis['alloc_capital']:,.0f} | Kelly: {analysis['kelly_pct']}%)
+                        </p>
+                        <p style="margin: 0.25rem 0; font-size: 14.5px;">
+                            <b>🎯 Target 1:</b> {RUPEE}{fmt(analysis['t1'])} (<b>ETA:</b> <code>{math_m['t1_eta']}</code>) | 
+                            <b>🎯 Target 2:</b> {RUPEE}{fmt(analysis['t2'])} (<b>ETA:</b> <code>{math_m['t2_eta']}</code>)
+                        </p>
+                        <span style="font-size: 13.5px;"><b>Regime Status:</b> {analysis['sideways_notes']}</span>
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
 
                 # 2. DEDICATED EXIT CALL & TRAILING SCHEDULE BOX
                 st.markdown(
-                    f""" <div class="exit-box"> <b>{STOPWATCH} Active Exit Call & Profit-Booking Schedule ({analysis['exit_call_status']}):</b><br> {analysis['exit_call_action']} </div> """,
+                    f"""
+                    <div class="exit-box">
+                        <b>{STOPWATCH} Active Exit Call & Profit-Booking Schedule ({analysis['exit_call_status']}):</b><br>
+                        {analysis['exit_call_action']}
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
 
@@ -6306,7 +6578,7 @@ if "Universal 5,000+" in segment_mode:
                 st.info(
                     f"📐 **Fibonacci Mathematical Structure:** "
                     f"Retracement Support: **38.2%:** `{RUPEE}{math_m['fib_382']:,.2f}` | **50.0%:** `{RUPEE}{math_m['fib_500']:,.2f}` | **61.8% (Golden Pocket):** `{RUPEE}{math_m['fib_618']:,.2f}` "
-                    f"• Upside Breakout Extensions: **127.2%:** `{RUPEE}{math_m['fib_ext_1272']:,.2f}` | **161.8%:** `{RUPEE}{math_m['fib_ext_1618']:,.2f}` \n"
+                    f"• Upside Breakout Extensions: **127.2%:** `{RUPEE}{math_m['fib_ext_1272']:,.2f}` | **161.8%:** `{RUPEE}{math_m['fib_ext_1618']:,.2f}`  \n"
                     f"🏦 **Institutional Volume & Investment Footprint:** `{math_m['investment_flow_status']}` (Candle Pattern: `{analysis['candle_eval']['pattern']}`)"
                 )
 
@@ -6348,7 +6620,12 @@ if "Universal 5,000+" in segment_mode:
                             st.caption(f"{BULLET} {ef}")
 
                 st.markdown(
-                    f""" <div class="reason-box"> <b>{PIN} Multi-Factor Trade Formulation Summary ({tf['label']}):</b><br> {' | '.join(analysis['reasons'])} </div> """,
+                    f"""
+                    <div class="reason-box">
+                        <b>{PIN} Multi-Factor Trade Formulation Summary ({tf['label']}):</b><br>
+                        {' | '.join(analysis['reasons'])}
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
 
@@ -6381,7 +6658,39 @@ if "Universal 5,000+" in segment_mode:
         if GEMINI_API_KEY and analysis_result:
             if st.button(f"{ROBOT} GENERATE FULL AI MULTI-FACTOR ENTRY & EXIT REPORT FOR {selected_stock['symbol']}", use_container_width=True):
                 with st.spinner("Gemini Institutional AI synthesizing Technicals, Fundamentals, Corporate Filings, Future Plans, Math & Exit ETA..."):
-                    prompt = f""" You are a Senior Institutional Equity Strategist & Quantitative Analyst for Indian Markets (NSE/BSE). Synthesize a complete, grounded Entry & Exit Trade Advisory for {analysis_result['name']} ({analysis_result['symbol']}) on timeframe [{active_tf['label']}]. CRITICAL: Use ONLY the verified numbers provided below. Do not invent prices. 1. ENTRY & EXIT CALLS WITH TARGET TIME (ETA): - Stance: {analysis_result['stance']} | Current Price: ₹{analysis_result['price']} - Ideal Entry Zone: ₹{analysis_result['entry_zone_low']} to ₹{analysis_result['entry_zone_high']} - Target 1: ₹{analysis_result['t1']} (Expected Time ETA: {analysis_result['math']['t1_eta']}) - Target 2: ₹{analysis_result['t2']} (Expected Time ETA: {analysis_result['math']['t2_eta']}) - Strict Stop-Loss: ₹{analysis_result['sl']} | Max Time-Stop Hold: {analysis_result['math']['max_hold_bars']} bars - Active Exit Call Status: {analysis_result['exit_call_status']} -> {analysis_result['exit_call_action']} 2. ARITHMETIC, MATHEMATICAL & VOLUME METRICS: - Linear Regression Slope: {analysis_result['math']['reg_slope']}/bar (R² = {analysis_result['math']['r_squared']}) - Z-Score: {analysis_result['math']['z_score']} sigma | Annualized Vol: {analysis_result['math']['ann_vol_pct']}% - Fibonacci: 38.2% (₹{analysis_result['math']['fib_382']}), 61.8% (₹{analysis_result['math']['fib_618']}), Ext 161.8% (₹{analysis_result['math']['fib_ext_1618']}) - Relative Volume (RVOL): {analysis_result['math']['rvol']}x | CMF Money Flow: {analysis_result['math']['cmf_20']} ({analysis_result['math']['investment_flow_status']}) - Quarter-Kelly Capital Allocation: {analysis_result['kelly_pct']}% ({analysis_result['recommended_qty']} shares) 3. FUNDAMENTALS, CORPORATE DISCLOSURES & FUTURE PLANS: - Fundamental Verdict: {fund_result.get('fund_verdict')} | Notes: {fund_result.get('fund_notes')} - Corporate Catalyst: {corp_result.get('catalyst_verdict')} - Future Plans / Capex / Orders: {corp_result.get('future_plans')} - Promoter / Institutional Disclosures: {corp_result.get('insider_signals')} Structure your response into 5 crisp institutional sections: 1. Executive Entry Call & Position Sizing 2. Technical, Arithmetic & Volume/Investment Thesis 3. Fundamental Valuation, Corporate Filings & Future Plans Impact 4. Mathematical Target Price & Target Time (ETA) Roadmap 5. Complete Exit Call Protocol (Partial Booking, Trailing SL, Time-Stop & Invalidation) """
+                    prompt = f"""
+                    You are a Senior Institutional Equity Strategist & Quantitative Analyst for Indian Markets (NSE/BSE).
+                    Synthesize a complete, grounded Entry & Exit Trade Advisory for {analysis_result['name']} ({analysis_result['symbol']}) on timeframe [{active_tf['label']}].
+                    CRITICAL: Use ONLY the verified numbers provided below. Do not invent prices.
+
+                    1. ENTRY & EXIT CALLS WITH TARGET TIME (ETA):
+                       - Stance: {analysis_result['stance']} | Current Price: ₹{analysis_result['price']}
+                       - Ideal Entry Zone: ₹{analysis_result['entry_zone_low']} to ₹{analysis_result['entry_zone_high']}
+                       - Target 1: ₹{analysis_result['t1']} (Expected Time ETA: {analysis_result['math']['t1_eta']})
+                       - Target 2: ₹{analysis_result['t2']} (Expected Time ETA: {analysis_result['math']['t2_eta']})
+                       - Strict Stop-Loss: ₹{analysis_result['sl']} | Max Time-Stop Hold: {analysis_result['math']['max_hold_bars']} bars
+                       - Active Exit Call Status: {analysis_result['exit_call_status']} -> {analysis_result['exit_call_action']}
+
+                    2. ARITHMETIC, MATHEMATICAL & VOLUME METRICS:
+                       - Linear Regression Slope: {analysis_result['math']['reg_slope']}/bar (R² = {analysis_result['math']['r_squared']})
+                       - Z-Score: {analysis_result['math']['z_score']} sigma | Annualized Vol: {analysis_result['math']['ann_vol_pct']}%
+                       - Fibonacci: 38.2% (₹{analysis_result['math']['fib_382']}), 61.8% (₹{analysis_result['math']['fib_618']}), Ext 161.8% (₹{analysis_result['math']['fib_ext_1618']})
+                       - Relative Volume (RVOL): {analysis_result['math']['rvol']}x | CMF Money Flow: {analysis_result['math']['cmf_20']} ({analysis_result['math']['investment_flow_status']})
+                       - Quarter-Kelly Capital Allocation: {analysis_result['kelly_pct']}% ({analysis_result['recommended_qty']} shares)
+
+                    3. FUNDAMENTALS, CORPORATE DISCLOSURES & FUTURE PLANS:
+                       - Fundamental Verdict: {fund_result.get('fund_verdict')} | Notes: {fund_result.get('fund_notes')}
+                       - Corporate Catalyst: {corp_result.get('catalyst_verdict')}
+                       - Future Plans / Capex / Orders: {corp_result.get('future_plans')}
+                       - Promoter / Institutional Disclosures: {corp_result.get('insider_signals')}
+
+                    Structure your response into 5 crisp institutional sections:
+                    1. Executive Entry Call & Position Sizing
+                    2. Technical, Arithmetic & Volume/Investment Thesis
+                    3. Fundamental Valuation, Corporate Filings & Future Plans Impact
+                    4. Mathematical Target Price & Target Time (ETA) Roadmap
+                    5. Complete Exit Call Protocol (Partial Booking, Trailing SL, Time-Stop & Invalidation)
+                    """
                     ai_response = call_gemini_cascade(prompt)
                     st.markdown(f"### {ROBOT} Institutional Multi-Factor AI Equity Advisory")
                     st.write(ai_response)
@@ -6547,7 +6856,16 @@ else:
                         test_pos = {'symbol': 'NIFTY', 'strike': 22750, 'option_type': 'CE', 'entry_price': 108.2, 'qty': 1}
                         test_msg_sl = format_telegram_exit_alert(test_pos, 85.5, -22.7, "SL Hit @ ₹85.50 🚨 | PAPER EXIT @ MARKET - TEST EXIT")
                         test_msg_t1 = format_telegram_exit_alert(test_pos, 135.0, +26.8, "Target 1 Hit @ ₹135.00 📈 1st LOT BOOKED - TEST EXIT")
-                        test_msg_emergency = f"""🚨 *TEST EMERGENCY EXIT - NIFTY 22750 CE* 📊 *NIFTY 22750 CE* Entry: ₹108.20 → Exit: ₹95.30 💰 *P&L:* ₹-12.90 🔥 *Reason:* 🚨 EMERGENCY EXIT CE: Bearish Engulfing | Light1: RED | Light2: RED | Momentum Reversed! - TEST EXIT ⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')} 🤖 TEST Emergency Exit - Sure Shot"""
+                        test_msg_emergency = f"""🚨 *TEST EMERGENCY EXIT - NIFTY 22750 CE*
+
+📊 *NIFTY 22750 CE*
+Entry: ₹108.20 → Exit: ₹95.30
+💰 *P&L:* ₹-12.90
+
+🔥 *Reason:* 🚨 EMERGENCY EXIT CE: Bearish Engulfing | Light1: RED | Light2: RED | Momentum Reversed! - TEST EXIT
+
+⏰ {datetime.now(IST).strftime('%d-%b %H:%M:%S IST')}
+🤖 TEST Emergency Exit - Sure Shot"""
                         ok1, resp1 = send_telegram_message(bot_t, chat_t, test_msg_sl)
                         import time
                         time.sleep(1)
@@ -6605,7 +6923,16 @@ else:
                         else:
                             # Fallback
                             bot_t, chat_t = get_telegram_keys()
-                            test_msg = f"""📞 *TEST CONFIRM CALL - 85% Dummy* 🎯 High Conviction: 85% 🟢 GREEN 🔥 85%+ BEST! 📊 NIFTY 22750 CE 💰 LTP: ₹108.20 | Spot: ₹22800 📅 Expiry: 03 Nov 2026 ⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')} ✅ TEST - Real order pending Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
+                            test_msg = f"""📞 *TEST CONFIRM CALL - 85% Dummy*
+
+🎯 High Conviction: 85% 🟢 GREEN 🔥 85%+ BEST!
+📊 NIFTY 22750 CE
+💰 LTP: ₹108.20 | Spot: ₹22800
+📅 Expiry: 03 Nov 2026
+⏰ Time: {datetime.now(IST).strftime('%H:%M:%S IST')}
+✅ TEST - Real order pending
+
+Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             ok2, resp2 = send_telegram_message(bot_t, chat_t, test_msg)
                             if ok2:
                                 st.sidebar.success(f"✅ TEST sent (fallback) - Check Telegram")
@@ -6685,7 +7012,11 @@ else:
                         col1, col2, col3 = st.columns([3,1,1])
                         with col1:
                             status_icon = "✅" if is_pass else "❌"
-                            st.markdown(f""" **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}** Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'} LTP: ₹{live_ltp:.2f} | Spot: {(spot or 0):.2f} | Qty: {qty} lots | Time: {time_str} """)
+                            st.markdown(f"""
+                            **{status_icon} {idea.get('symbol','NIFTY')} {idea.get('strike','')} {idea.get('option','')}**
+                            Conviction: **{conv}%** | Min Filter: {min_conv}% | {'PASS ✅' if is_pass else f'BLOCK ❌ (<{min_conv}%)'}
+                            LTP: ₹{live_ltp:.2f} | Spot: {(spot or 0):.2f} | Qty: {qty} lots | Time: {time_str}
+                            """)
                             if not is_pass:
                                 st.error(f"Conviction {conv}% < Filter {min_conv}% - Isliye BLOCK hoga real me")
                         with col2:
@@ -6726,7 +7057,7 @@ else:
     # Call it before ticker
     render_pending_confirmations_ui()
 
-@live_fragment(run_every=0.5)
+    @live_fragment(run_every=0.5)
     def _instant_exit_v22():
         try:
             auto_check_and_exit_positions()
@@ -6734,7 +7065,7 @@ else:
             pass
     _instant_exit_v22()
 
-@live_fragment(run_every=0.5)
+    @live_fragment(run_every=0.5)
     def _instant_exit_v19():
         try:
             auto_check_and_exit_positions()
@@ -6742,7 +7073,7 @@ else:
             pass
     _instant_exit_v19()
 
-@live_fragment(run_every=1)
+    @live_fragment(run_every=1)
     def _tg_poll_v19():
         try:
             handle_telegram_callback_query()
@@ -6757,7 +7088,7 @@ else:
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-@live_fragment(run_every=1)
+    @live_fragment(run_every=1)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
@@ -6795,7 +7126,7 @@ else:
     render_index_live_ticker(underlying, selected_expiry, active_tf)
     st.divider()
 
-@live_fragment(run_every=30)
+    @live_fragment(run_every=30)
     def render_index_research_and_prediction(selected_underlying, current_expiry):
         st.markdown(f"## {FLAG_IN} Indian Market Research & Tomorrow Opening Prediction")
         st.caption(f"Cross-Asset Synthesis: Nifty 50 Gap Model {BULLET} FII/DII Institutional Flow {BULLET} Global Radar")
@@ -6811,7 +7142,17 @@ else:
         icon = ROCKET if "GAP-UP" in pred["verdict"] else (DOWN_ARROW if "GAP-DOWN" in pred["verdict"] else SCALE)
 
         st.markdown(
-            f""" <div class="{pred['badge']}"> <h3 style="margin: 0; padding: 0;">{icon} Next Session Opening Expectation: <b>{pred['verdict']}</b></h3> <p style="margin: 0.4rem 0 0.2rem 0; font-size: 14.5px;"> <b>Estimated Opening Gap:</b> <code>{pred['points_range']}</code> | <b>Model Conviction:</b> {pred['confidence']}% | <b>PCR Floor:</b> {pcr_val:.2f} </p> <span style="font-size: 13.5px;"><b>Recommended Execution Strategy:</b> {pred['action']}</span> </div> """,
+            f"""
+            <div class="{pred['badge']}">
+                <h3 style="margin: 0; padding: 0;">{icon} Next Session Opening Expectation: <b>{pred['verdict']}</b></h3>
+                <p style="margin: 0.4rem 0 0.2rem 0; font-size: 14.5px;">
+                    <b>Estimated Opening Gap:</b> <code>{pred['points_range']}</code> | 
+                    <b>Model Conviction:</b> {pred['confidence']}% | 
+                    <b>PCR Floor:</b> {pcr_val:.2f}
+                </p>
+                <span style="font-size: 13.5px;"><b>Recommended Execution Strategy:</b> {pred['action']}</span>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
@@ -6856,7 +7197,7 @@ else:
     render_index_research_and_prediction(underlying, selected_expiry)
     st.divider()
 
-@live_fragment(run_every=10)
+    @live_fragment(run_every=10)
     def render_market_confluence_dashboard(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
@@ -6896,7 +7237,12 @@ else:
 
         st.write("")
 
-        st.info(f""" ⚖️ **Institutional Market Maker Radar:** * **Dealer GEX Regime:** `{gex_info['gex_regime']}` (Net GEX: `{gex_info['net_gex_cr']:+,.0f} Cr / 1% move`) * **Zero-Gamma Flip Level:** `{gex_info['gamma_flip']:,.0f}` | **Max Pain Target:** `{gex_info['max_pain']:,.0f}` * **Institutional Barriers:** Call Wall `{gex_info['call_wall']:,.0f}` | Put Wall `{gex_info['put_wall']:,.0f}` | 1-Sigma Expected Move: `\u00B1{gex_info['expected_move']:,.1f} Pts` """)
+        st.info(f"""
+        ⚖️ **Institutional Market Maker Radar:**
+        * **Dealer GEX Regime:** `{gex_info['gex_regime']}` (Net GEX: `{gex_info['net_gex_cr']:+,.0f} Cr / 1% move`)
+        * **Zero-Gamma Flip Level:** `{gex_info['gamma_flip']:,.0f}` | **Max Pain Target:** `{gex_info['max_pain']:,.0f}`
+        * **Institutional Barriers:** Call Wall `{gex_info['call_wall']:,.0f}` | Put Wall `{gex_info['put_wall']:,.0f}` | 1-Sigma Expected Move: `\u00B1{gex_info['expected_move']:,.1f} Pts`
+        """)
 
         if confluence["badge"] == "success":
             st.success(f"### {confluence['signal']}\n**Action:** {confluence['action']} | **Confidence:** {confluence['confidence']}%\n\n{confluence['rationale']}")
@@ -7286,7 +7632,12 @@ else:
                         with x4: st.metric("Expected Move", f"\u00B1{idea.get('expected_move', 0):,.1f} Pts")
 
                     st.markdown(
-                        f""" <div class="reason-box"> <b>{PIN} Trade Formulation Logic:</b><br> {idea['why']} </div> """,
+                        f"""
+                        <div class="reason-box">
+                            <b>{PIN} Trade Formulation Logic:</b><br>
+                            {idea['why']}
+                        </div>
+                        """,
                         unsafe_allow_html=True,
                     )
                     st.write(f"{STOP} **Structural Invalidation Level:** {idea['invalidation']}")
