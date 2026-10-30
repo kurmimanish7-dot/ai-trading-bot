@@ -441,7 +441,7 @@ def get_angel_ltp_V39_AUDITED(symbol="NIFTY", strike=23050, opt_type="CE", expir
 
 
 
-def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
+def get_live_premium_V20_FINAL_OLD_DISABLED(symbol, strike, opt_type, expiry):
     """V40 wrapper - calls V39 audited engine"""
     try:
         return get_live_premium_V39_FINAL(symbol, strike, opt_type, expiry)
@@ -461,19 +461,411 @@ def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
         except:
             return 0, "V40_FALLBACK_FAILED", False
 
-def get_live_premium_V39_FINAL(symbol, strike, opt_type, expiry):
-    """V40 FINAL: Angel + NSE proxy"""
-    ltp, src, ok = get_angel_ltp_V39_AUDITED(symbol, strike, opt_type, expiry)
+
+
+
+
+def get_angel_ltp_V41_STRICT_EXPIRY(symbol="NIFTY", strike=23050, opt_type="CE", expiry="03 Nov 2026"):
+    """
+    V41 FINAL: STRICT EXPIRY LOCK - Fixes 17 Nov vs 3 Nov bug
+    User reports: Broker shows 3 Nov (4 Days) 23050 CE LTP 110.65
+                  App shows 300.20 (which is 17 Nov expiry)
+    Root cause: Expiry matching was scoring, not strict filtering
+    Fix: Only allow EXACT expiry date match, discard 17 Nov when 3 Nov requested
+    """
+    try:
+        api_key = ""; client_id = ""; password = ""; totp_secret = ""
+        for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
+            if k in st.secrets:
+                api_key = str(st.secrets[k]).strip()
+                break
+        for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"]:
+            if k in st.secrets:
+                client_id = str(st.secrets[k]).strip()
+                break
+        for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"]:
+            if k in st.secrets:
+                password = str(st.secrets[k]).strip()
+                break
+        for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
+            if k in st.secrets:
+                totp_secret = str(st.secrets[k]).strip()
+                break
+        
+        if not api_key or not client_id:
+            return 0, "ANGEL_KEYS_MISSING", False
+        
+        try:
+            from SmartApi import SmartConnect
+            import pyotp
+            import requests
+            import re
+            from datetime import datetime
+        except ImportError as e:
+            return 0, f"LIB_MISSING_{str(e)[:30]}", False
+        
+        totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
+        obj = SmartConnect(api_key=api_key)
+        session_data = obj.generateSession(client_id, password, totp_code)
+        if not (session_data and session_data.get("status") == True):
+            return 0, f"ANGEL_LOGIN_FAIL_{str(session_data)[:60]}", False
+        
+        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        try:
+            mr = requests.get(master_url, timeout=15)
+            if mr.status_code != 200:
+                return 0, f"MASTER_HTTP_{mr.status_code}", False
+            instruments = mr.json()
+        except Exception as e:
+            return 0, f"MASTER_FETCH_EXC_{str(e)[:60]}", False
+        
+        symbol = symbol.upper().strip()
+        target_strike = int(float(strike))
+        target_opt = opt_type.upper().strip()
+        if target_opt == "C":
+            target_opt = "CE"
+        if target_opt == "P":
+            target_opt = "PE"
+        
+        # Parse target expiry - CRITICAL FOR V41
+        target_exp_dt = None
+        try:
+            exp_str = str(expiry).strip()
+            # Try all common formats
+            for fmt in ["%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%d-%B-%Y", "%Y-%m-%d", "%d %b %y", "%d-%b-%y", "%d/%m/%Y", "%d-%m-%Y", "%d %b %Y %H:%M:%S"]:
+                try:
+                    target_exp_dt = datetime.strptime(exp_str, fmt)
+                    break
+                except:
+                    continue
+            if not target_exp_dt:
+                try:
+                    if 'expiry_norm' in globals():
+                        exp_norm = expiry_norm(expiry)
+                        if exp_norm:
+                            target_exp_dt = datetime.strptime(exp_norm, "%Y-%m-%d")
+                except:
+                    pass
+        except:
+            target_exp_dt = None
+        
+        if not target_exp_dt:
+            return 0, f"EXPIRY_PARSE_FAIL_{expiry}", False
+        
+        # Search label
+        if symbol == "NIFTY":
+            search_label = "NIFTY"
+            invalid = ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "NIFTYNXT"]
+        elif symbol == "BANKNIFTY":
+            search_label = "BANKNIFTY"
+            invalid = []
+        elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
+            search_label = "FINNIFTY"
+            invalid = []
+        elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
+            search_label = "MIDCPNIFTY"
+            invalid = []
+        elif symbol in ["SENSEX", "BSESN"]:
+            search_label = "SENSEX"
+            invalid = []
+        else:
+            search_label = symbol
+            invalid = []
+        
+        candidates = []
+        debug_count = 0
+        
+        for inst in instruments:
+            if not isinstance(inst, dict):
+                continue
+            
+            exch_seg = str(inst.get("exch_seg", "")).upper()
+            if exch_seg not in ["NFO", "BFO"]:
+                continue
+            
+            inst_type = str(inst.get("instrumenttype", "")).upper()
+            if inst_type and "FUT" in inst_type:
+                continue
+            if inst_type and "OPT" not in inst_type and inst_type not in ["", "OPTIDX", "OPTSTK"]:
+                if inst_type not in ["OPTIDX", "OPTSTK", ""]:
+                    continue
+            
+            tradingsym = str(inst.get("symbol", "")).strip()
+            tradingsym_upper = tradingsym.upper()
+            inst_name = str(inst.get("name", "")).upper()
+            
+            if search_label == "NIFTY":
+                if not tradingsym_upper.startswith("NIFTY"):
+                    continue
+                if any(inv in tradingsym_upper for inv in invalid):
+                    continue
+            elif search_label == "BANKNIFTY":
+                if "BANKNIFTY" not in tradingsym_upper:
+                    continue
+            elif search_label == "FINNIFTY":
+                if "FINNIFTY" not in tradingsym_upper:
+                    continue
+            elif search_label == "MIDCPNIFTY":
+                if "MIDCPNIFTY" not in tradingsym_upper:
+                    continue
+            elif search_label == "SENSEX":
+                if "SENSEX" not in tradingsym_upper:
+                    continue
+            
+            # Strike check - structured field
+            inst_strike_raw = inst.get("strike")
+            extracted_strike = None
+            if inst_strike_raw is not None and str(inst_strike_raw).strip() not in ["", "-1", "-1.000000", "0", "0.000000"]:
+                try:
+                    s_val = float(inst_strike_raw)
+                    if s_val > 100000:
+                        s_val = s_val / 100.0
+                    if s_val > 100000:
+                        s_val = s_val / 10.0
+                    extracted_strike = int(round(s_val))
+                except:
+                    pass
+            
+            if extracted_strike is None:
+                # Parse from symbol
+                for pat in [r'(\d{4,6})\s*(CE|PE)\s*$', r'(\d{4,6})(CE|PE)$', r'\s(\d{4,6})\s+(CE|PE)', r'(C|P)\s*(\d{4,6})\s*$']:
+                    m = re.search(pat, tradingsym_upper)
+                    if m:
+                        try:
+                            for g in m.groups():
+                                if g and g.isdigit() and len(g) >= 4:
+                                    extracted_strike = int(g)
+                                    break
+                        except:
+                            pass
+                        if extracted_strike:
+                            break
+                if extracted_strike is None and re.search(rf'\b{target_strike}\b', tradingsym_upper):
+                    extracted_strike = target_strike
+            
+            if extracted_strike is None or extracted_strike != target_strike:
+                continue
+            
+            # Option type
+            inst_opt = None
+            if "CE" in tradingsym_upper:
+                inst_opt = "CE"
+            elif "PE" in tradingsym_upper:
+                inst_opt = "PE"
+            elif tradingsym_upper.endswith("C"):
+                inst_opt = "CE"
+            elif tradingsym_upper.endswith("P"):
+                inst_opt = "PE"
+            
+            if inst_opt and inst_opt != target_opt:
+                continue
+            
+            # ===== V41 STRICT EXPIRY LOCK - CRITICAL FIX =====
+            # Parse instrument expiry
+            inst_expiry_raw = str(inst.get("expiry", "")).strip()
+            inst_exp_dt = None
+            
+            # Try expiry field first
+            if inst_expiry_raw:
+                for fmt in ["%d%b%Y", "%d%b%y", "%d-%b-%Y", "%Y-%m-%d", "%d%m%Y", "%d-%b-%y", "%d %b %Y", "%d-%b-%Y %H:%M:%S"]:
+                    try:
+                        clean = inst_expiry_raw.replace(" ", "").upper()
+                        inst_exp_dt = datetime.strptime(clean, fmt)
+                        break
+                    except:
+                        try:
+                            inst_exp_dt = datetime.strptime(inst_expiry_raw, fmt)
+                            break
+                        except:
+                            continue
+            
+            # Try trading symbol if expiry field failed
+            if not inst_exp_dt:
+                m_exp = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', tradingsym_upper)
+                if m_exp:
+                    day = m_exp.group(1)
+                    mon = m_exp.group(2)
+                    yr = m_exp.group(3)
+                    if len(yr) == 2:
+                        yr_full = "20" + yr if int(yr) < 50 else "19" + yr
+                    else:
+                        yr_full = yr
+                    exp_str_sym = f"{day}{mon}{yr_full}"
+                    try:
+                        inst_exp_dt = datetime.strptime(exp_str_sym, "%d%b%Y")
+                    except:
+                        pass
+            
+            # V41 STRICT: If we have target expiry, instrument MUST match exactly
+            if target_exp_dt and inst_exp_dt:
+                if inst_exp_dt.date() != target_exp_dt.date():
+                    # NOT same date - SKIP! This fixes 17 Nov vs 3 Nov bug
+                    continue
+            elif target_exp_dt and not inst_exp_dt:
+                # Could not parse instrument expiry - try fallback check
+                # Check if target day/month in symbol
+                if str(target_exp_dt.day) not in tradingsym_upper and target_exp_dt.strftime("%b").upper() not in tradingsym_upper:
+                    # No expiry info in symbol, skip to avoid wrong expiry
+                    # But allow if symbol has no expiry pattern (maybe weekly)
+                    # For safety, require at least month match
+                    if target_exp_dt.strftime("%b").upper() not in tradingsym_upper:
+                        continue
+            
+            # Exact expiry match - score 100
+            candidates.append((100, inst, tradingsym, inst_expiry_raw, inst_exp_dt))
+        
+        # Sort (all should be 100 now since strict)
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        # Try LTP
+        for score, inst, tradingsym, inst_expiry, inst_exp_dt in candidates[:20]:
+            token = str(inst.get("token", ""))
+            exch = str(inst.get("exch_seg", "NFO"))
+            try:
+                ltp_data = obj.ltpData(exch, tradingsym, token)
+                if ltp_data and ltp_data.get("status") == True:
+                    ltp_val = ltp_data.get("data", {}).get("ltp")
+                    if ltp_val and float(ltp_val) > 0:
+                        f_ltp = float(ltp_val)
+                        if f_ltp > 5000:
+                            continue
+                        # Additional sanity: For NIFTY 23050 CE with spot ~23047, OTM CE should be ~110, not 300
+                        # 300 is for 17 Nov (10 days), 110 is for 3 Nov (4 days)
+                        # Since we now have strict expiry, this should be correct
+                        exp_str_for_log = inst_exp_dt.strftime("%d%b%Y") if inst_exp_dt else inst_expiry
+                        return f_ltp, f"ANGEL_V41_STRICT_{search_label}_{target_strike}{target_opt}_EXP_{exp_str_for_log}_{tradingsym}_{f_ltp}", True
+            except:
+                continue
+        
+        # Debug: No candidates with exact expiry
+        sample = candidates[0][2] if candidates else "NO_CANDIDATES"
+        # Try to show what expiries exist for this strike
+        all_expiries_for_strike = []
+        for inst in instruments[:1000]:  # Check first 1000 for sample
+            if str(target_strike) in str(inst.get("symbol","")) and "NIFTY" in str(inst.get("symbol","")).upper():
+                all_expiries_for_strike.append(str(inst.get("expiry","")) + ":" + str(inst.get("symbol",""))[:30])
+                if len(all_expiries_for_strike) > 5:
+                    break
+        
+        return 0, f"NO_EXACT_EXP_V41_{search_label}_{target_strike}{target_opt}_TARGET_{target_exp_dt.strftime('%d%b%Y') if target_exp_dt else 'NONE'}_CAND_{len(candidates)}_SAMPLE_{sample[:40]}_ALL_EXP_{'_'.join(all_expiries_for_strike)[:100]}", False
+    
+    except Exception as e:
+        import traceback
+        return 0, f"EXC_V41_{str(e)[:150]}", False
+
+
+def get_nse_ltp_proxy_V41_STRICT(symbol="NIFTY", strike=23050, opt_type="CE", expiry="03 Nov 2026"):
+    """
+    V41: NSE proxy with STRICT expiry matching
+    """
+    try:
+        import requests
+        import json
+        import urllib.parse
+        from datetime import datetime
+        
+        target_strike = int(strike)
+        target_opt = opt_type.upper()
+        
+        target_exp_dt = None
+        try:
+            exp_str = str(expiry).strip()
+            for fmt in ["%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%Y-%m-%d"]:
+                try:
+                    target_exp_dt = datetime.strptime(exp_str, fmt)
+                    break
+                except:
+                    continue
+        except:
+            pass
+        
+        if not target_exp_dt:
+            return 0, "NSE_EXPIRY_PARSE_FAIL", False
+        
+        target_exp_nse = target_exp_dt.strftime("%d-%b-%Y")  # NSE format: 03-Nov-2026
+        
+        proxies = ["https://api.allorigins.win/raw?url=", "https://corsproxy.io/?url="]
+        nse_url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
+        
+        for proxy_base in proxies:
+            try:
+                full_url = proxy_base + urllib.parse.quote(nse_url, safe='')
+                r = requests.get(full_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                if r.status_code == 200:
+                    try:
+                        data = r.json()
+                    except:
+                        data = json.loads(r.text)
+                    
+                    records = data.get("records", {})
+                    
+                    # STRICT: Only look for exact expiry
+                    for item in records.get("data", []):
+                        item_exp = item.get("expiryDate", "")
+                        if item_exp != target_exp_nse:
+                            continue  # STRICT: Skip if not exact expiry
+                        
+                        if item.get("strikePrice") == target_strike:
+                            opt_data = item.get(target_opt, {}) or item.get(target_opt.lower(), {})
+                            ltp = opt_data.get("lastPrice", 0)
+                            if ltp and float(ltp) > 0:
+                                f_ltp = float(ltp)
+                                if f_ltp > 5000:
+                                    continue
+                                return f_ltp, f"NSE_V41_STRICT_{symbol}_{target_strike}{target_opt}_{item_exp}_{f_ltp}", True
+                    
+                    # If exact expiry not found, return fail (don't fallback to other expiry)
+                    # This ensures 3 Nov requested doesn't return 17 Nov data
+                    return 0, f"NSE_NO_EXACT_EXP_{target_exp_nse}_FOUND", False
+            except:
+                continue
+        
+        return 0, "NSE_PROXY_V41_ALL_FAILED", False
+    except Exception as e:
+        return 0, f"NSE_PROXY_V41_EXC_{str(e)[:80]}", False
+
+
+def get_live_premium_V41_FINAL(symbol, strike, opt_type, expiry):
+    """
+    V41 FINAL: STRICT expiry lock - Angel + NSE proxy both strict
+    """
+    # Try Angel strict first
+    ltp, src, ok = get_angel_ltp_V41_STRICT_EXPIRY(symbol, strike, opt_type, expiry)
     if ok and ltp > 0:
         return ltp, src, True
-    # Try NSE proxy fallback
+    
+    # Try NSE proxy strict
     try:
-        ltp2, src2, ok2 = get_nse_ltp_proxy_V39(symbol, strike, opt_type, expiry)
+        ltp2, src2, ok2 = get_nse_ltp_proxy_V41_STRICT(symbol, strike, opt_type, expiry)
         if ok2 and ltp2 > 0:
             return ltp2, src2, True
     except:
         pass
+    
+    # Both failed - return Angel error (which has exact expiry info)
     return 0, src, False
+
+
+
+def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
+    """V41 wrapper - STRICT expiry"""
+    try:
+        return get_live_premium_V41_FINAL(symbol, strike, opt_type, expiry)
+    except Exception as e:
+        try:
+            return get_angel_ltp_V41_STRICT_EXPIRY(symbol, strike, opt_type, expiry)
+        except:
+            return 0, f"V41_WRAPPER_EXC_{str(e)[:40]}", False
+
+def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
+    """V41 wrapper"""
+    try:
+        return get_live_premium_V41_FINAL(symbol, strike, opt_type, expiry)
+    except:
+        try:
+            return get_angel_ltp_V41_STRICT_EXPIRY(symbol, strike, opt_type, expiry)
+        except:
+            return 0, "V41_CACHE_EXC", False
 
 
 # IST Definition - No external dependency (stdlib only)
@@ -2881,31 +3273,6 @@ def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE
         return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
 
 
-def get_live_premium_V20_FINAL_OLD_DISABLED(symbol, strike, opt_type, expiry):
-    """
-    V20: Tries Angel first (100% broker matched), then proxy, then NSE
-    """
-    # Try Angel first - 100% broker matched, works on Cloud
-    ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
-    if ok and ltp > 0:
-        return ltp, src, True
-    
-    # If Angel keys missing, try proxy
-    ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
-    if ok2 and ltp2 > 0:
-        return ltp2, src2, True
-    
-    # Try ultimate
-    try:
-        ltp3, src3, ok3 = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
-        if ok3 and ltp3 > 0:
-            return ltp3, src3, True
-    except:
-        pass
-    
-    # All failed - return 0 with clear message
-    if "ANGEL_KEYS_MISSING" in src:
-        return 0, "ADD_ANGEL_KEYS_IN_SECRETS_FOR_108.20", False
     return 0, src, False
 
 
