@@ -976,6 +976,18 @@ CHART_BAR = "\U0001F4CA"        # 📊
 CHART_UP = "\U0001F4C8"         # 📈
 TARGET = "\U0001F3AF"           # 🎯
 TEMPLE = "\U0001F3DB"           # 🏛️
+
+# ===== V35 FIX: set_page_config MUST be first st. call =====
+try:
+    st.set_page_config(
+        page_title="AI Institutional Live Trading Advisor (Quantitative GEX & Equity Engine)",
+        page_icon="⚡",
+        layout="wide",
+    )
+except Exception as e:
+    print(f"set_page_config error (may already be set): {e}")
+# ===== END V35 FIX =====
+
 COMPASS = "\U0001F9ED"          # 🧭
 GLOBE = "\U0001F310"            # 🌐
 TRAFFIC = "\U0001F6A6"          # 🚦
@@ -1285,11 +1297,6 @@ TIMEFRAME_CONFIG = {
 # =====================================================================
 # 6. CONFIGURATION, THEME & STYLES
 # =====================================================================
-st.set_page_config(
-    page_title="AI Institutional Live Trading Advisor (Quantitative GEX & Equity Engine)",
-    page_icon=BOLT,
-    layout="wide",
-)
 
 # ================= V53 PERSISTENT SETTINGS - Fix reset after page close =================
 import os
@@ -1390,8 +1397,15 @@ def telegram_callback_poller():
         pass
 
 # Call poller on every run - will check Telegram YES/NO
+# V35 FIX: Safe guard for SessionInfo
 try:
-    telegram_callback_poller()
+    # Only call if session is initialized
+    try:
+        _ = st.session_state
+        telegram_callback_poller()
+    except Exception as e:
+        if "SessionInfo" not in str(e):
+            telegram_callback_poller()
 except:
     pass
 
