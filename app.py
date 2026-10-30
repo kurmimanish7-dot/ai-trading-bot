@@ -8425,6 +8425,13 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         if 'original_entry' not in idea:
                             idea['original_entry'] = entry_ltp
                         
+                        # V39 FIX: Initialize to prevent NameError
+                        live_ltp_now = 0
+                        live_src = "INIT"
+                        is_live_ok = False
+                        actual_exp_used = selected_expiry
+                        pnl_pct = 0
+                        
                         try:
                             # V27 FINAL: Angel first - 100% broker matched like debug app
                             live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match_FIXED(
