@@ -382,6 +382,174 @@ except Exception:
 
 
 
+
+
+
+# ===== MASTER PROJECT INTEGRATION - TELEGRAM APPROVAL + ANGEL EXECUTION + AUTO EXIT =====
+# Added on top of V63 FULL (7543 lines) - Preserves all existing features
+
+# Import execution engine
+try:
+    from execution_config import FIXED_TARGETS, RISK_REWARD_RATIO, calculate_risk_reward, get_target_points, EXECUTION_CONFIG, RISK_CONFIG
+    from execution_database import get_open_positions as get_exec_open_positions, get_pending_signal, init_db as init_exec_db
+    from telegram_gateway import send_telegram_approval_request, handle_telegram_callback, answer_telegram_callback, get_telegram_keys, format_telegram_approval_message
+    from angel_execution import place_market_order, get_live_ltp
+    from execution_engine import process_ai_signal, handle_yes_approval, handle_no_rejection, check_risk_gates
+    from trade_manager import start_trade_manager, is_trade_manager_running, stop_trade_manager
+    from position_reconciler import reconcile_positions, recover_after_restart
+    HAS_EXECUTION_ENGINE = True
+    # Init DB and start trade manager
+    try:
+        init_exec_db()
+        if not is_trade_manager_running():
+            start_trade_manager()
+        # Recover after restart
+        recover_after_restart()
+    except Exception as e:
+        print(f"Execution engine init error: {e}")
+        HAS_EXECUTION_ENGINE = False
+except Exception as e:
+    print(f"Execution engine import error: {e}")
+    HAS_EXECUTION_ENGINE = False
+    FIXED_TARGETS = {"NIFTY": 15.0, "BANKNIFTY": 40.0}
+
+def calculate_fixed_target_sl_for_display(symbol, live_ltp):
+    """Calculate fixed target +15/+40 and percentage SL for display"""
+    try:
+        if HAS_EXECUTION_ENGINE:
+            calc = calculate_risk_reward(live_ltp, symbol)
+            return calc
+        else:
+            # Fallback calculation
+            target_points = FIXED_TARGETS.get(symbol, 15.0)
+            risk_per_unit = target_points / 1.5
+            sl_percent = (risk_per_unit / live_ltp * 100) if live_ltp>0 else 20.0
+            sl_percent = max(5.0, min(sl_percent, 50.0))
+            sl_price = live_ltp * (1 - sl_percent/100)
+            target_price = live_ltp + target_points
+            return {
+                "target_points": target_points,
+                "target_price": target_price,
+                "risk_per_unit": risk_per_unit,
+                "sl_percent": sl_percent,
+                "sl_price": sl_price,
+                "risk_reward": 1.5,
+                "can_satisfy": True,
+            }
+    except:
+        return {
+            "target_points": 15.0,
+            "target_price": live_ltp + 15.0,
+            "sl_price": live_ltp * 0.8,
+            "sl_percent": 20.0,
+            "risk_reward": 1.5,
+            "can_satisfy": True,
+        }
+
+def send_approval_to_telegram_with_engine(idea, live_ltp, spot, expiry_label_str):
+    """New function: Send to Telegram with YES/NO approval (MASTER PROJECT)"""
+    try:
+        if not HAS_EXECUTION_ENGINE:
+            # Fallback to old telegram
+            return send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str)
+        
+        # Use new execution engine
+        success, msg, trade_id = process_ai_signal(idea, live_ltp, spot, expiry_label_str)
+        if success:
+            st.toast(f"📱 Telegram Approval Sent: {trade_id} - YES/NO buttons", icon="✅")
+            return True, f"Telegram approval sent {trade_id}"
+        else:
+            # If risk blocked, still send old alert
+            if "Risk blocked" in msg:
+                st.warning(f"Risk blocked: {msg}")
+                return False, msg
+            else:
+                # Fallback to old
+                return send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str)
+    except Exception as e:
+        print(f"Telegram approval error: {e}")
+        try:
+            return send_confirm_call_telegram(idea, live_ltp, spot, expiry_label_str)
+        except:
+            return False, str(e)
+
+# Override telegram poller to handle YES/NO
+def telegram_callback_poller_with_approval():
+    """Enhanced poller that handles YES/NO"""
+    try:
+        bot_token, chat_id = get_telegram_keys()
+        if not bot_token:
+            return
+        
+        # Get updates
+        import requests
+        url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+        params = {"timeout": 10, "allowed_updates": ["callback_query"]}
+        try:
+            resp = requests.get(url, params=params, timeout=15)
+            data = resp.json()
+            if not data.get('ok'):
+                return
+            
+            for update in data.get('result', []):
+                if 'callback_query' in update:
+                    cq = update['callback_query']
+                    trade_id, action, is_authorized, is_duplicate, is_expired = handle_telegram_callback(cq)
+                    
+                    if not trade_id:
+                        continue
+                    
+                    # Answer callback
+                    callback_id = cq.get('id','')
+                    
+                    if not is_authorized:
+                        answer_telegram_callback(bot_token, callback_id, "❌ Unauthorized user!", show_alert=True)
+                        continue
+                    
+                    if is_duplicate:
+                        answer_telegram_callback(bot_token, callback_id, "⚠️ Already processed!", show_alert=False)
+                        continue
+                    
+                    if is_expired:
+                        answer_telegram_callback(bot_token, callback_id, "⏰ Signal expired!", show_alert=True)
+                        continue
+                    
+                    # Valid approval
+                    if action == "YES":
+                        answer_telegram_callback(bot_token, callback_id, "✅ Executing trade...", show_alert=False)
+                        success, msg = handle_yes_approval(trade_id)
+                        if success:
+                            answer_telegram_callback(bot_token, callback_id, f"✅ Executed: {msg[:100]}", show_alert=False)
+                        else:
+                            answer_telegram_callback(bot_token, callback_id, f"❌ Failed: {msg[:100]}", show_alert=True)
+                    
+                    elif action == "NO":
+                        answer_telegram_callback(bot_token, callback_id, "❌ Rejected", show_alert=False)
+                        handle_no_rejection(trade_id)
+                    
+                    # Mark update as read
+                    try:
+                        offset = update['update_id'] + 1
+                        requests.post(f"https://api.telegram.org/bot{bot_token}/getUpdates", data={"offset": offset}, timeout=5)
+                    except:
+                        pass
+                        
+        except Exception as e:
+            print(f"Telegram poller error: {e}")
+            
+    except Exception as e:
+        print(f"Poller outer error: {e}")
+
+# Replace old poller with new one if execution engine exists
+if HAS_EXECUTION_ENGINE:
+    try:
+        telegram_callback_poller = telegram_callback_poller_with_approval
+    except:
+        pass
+
+# ===== END MASTER PROJECT INTEGRATION =====
+
+
 # ===== V19 FIX - PENDING FILE + SPEED CACHE =====
 import json as _json_pending
 from pathlib import Path as _Path_pending
@@ -6849,6 +7017,69 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
     expiries = load_expiries(underlying)
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
+
+
+# ===== MASTER PROJECT SIDEBAR CONTROLS =====
+try:
+    with st.sidebar:
+        st.divider()
+        st.markdown("### 🚀 Execution Engine (MASTER PROJECT)")
+        if HAS_EXECUTION_ENGINE:
+            st.success("✅ Execution Engine Active")
+            st.caption(f"Paper Mode: {EXECUTION_CONFIG.get('PAPER_MODE', True)}")
+            st.caption(f"Targets: NIFTY +{FIXED_TARGETS.get('NIFTY',15)} | BANKNIFTY +{FIXED_TARGETS.get('BANKNIFTY',40)}")
+            st.caption(f"RR: 1:{RISK_REWARD_RATIO}")
+            
+            # Show open positions from execution engine
+            try:
+                exec_positions = get_exec_open_positions()
+                if exec_positions:
+                    st.markdown(f"**Open Positions (Engine): {len(exec_positions)}**")
+                    for pos in exec_positions[:3]:
+                        st.caption(f"{pos['symbol']} {pos['strike']}{pos['option_type']} Entry {pos['average_entry_price']:.1f} LTP {pos.get('last_ltp',0):.1f} Target {pos['target_price']:.1f} SL {pos['sl_price']:.1f}")
+            except:
+                pass
+            
+            # Risk status
+            st.markdown("**Risk Limits**")
+            st.caption(f"Max Daily Loss: ₹{RISK_CONFIG.get('MAX_DAILY_LOSS',5000)}")
+            st.caption(f"Max Trades/Day: {RISK_CONFIG.get('MAX_TRADES_PER_DAY',10)}")
+            st.caption(f"Max Open: {RISK_CONFIG.get('MAX_OPEN_POSITIONS',3)}")
+            
+            # Trade manager status
+            try:
+                if is_trade_manager_running():
+                    st.success("Trade Manager: Running")
+                else:
+                    st.warning("Trade Manager: Stopped")
+                    if st.button("Start Trade Manager"):
+                        start_trade_manager()
+                        st.rerun()
+            except:
+                pass
+            
+            # Kill switch
+            if st.button("🛑 Emergency Kill Switch", type="primary"):
+                RISK_CONFIG["KILL_SWITCH"] = True
+                st.error("Kill Switch Activated!")
+            
+            # Reconcile button
+            if st.button("🔄 Reconcile Positions"):
+                try:
+                    from position_reconciler import reconcile_positions
+                    success, msg = reconcile_positions()
+                    st.info(msg)
+                except Exception as e:
+                    st.error(str(e))
+        else:
+            st.warning("Execution Engine: Import Failed")
+            st.caption("Check execution_*.py files")
+except:
+    pass
+# ===== END MASTER PROJECT SIDEBAR =====
+
+
+
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
     @live_fragment(run_every=2)
