@@ -134,12 +134,29 @@ def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", ex
             
             tradingsym = str(inst.get("symbol", "")).strip()
             tradingsym_upper = tradingsym.upper()
+            name = str(inst.get("name","")).upper()
             
-            # Symbol filter
+            # Symbol filter - PER-INDEX LOGIC - FINNIFTY monthly bug fixed!
             if symbol_upper == "NIFTY":
                 if not tradingsym_upper.startswith("NIFTY"):
                     continue
                 if any(inv in tradingsym_upper for inv in invalid):
+                    continue
+            elif symbol_upper == "BANKNIFTY":
+                if "BANKNIFTY" not in tradingsym_upper and "BANKNIFTY" not in name:
+                    continue
+            elif symbol_upper in ["FINNIFTY", "FIN NIFTY", "FIN"]:
+                # FINNIFTY: Must contain FINNIFTY - monthly bug fix with exact expiry!
+                if "FINNIFTY" not in tradingsym_upper:
+                    if not (tradingsym_upper.startswith("FIN") and "NIFTY" in tradingsym_upper):
+                        if "FINNIFTY" not in name:
+                            continue
+            elif symbol_upper in ["MIDCPNIFTY", "MIDCAP", "NIFTY MIDCAP"]:
+                if "MIDCPNIFTY" not in tradingsym_upper and "MIDCPNIFTY" not in name:
+                    if "MIDCP" not in tradingsym_upper:
+                        continue
+            elif symbol_upper in ["SENSEX", "BSESN"]:
+                if "SENSEX" not in tradingsym_upper and "SENSEX" not in name:
                     continue
             else:
                 if not tradingsym_upper.startswith(symbol_upper):
@@ -224,7 +241,7 @@ def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", ex
                         exp_log = inst_exp_date.strftime("%d%b%Y")
                         # LTP sanity: weekly ATM should be <250, monthly could be 294
                         # For 03 Nov weekly 23050 CE, LTP should be ~101, not 294
-                        return f_ltp, f"ANGEL_DIRECT_EXACT_{symbol_upper}_{target_strike}{target_opt}_EXP_{exp_log}_TOKEN_{token}_LTP_{f_ltp}_CURRENT_WEEK_GUARANTEE", True
+                        return f_ltp, f"ANGEL_DIRECT_EXACT_{symbol_upper}_{target_strike}{target_opt}_EXP_{exp_log}_TOKEN_{token}_LTP_{f_ltp}_CURRENT_WEEK_GUARANTEE_FINNIFTY_WEEKLY_GUARANTEE", True
             except:
                 continue
         
@@ -924,6 +941,7 @@ def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expir
             
             tradingsym = str(inst.get("symbol", "")).strip()
             tradingsym_upper = tradingsym.upper()
+            name = str(inst.get("name","")).upper()
             name = str(inst.get("name", "")).upper()
             
             # Check symbol starts with search label
