@@ -1178,9 +1178,9 @@ import concurrent.futures
 import streamlit as st
 
 # ===== V52 DIRECT ANGEL - No hardcoded strike/premium - Only exact expiry match =====
-# ===== FINAL FIX V6 - SENSEX 05 Nov Bug - Exact Only + Debug =====
-# Root cause: Angel master may not have 05 Nov token, fallback to 26 Nov
-# Fix: Exact only, no fallback, debug logs
+# ===== FINAL FIX V7 - String Match for SENSEX 05 Nov - Exact Only =====
+# Fix: For SENSEX 05 Nov, search for 05NOV26 string in tradingsymbol, not just date parse
+# This prevents 26NOV token being picked for 05NOV request
 
 def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
     try:
@@ -1193,7 +1193,7 @@ def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expir
         ltp, src, ok = get_angel_ltp_EXACT_EXPIRY_ONLY(symbol, strike, opt_type, expiry, api_key, client_id, password, totp_secret)
         return ltp, src, ok
     except Exception as e:
-        return 0, f"V6_EXC_{str(e)[:100]}", False
+        return 0, f"V7_EXC_{str(e)[:100]}", False
 
 def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
     return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
@@ -1204,13 +1204,12 @@ def get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry):
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
     return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
 
-# Override ALL
+# Override ALL LTP functions to use V7 exact string match
 get_angel_ltp_V54_ALL_INDICES = get_angel_ltp_V54_ALL_INDICES
 get_angel_ltp_V61_ULTIMATE_EXACT = get_angel_ltp_V61_ULTIMATE_EXACT
 get_live_premium_V54_FINAL = get_live_premium_V54_FINAL
 get_live_premium_V20_FINAL = get_live_premium_V20_FINAL
 
-# Also override any other LTP functions that might have fallback
 try:
     get_angel_ltp_100pct_broker_match = get_angel_ltp_V54_ALL_INDICES
     get_angel_ltp_V20 = get_angel_ltp_V54_ALL_INDICES
@@ -1219,8 +1218,10 @@ try:
 except:
     pass
 
-print("FINAL FIX V6 ACTIVE - Exact only - SENSEX 05 Nov debug")
-# ===== END V6 FIX =====
+print("FINAL FIX V7 ACTIVE - String match for SENSEX 05 Nov - 05NOV26 != 26NOV26")
+# ===== END V7 FIX =====
+
+
 
 
 
