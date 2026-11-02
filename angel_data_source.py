@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Angel Data Source - V9 - User Correction: SENSEX Thu, NIFTY Tue
-05 Nov 2026 Thu is SENSEX expiry, valid token should exist
-Fix: String match exact 05NOV26 vs 26NOV26
+Angel Data Source - V10 - FINNIFTY Weekly Fix as per SEBI
+User says FINNIFTY should be weekly, not monthly
 """
 
 import datetime
@@ -14,6 +13,16 @@ import time
 _MASTER_CACHE = None
 _MASTER_CACHE_TIME = 0
 _MASTER_CACHE_TTL = 300
+
+# V10: FINNIFTY weekly as per user SEBI rules
+EXPIRY_TYPE_MAP = {
+    "NIFTY": "WEEKLY",      # Tue
+    "BANKNIFTY": "MONTHLY", # Monthly (SEBI one weekly per exchange)
+    "SENSEX": "WEEKLY",     # Thu (user correction)
+    "FINNIFTY": "WEEKLY",   # Weekly as per user SEBI rules - FIXED!
+    "MIDCPNIFTY": "WEEKLY",
+    "BANKEX": "WEEKLY",
+}
 
 def parse_expiry_from_tradingsymbol_ULTIMATE(tradingsym: str, symbol: str = ""):
     try:
@@ -96,6 +105,23 @@ def parse_expiry_to_date_ULTIMATE(s: str):
                 continue
     return None
 
+def get_expiry_type_for_symbol_correct(symbol: str) -> str:
+    sym_upper = symbol.upper().strip()
+    # V10: FINNIFTY weekly as per user
+    if "FINNIFTY" in sym_upper:
+        return "WEEKLY"
+    if "BANKNIFTY" in sym_upper:
+        return "MONTHLY"
+    if "SENSEX" in sym_upper and "BANKEX" not in sym_upper:
+        return "WEEKLY"  # Thu as per user
+    if sym_upper == "NIFTY":
+        return "WEEKLY"  # Tue as per user
+    if "MIDCP" in sym_upper:
+        return "WEEKLY"
+    if "BANKEX" in sym_upper:
+        return "WEEKLY"
+    return EXPIRY_TYPE_MAP.get(sym_upper, "WEEKLY")
+
 def get_angel_master_ULTIMATE(force_refresh=False):
     global _MASTER_CACHE, _MASTER_CACHE_TIME
     now = time.time()
@@ -115,7 +141,7 @@ def get_angel_master_ULTIMATE(force_refresh=False):
             return _MASTER_CACHE
         return []
 
-def get_all_expiries_for_dropdown_correct(symbol: str):
+def get_expiry_list_from_angel_master_correct(symbol: str):
     try:
         instruments = get_angel_master_ULTIMATE()
         filtered = []
@@ -131,6 +157,12 @@ def get_all_expiries_for_dropdown_correct(symbol: str):
             if sym_upper == "NIFTY":
                 if not tradingsym.startswith("NIFTY") or any(x in tradingsym for x in ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]):
                     continue
+            elif "BANKNIFTY" in sym_upper:
+                if "BANKNIFTY" not in tradingsym:
+                    continue
+            elif "FINNIFTY" in sym_upper:
+                if "FINNIFTY" not in tradingsym:
+                    continue
             elif "SENSEX" in sym_upper and "BANKEX" not in sym_upper:
                 if "SENSEX" not in tradingsym or "BANKEX" in tradingsym:
                     continue
@@ -143,11 +175,29 @@ def get_all_expiries_for_dropdown_correct(symbol: str):
         unique = sorted(list(set(filtered)))
         today = datetime.now().date()
         future = [d for d in unique if d >= today - timedelta(days=7)]
-        return [d.strftime("%d %b %Y") for d in (future if future else unique)[:6]]
+        
+        # V10: For weekly, return all weekly, not just monthly
+        expiry_type = get_expiry_type_for_symbol_correct(symbol)
+        if expiry_type == "WEEKLY":
+            # Return weekly expiries (all future)
+            return [d for d in (future if future else unique)[:10]]
+        else:
+            # Monthly: last expiry of each month
+            by_month = {}
+            for exp in (future if future else unique):
+                key = exp.strftime("%Y-%m")
+                if key not in by_month:
+                    by_month[key] = []
+                by_month[key].append(exp)
+            monthly_only = [max(by_month[k]) for k in sorted(by_month.keys())]
+            return sorted(monthly_only)[:6]
     except:
         return []
 
-# V9 - SENSEX Thu, NIFTY Tue - String match 05NOV26 vs 26NOV26
+def get_all_expiries_for_dropdown_correct(symbol: str):
+    all_exps = get_expiry_list_from_angel_master_correct(symbol)
+    return [d.strftime("%d %b %Y") for d in all_exps[:6]]
+
 def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, expiry: str, api_key="", client_id="", password="", totp_secret=""):
     target_symbol = symbol.upper().strip()
     target_strike = int(strike)
@@ -180,6 +230,12 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
             if target_symbol == "NIFTY":
                 if not tradingsym.startswith("NIFTY") or any(x in tradingsym for x in ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]):
                     continue
+            elif "BANKNIFTY" in target_symbol:
+                if "BANKNIFTY" not in tradingsym:
+                    continue
+            elif "FINNIFTY" in target_symbol:
+                if "FINNIFTY" not in tradingsym:
+                    continue
             elif "SENSEX" in target_symbol and "BANKEX" not in target_symbol:
                 if "SENSEX" not in tradingsym or "BANKEX" in tradingsym:
                     continue
@@ -197,7 +253,6 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
             if target_opt == "PE" and not tradingsym.endswith("PE"):
                 continue
             
-            # V9: String match - 05NOV26 must be in tradingsymbol for 05 Nov
             if target_exp_str_7 not in tradingsym and target_exp_str_9 not in tradingsym:
                 inst_exp_date = parse_expiry_from_tradingsymbol_ULTIMATE(tradingsym, target_symbol)
                 if not inst_exp_date:
@@ -211,7 +266,7 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
                 candidates_exact.append({'token': token, 'tradingsym': tradingsym, 'expiry': target_exp_date})
         
         if not candidates_exact:
-            return 0, f"NO_CANDIDATE_EXACT_{target_symbol}_{target_strike}{target_opt}_EXP_{target_exp_date.strftime('%d%b%Y')}_SEARCH_{target_exp_str_7}", False
+            return 0, f"NO_CANDIDATE_EXACT_{target_symbol}_{target_strike}{target_opt}_EXP_{target_exp_date.strftime('%d%b%Y')}", False
         
         try:
             from SmartApi import SmartConnect
@@ -229,7 +284,7 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
             best_cand = None
             for cand in candidates_exact:
                 try:
-                    exchange = "BFO" if "SENSEX" in target_symbol else "NFO"
+                    exchange = "BFO" if "SENSEX" in target_symbol or "BANKEX" in target_symbol else "NFO"
                     ltp_data = obj.ltpData(exchange, cand['tradingsym'], cand['token'])
                     if ltp_data and ltp_data.get('status'):
                         ltp = float(ltp_data.get('data', {}).get('ltp', 0))
@@ -241,7 +296,7 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
                     continue
             
             if best_cand and best_ltp > 0:
-                return best_ltp, f"ANGEL_V9_{target_symbol}_{target_strike}{target_opt}_EXP_{target_exp_date.strftime('%d%b%Y')}_LTP_{best_ltp}_SYM_{best_cand['tradingsym']}_TOKEN_{best_cand['token']}", True
+                return best_ltp, f"ANGEL_V10_{target_symbol}_{target_strike}{target_opt}_EXP_{target_exp_date.strftime('%d%b%Y')}_LTP_{best_ltp}", True
             
             return 0, f"LTP_FAILED", False
             
