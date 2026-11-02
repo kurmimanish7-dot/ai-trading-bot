@@ -1179,26 +1179,26 @@ import streamlit as st
 
 # ===== V52 DIRECT ANGEL - No hardcoded strike/premium - Only exact expiry match =====
 
-# ===== V14 FINAL - Nearest Expiry for Trade Setups - User Request =====
-# User: Index koi bhi select karu lekin Detailed High-Conviction Trade Setups me nearest expiry ke premium ltp show kare
-# Fix: Trade setups me selected_expiry ki jagah nearest expiry from Angel master use karo
-# NIFTY ok, FINNIFTY/BANKNIFTY/SENSEX me 1-3 month ahead bug fix
+# ===== V16 FINAL - Nearest Expiry Auto-Rolls Every New Month =====
+# User: Nearest expiry current month fix nahi, har new month applicable ho
+# Nov 2026 -> Nov expiry, Dec 2026 -> Dec expiry, Jan 2027 -> Jan expiry (auto)
+# Logic: Future sorted, first >= today = nearest (auto rolls each month)
 
 def get_expiry_type_for_symbol_correct(symbol: str) -> str:
     return "WEEKLY"
 
 def get_nearest_expiry_for_symbol(symbol: str) -> str:
-    """V14 - Get nearest expiry for any index from Angel master - for Trade Setups"""
+    """V16 - Nearest expiry auto-rolls every month"""
+    try:
+        from angel_data_source import get_current_month_nearest_expiry
+        return get_current_month_nearest_expiry(symbol)
+    except:
+        pass
     try:
         from angel_data_source import get_all_expiries_for_dropdown_correct
         exps = get_all_expiries_for_dropdown_correct(symbol)
         if exps:
-            return exps[0]  # First is nearest (sorted)
-    except:
-        pass
-    try:
-        # Fallback to correct version
-        return get_all_expiries_for_dropdown_correct(symbol)[0]
+            return exps[0]  # First = nearest upcoming - auto rolls
     except:
         pass
     try:
@@ -1218,7 +1218,7 @@ def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expir
         ltp, src, ok = get_angel_ltp_EXACT_EXPIRY_ONLY(symbol, strike, opt_type, expiry, api_key, client_id, password, totp_secret)
         return ltp, src, ok
     except Exception as e:
-        return 0, f"V14_EXC_{str(e)[:100]}", False
+        return 0, f"V16_EXC_{str(e)[:100]}", False
 
 def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
     return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
@@ -1241,8 +1241,8 @@ try:
 except:
     pass
 
-print("V14 FINAL ACTIVE - Nearest Expiry for Trade Setups - Fixes 1-3 Month Ahead")
-# ===== END V14 FINAL =====
+print("V16 FINAL ACTIVE - Nearest Expiry Auto-Rolls Every Month - Fixes 3 Month Ahead")
+# ===== END V16 FINAL =====
 
 
 
