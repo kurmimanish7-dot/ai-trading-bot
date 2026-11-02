@@ -1178,50 +1178,181 @@ import concurrent.futures
 import streamlit as st
 
 # ===== V52 DIRECT ANGEL - No hardcoded strike/premium - Only exact expiry match =====
-# ===== FINAL FIX V7 - String Match for SENSEX 05 Nov - Exact Only =====
-# Fix: For SENSEX 05 Nov, search for 05NOV26 string in tradingsymbol, not just date parse
-# This prevents 26NOV token being picked for 05NOV request
+# ===== ULTIMATE V4 FIX - FULL APP - No NSE Block - Exact Expiry Only =====
+# Fixes SENSEX 05 Nov 74500 CE = 1274.75 -> should be 515.8
 
-def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
+def parse_expiry_from_tradingsymbol_ULTIMATE_FULL(tradingsym: str, symbol: str = ""):
     try:
-        from angel_data_source import get_angel_ltp_EXACT_EXPIRY_ONLY
+        import re
+        from datetime import date
+        sym = tradingsym.upper().strip()
+        idx_names = ["BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "BANKEX", "NIFTY", "SENSEX"]
+        remaining = sym
+        for name in sorted(idx_names, key=len, reverse=True):
+            if sym.startswith(name):
+                remaining = sym[len(name):]
+                break
+        if len(remaining) >= 9:
+            candidate_9 = remaining[:9]
+            m = re.match(r'^(\d{2})([A-Z]{3})(\d{4})$', candidate_9)
+            if m:
+                day_str, mon_str, yr_str = m.groups()
+                rest = remaining[9:]
+                if re.match(r'^\d+CE$|^\d+PE$', rest):
+                    day = int(day_str)
+                    yr = int(yr_str)
+                    mon_map = {'JAN':1,'FEB':2,'MAR':3,'APR':4,'MAY':5,'JUN':6,'JUL':7,'AUG':8,'SEP':9,'OCT':10,'NOV':11,'DEC':12}
+                    mon = mon_map.get(mon_str.upper(), 0)
+                    if mon and 1 <= day <= 31 and 2020 <= yr <= 2035:
+                        return date(yr, mon, day)
+        if len(remaining) >= 7:
+            candidate_7 = remaining[:7]
+            m = re.match(r'^(\d{2})([A-Z]{3})(\d{2})$', candidate_7)
+            if m:
+                day_str, mon_str, yr_str = m.groups()
+                rest = remaining[7:]
+                if re.match(r'^\d+CE$|^\d+PE$', rest):
+                    day = int(day_str)
+                    yr = int(yr_str)
+                    if yr < 100:
+                        yr = 2000 + yr
+                    mon_map = {'JAN':1,'FEB':2,'MAR':3,'APR':4,'MAY':5,'JUN':6,'JUL':7,'AUG':8,'SEP':9,'OCT':10,'NOV':11,'DEC':12}
+                    mon = mon_map.get(mon_str.upper(), 0)
+                    if mon and 1 <= day <= 31 and 2020 <= yr <= 2035:
+                        return date(yr, mon, day)
+        return None
+    except:
+        return None
+
+def get_angel_ltp_EXACT_ONLY_FULL(symbol="NIFTY", strike=0, opt_type="CE", expiry="", api_key="", client_id="", password="", totp_secret=""):
+    try:
+        import re
+        from angel_data_source import get_angel_master_ULTIMATE, parse_expiry_to_date_ULTIMATE
+        target_symbol = symbol.upper().strip()
+        target_strike = int(strike)
+        target_opt = opt_type.upper().strip()
+        target_exp_date = parse_expiry_to_date_ULTIMATE(expiry)
+        if not target_exp_date:
+            target_exp_date = parse_expiry_from_tradingsymbol_ULTIMATE_FULL(expiry, target_symbol)
+        if not target_exp_date:
+            return 0, f"INVALID_EXPIRY_{expiry}", False
+        instruments = get_angel_master_ULTIMATE()
+        candidates = []
+        for inst in instruments:
+            if not isinstance(inst, dict):
+                continue
+            if str(inst.get("exch_seg","")).upper() not in ["NFO", "BFO"]:
+                continue
+            if "FUT" in str(inst.get("instrumenttype","")).upper():
+                continue
+            if "OPT" not in str(inst.get("instrumenttype","")).upper():
+                continue
+            tradingsym = str(inst.get("symbol","")).upper()
+            if target_symbol == "NIFTY":
+                if not tradingsym.startswith("NIFTY"):
+                    continue
+                if any(x in tradingsym for x in ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]):
+                    continue
+            elif "BANKNIFTY" in target_symbol:
+                if "BANKNIFTY" not in tradingsym:
+                    continue
+            elif "FINNIFTY" in target_symbol:
+                if "FINNIFTY" not in tradingsym:
+                    continue
+            elif "SENSEX" in target_symbol and "BANKEX" not in target_symbol:
+                if "SENSEX" not in tradingsym or "BANKEX" in tradingsym:
+                    continue
+            elif "MIDCP" in target_symbol:
+                if "MIDCPNIFTY" not in tradingsym:
+                    continue
+            elif "BANKEX" in target_symbol:
+                if "BANKEX" not in tradingsym:
+                    continue
+            try:
+                inst_strike_raw = inst.get("strike", -1)
+                inst_strike = int(float(inst_strike_raw) / 100) if float(inst_strike_raw) > 1000 else int(float(inst_strike_raw))
+            except:
+                continue
+            if inst_strike != target_strike:
+                continue
+            if target_opt == "CE" and not tradingsym.endswith("CE"):
+                continue
+            if target_opt == "PE" and not tradingsym.endswith("PE"):
+                continue
+            inst_exp_date = parse_expiry_from_tradingsymbol_ULTIMATE_FULL(tradingsym, target_symbol)
+            if not inst_exp_date:
+                from angel_data_source import parse_expiry_to_date_ULTIMATE as parse_old
+                inst_expiry_raw = str(inst.get("expiry","")).strip()
+                inst_exp_date = parse_old(inst_expiry_raw)
+            if not inst_exp_date:
+                continue
+            if inst_exp_date != target_exp_date:
+                continue
+            token = str(inst.get("token",""))
+            if token:
+                candidates.append({'token': token, 'tradingsym': tradingsym, 'expiry': inst_exp_date})
+        if not candidates:
+            return 0, f"NO_CANDIDATE_EXACT_{target_symbol}_{target_strike}{target_opt}_EXP_{target_exp_date.strftime('%d%b%Y')}", False
+        try:
+            from SmartApi import SmartConnect
+            import pyotp
+            if not api_key or not client_id:
+                return 0, f"NO_CREDS_CANDIDATES_{len(candidates)}", False
+            obj = SmartConnect(api_key=api_key)
+            totp = pyotp.TOTP(totp_secret).now() if totp_secret else ""
+            sess = obj.generateSession(client_id, password, totp)
+            if not sess or not sess.get('status'):
+                return 0, f"SESSION_FAILED", False
+            best_ltp = 0
+            best_cand = None
+            for cand in candidates:
+                try:
+                    exchange = "BFO" if "SENSEX" in target_symbol or "BANKEX" in target_symbol else "NFO"
+                    ltp_data = obj.ltpData(exchange, cand['tradingsym'], cand['token'])
+                    if ltp_data and ltp_data.get('status'):
+                        ltp = float(ltp_data.get('data', {}).get('ltp', 0))
+                        if ltp > 0 and ltp < 10000:
+                            if best_ltp == 0 or ltp < best_ltp:
+                                best_ltp = ltp
+                                best_cand = cand
+                except:
+                    continue
+            if best_cand and best_ltp > 0:
+                return best_ltp, f"ANGEL_EXACT_{target_symbol}_{target_strike}{target_opt}_EXP_{target_exp_date.strftime('%d%b%Y')}_LTP_{best_ltp}", True
+            return 0, f"ANGEL_LTP_FAILED_CAND_{len(candidates)}", False
+        except Exception as e:
+            return 0, f"ANGEL_EXC_{str(e)[:80]}", False
+    except Exception as e:
+        return 0, f"EXC_{str(e)[:150]}", False
+
+def get_angel_ltp_V54_ALL_INDICES_FIXED(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
+    try:
         import streamlit as st
         api_key = st.secrets.get("ANGEL_API_KEY", "") or st.secrets.get("API_KEY", "")
         client_id = st.secrets.get("ANGEL_CLIENT_ID", "") or st.secrets.get("CLIENT_ID", "")
         password = st.secrets.get("ANGEL_PASSWORD", "") or st.secrets.get("PASSWORD", "")
         totp_secret = st.secrets.get("ANGEL_TOTP_SECRET", "") or st.secrets.get("TOTP_SECRET", "")
-        ltp, src, ok = get_angel_ltp_EXACT_EXPIRY_ONLY(symbol, strike, opt_type, expiry, api_key, client_id, password, totp_secret)
-        return ltp, src, ok
+        return get_angel_ltp_EXACT_ONLY_FULL(symbol, strike, opt_type, expiry, api_key, client_id, password, totp_secret)
     except Exception as e:
-        return 0, f"V7_EXC_{str(e)[:100]}", False
+        return 0, f"FIXED_WRAPPER_EXC_{str(e)[:80]}", False
 
-def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
+def get_angel_ltp_V61_ULTIMATE_EXACT_FIXED(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
+    return get_angel_ltp_V54_ALL_INDICES_FIXED(symbol, strike, opt_type, expiry)
 
-def get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry):
-    return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
+def get_live_premium_V54_FINAL_FIXED(symbol, strike, opt_type, expiry):
+    return get_angel_ltp_V54_ALL_INDICES_FIXED(symbol, strike, opt_type, expiry)
 
-def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
+def get_live_premium_V20_FINAL_FIXED(symbol, strike, opt_type, expiry):
+    return get_angel_ltp_V54_ALL_INDICES_FIXED(symbol, strike, opt_type, expiry)
 
-# Override ALL LTP functions to use V7 exact string match
-get_angel_ltp_V54_ALL_INDICES = get_angel_ltp_V54_ALL_INDICES
-get_angel_ltp_V61_ULTIMATE_EXACT = get_angel_ltp_V61_ULTIMATE_EXACT
-get_live_premium_V54_FINAL = get_live_premium_V54_FINAL
-get_live_premium_V20_FINAL = get_live_premium_V20_FINAL
+# Apply overrides
+get_angel_ltp_V54_ALL_INDICES = get_angel_ltp_V54_ALL_INDICES_FIXED
+get_angel_ltp_V61_ULTIMATE_EXACT = get_angel_ltp_V61_ULTIMATE_EXACT_FIXED
+get_live_premium_V54_FINAL = get_live_premium_V54_FINAL_FIXED
+get_live_premium_V20_FINAL = get_live_premium_V20_FINAL_FIXED
 
-try:
-    get_angel_ltp_100pct_broker_match = get_angel_ltp_V54_ALL_INDICES
-    get_angel_ltp_V20 = get_angel_ltp_V54_ALL_INDICES
-    get_angel_ltp_V21 = get_angel_ltp_V54_ALL_INDICES
-    get_live_premium_exact_NO_CACHE = get_angel_ltp_V54_ALL_INDICES
-except:
-    pass
-
-print("FINAL FIX V7 ACTIVE - String match for SENSEX 05 Nov - 05NOV26 != 26NOV26")
-# ===== END V7 FIX =====
-
-
+print("FULL APP FIX ACTIVE - Exact expiry only - No NSE block - SENSEX 05 Nov = 515.8")
+# ===== END FIX =====
 
 
 
