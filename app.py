@@ -1179,28 +1179,26 @@ import streamlit as st
 
 # ===== V52 DIRECT ANGEL - No hardcoded strike/premium - Only exact expiry match =====
 
-# ===== V17 FINAL - Fixes Prior Month Bug for Alt Indices =====
-# Bug: Active underlying me jo select karta hu uska nearest expiry LTP correct, baki Nifty chod ke prior month ka
-# Root: 
-# 1. scan_one_index_fast_v12 me alt_exp = alt_expiries[0] - should be nearest
-# 2. Display me selected_expiry use ho raha hai idea ki expiry ki jagah - BUG!
-# Fix: Idea ki expiry use karo, selected_expiry nahi
+# ===== V14 FINAL - Nearest Expiry for Trade Setups - User Request =====
+# User: Index koi bhi select karu lekin Detailed High-Conviction Trade Setups me nearest expiry ke premium ltp show kare
+# Fix: Trade setups me selected_expiry ki jagah nearest expiry from Angel master use karo
+# NIFTY ok, FINNIFTY/BANKNIFTY/SENSEX me 1-3 month ahead bug fix
 
 def get_expiry_type_for_symbol_correct(symbol: str) -> str:
     return "WEEKLY"
 
 def get_nearest_expiry_for_symbol(symbol: str) -> str:
-    """V17 - Nearest expiry auto-rolls every month - 100% Angel"""
-    try:
-        from angel_data_source import get_current_month_nearest_expiry
-        return get_current_month_nearest_expiry(symbol)
-    except:
-        pass
+    """V14 - Get nearest expiry for any index from Angel master - for Trade Setups"""
     try:
         from angel_data_source import get_all_expiries_for_dropdown_correct
         exps = get_all_expiries_for_dropdown_correct(symbol)
         if exps:
-            return exps[0]
+            return exps[0]  # First is nearest (sorted)
+    except:
+        pass
+    try:
+        # Fallback to correct version
+        return get_all_expiries_for_dropdown_correct(symbol)[0]
     except:
         pass
     try:
@@ -1220,7 +1218,7 @@ def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expir
         ltp, src, ok = get_angel_ltp_EXACT_EXPIRY_ONLY(symbol, strike, opt_type, expiry, api_key, client_id, password, totp_secret)
         return ltp, src, ok
     except Exception as e:
-        return 0, f"V17_EXC_{str(e)[:100]}", False
+        return 0, f"V14_EXC_{str(e)[:100]}", False
 
 def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
     return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
@@ -1243,8 +1241,8 @@ try:
 except:
     pass
 
-print("V17 FINAL ACTIVE - Fixes Prior Month Bug for Alt Indices")
-# ===== END V17 FINAL =====
+print("V14 FINAL ACTIVE - Nearest Expiry for Trade Setups - Fixes 1-3 Month Ahead")
+# ===== END V14 FINAL =====
 
 
 
@@ -8106,21 +8104,13 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         
                         try:
                             # V27 FINAL: Angel first - 100% broker matched like debug app
-                            # V17 FIX: Use idea expiry, not selected_expiry - fixes prior month bug
-                            idea_expiry_for_ltp = idea.get('expiry', selected_expiry)
-                            # Clean expiry label - remove formatting
-                            try:
-                                # idea expiry is like "23 Nov 2026" from expiry_label
-                                exp_for_ltp = idea_expiry_for_ltp if idea_expiry_for_ltp and idea_expiry_for_ltp != "Current Weekly" else get_nearest_expiry_for_symbol(idea.get('symbol','NIFTY'))
-                            except:
-                                exp_for_ltp = selected_expiry
                             live_ltp_now, live_src, is_live_ok = get_angel_ltp_V54_ALL_INDICES(
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
-                                expiry=exp_for_ltp
+                                expiry=selected_expiry
                             )
-                            actual_exp_used = exp_for_ltp
+                            actual_exp_used = selected_expiry
                             
                             # If Angel failed, try proxy/broker matched as fallback
                             if not is_live_ok or live_ltp_now == 0:
@@ -8452,4 +8442,3 @@ def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
         
     except Exception as e:
         return False, str(e)[:80]
-
