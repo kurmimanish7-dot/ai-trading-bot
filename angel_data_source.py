@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Angel Data Source - V13 FINAL - Fixes 1-3 month ahead bug
-NIFTY ok (weekly tokens exist for all strikes)
-BANKNIFTY/FINNIFTY/SENSEX wrong (monthly only, 23 Nov token not found -> fallback to 25 Jan)
-Fix: No fallback + debug + expiry list from Angel master with token count
+Angel Data Source - V16 FINAL - Nearest Expiry Auto-Rolling Every Month
+User: Nearest expiry current month fix nahi, har new month applicable ho
+Nov 2026 -> Nov expiry, Dec 2026 -> Dec expiry, Jan 2027 -> Jan expiry
+
+Logic: Future expiries sorted, first >= today = nearest (auto rolls)
 """
 
 import re
@@ -77,12 +78,7 @@ def get_angel_master():
         return _MASTER_CACHE if _MASTER_CACHE else []
 
 def get_all_expiries_for_dropdown_correct(symbol: str):
-    """
-    V13: Show only expiries that have tokens in Angel master
-    NIFTY: Weekly - all weekly expiries
-    BANKNIFTY/FINNIFTY/SENSEX: Monthly - only monthly expiries (as per SEBI, only NIFTY weekly on NSE, SENSEX weekly on BSE)
-    But FINNIFTY is monthly only, so show monthly
-    """
+    """V16: All future expiries sorted ascending - nearest first"""
     try:
         instruments = get_angel_master()
         exp_count = {}
@@ -120,23 +116,40 @@ def get_all_expiries_for_dropdown_correct(symbol: str):
             if exp:
                 exp_count[exp] = exp_count.get(exp, 0) + 1
         
-        # Only expiries with at least 10 instruments (some strikes)
         valid_exps = [d for d, cnt in exp_count.items() if cnt >= 10]
         unique = sorted(set(valid_exps))
         today = datetime.now().date()
-        future = [d for d in unique if d >= today - timedelta(days=1)]
+        future = [d for d in unique if d >= today]
         
-        # Sort and return
+        # If today is expiry day, include today
+        if not future:
+            future = [d for d in unique if d >= today - timedelta(days=1)]
+        
         result = future[:12] if future else unique[:12]
         return [d.strftime("%d %b %Y") for d in result]
     except Exception as e:
         return []
 
+def get_current_month_nearest_expiry(symbol: str):
+    """
+    V16 FINAL: Nearest expiry - auto rolls every month
+    Logic: Future sorted, first >= today = nearest
+    Nov 2026 me -> Nov, Dec 2026 me -> Dec, Jan 2027 me -> Jan (auto)
+    """
+    try:
+        exps = get_all_expiries_for_dropdown_correct(symbol)
+        if exps:
+            return exps[0]  # First is nearest upcoming - auto rolls
+        return datetime.now().date().strftime("%d %b %Y")
+    except:
+        return datetime.now().date().strftime("%d %b %Y")
+
+def get_nearest_expiry_auto_roll(symbol: str):
+    """Alias for V16"""
+    return get_current_month_nearest_expiry(symbol)
+
 def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, expiry: str, api_key="", client_id="", password="", totp_secret=""):
-    """
-    V13 FINAL - NO FALLBACK - Fixes 1-3 month ahead bug
-    If 23 Nov 2026 token not found for FINNIFTY 24900 CE, return NO_CANDIDATE with available expiries, NOT 25 Jan 2027
-    """
+    """V16 FINAL - NO FALLBACK - Exact expiry only - fixes 3 month ahead bug"""
     target_symbol = symbol.upper().strip()
     target_strike = int(strike)
     target_opt = opt_type.upper().strip()
@@ -144,7 +157,7 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
     if not target_date:
         target_date = parse_expiry_from_tradingsymbol(expiry)
     if not target_date:
-        return 0, f"V13_INVALID_EXPIRY_{expiry}", False
+        return 0, f"V16_INVALID_EXPIRY_{expiry}", False
     
     str_7 = target_date.strftime("%d%b%y").upper()
     str_9 = target_date.strftime("%d%b%Y").upper()
@@ -179,12 +192,10 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
                 if "BANKEX" not in tradingsym:
                     continue
             
-            # Strike
             try:
                 raw = inst.get("strike", -1)
                 stk = int(float(raw)/100) if float(raw) > 1000 else int(float(raw))
                 if stk == target_strike:
-                    # Collect available expiries for this strike
                     d = parse_expiry_from_tradingsymbol(tradingsym)
                     if not d:
                         d = parse_expiry_to_date(str(inst.get("expiry","")))
@@ -206,7 +217,6 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
             if target_opt == "PE" and not tradingsym.endswith("PE"):
                 continue
             
-            # Exact expiry only - no fallback
             inst_date = parse_expiry_from_tradingsymbol(tradingsym)
             if not inst_date:
                 inst_date = parse_expiry_to_date(str(inst.get("expiry","")))
@@ -226,22 +236,21 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
         
         if not candidates:
             avail = sorted(list(available_exps_for_strike))[:5]
-            debug_msg = f"V13_NO_CANDIDATE_EXACT_{target_symbol}_{target_strike}{target_opt}_WANT_{target_date.strftime('%d %b %Y')}_AVAILABLE_FOR_STRIKE_{avail}_NO_FALLBACK"
+            debug_msg = f"V16_NO_CANDIDATE_EXACT_{target_symbol}_{target_strike}{target_opt}_WANT_{target_date.strftime('%d %b %Y')}_AVAILABLE_{avail}_NO_FALLBACK"
             return 0, debug_msg, False
         
-        # LTP
         try:
             from SmartApi import SmartConnect
             import pyotp
             
             if not api_key or not client_id:
-                return 0, "V13_NO_CREDS", False
+                return 0, "V16_NO_CREDS", False
             
             obj = SmartConnect(api_key=api_key)
             totp = pyotp.TOTP(totp_secret).now() if totp_secret else ""
             sess = obj.generateSession(client_id, password, totp)
             if not sess or not sess.get('status'):
-                return 0, "V13_SESSION_FAILED", False
+                return 0, "V16_SESSION_FAILED", False
             
             for cand in candidates:
                 try:
@@ -250,17 +259,17 @@ def get_angel_ltp_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, exp
                     if data and data.get('status'):
                         ltp = float(data.get('data', {}).get('ltp', 0))
                         if ltp > 0:
-                            return ltp, f"V13_EXACT_{target_symbol}_{target_strike}{target_opt}_EXP_{target_date.strftime('%d%b%Y')}_{cand['tradingsym']}_LTP_{ltp}", True
+                            return ltp, f"V16_EXACT_{target_symbol}_{target_strike}{target_opt}_EXP_{target_date.strftime('%d%b%Y')}_{cand['tradingsym']}_LTP_{ltp}", True
                 except:
                     continue
             
-            return 0, f"V13_LTP_FAILED_{len(candidates)}", False
+            return 0, f"V16_LTP_FAILED_{len(candidates)}", False
             
         except Exception as e:
-            return 0, f"V13_EXC_{str(e)[:100]}", False
+            return 0, f"V16_EXC_{str(e)[:100]}", False
             
     except Exception as e:
-        return 0, f"V13_OUTER_EXC_{str(e)[:150]}", False
+        return 0, f"V16_OUTER_EXC_{str(e)[:150]}", False
 
 def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
     try:
