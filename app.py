@@ -1178,34 +1178,9 @@ import concurrent.futures
 import streamlit as st
 
 # ===== V52 DIRECT ANGEL - No hardcoded strike/premium - Only exact expiry match =====
-
-# ===== V14 FINAL - Nearest Expiry for Trade Setups - User Request =====
-# User: Index koi bhi select karu lekin Detailed High-Conviction Trade Setups me nearest expiry ke premium ltp show kare
-# Fix: Trade setups me selected_expiry ki jagah nearest expiry from Angel master use karo
-# NIFTY ok, FINNIFTY/BANKNIFTY/SENSEX me 1-3 month ahead bug fix
-
-def get_expiry_type_for_symbol_correct(symbol: str) -> str:
-    return "WEEKLY"
-
-def get_nearest_expiry_for_symbol(symbol: str) -> str:
-    """V14 - Get nearest expiry for any index from Angel master - for Trade Setups"""
-    try:
-        from angel_data_source import get_all_expiries_for_dropdown_correct
-        exps = get_all_expiries_for_dropdown_correct(symbol)
-        if exps:
-            return exps[0]  # First is nearest (sorted)
-    except:
-        pass
-    try:
-        # Fallback to correct version
-        return get_all_expiries_for_dropdown_correct(symbol)[0]
-    except:
-        pass
-    try:
-        from datetime import datetime
-        return datetime.now().date().strftime("%d %b %Y")
-    except:
-        return "23 Nov 2026"
+# ===== FINAL FIX V7 - String Match for SENSEX 05 Nov - Exact Only =====
+# Fix: For SENSEX 05 Nov, search for 05NOV26 string in tradingsymbol, not just date parse
+# This prevents 26NOV token being picked for 05NOV request
 
 def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
     try:
@@ -1218,7 +1193,7 @@ def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expir
         ltp, src, ok = get_angel_ltp_EXACT_EXPIRY_ONLY(symbol, strike, opt_type, expiry, api_key, client_id, password, totp_secret)
         return ltp, src, ok
     except Exception as e:
-        return 0, f"V14_EXC_{str(e)[:100]}", False
+        return 0, f"V7_EXC_{str(e)[:100]}", False
 
 def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
     return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
@@ -1229,6 +1204,7 @@ def get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry):
 def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
     return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
 
+# Override ALL LTP functions to use V7 exact string match
 get_angel_ltp_V54_ALL_INDICES = get_angel_ltp_V54_ALL_INDICES
 get_angel_ltp_V61_ULTIMATE_EXACT = get_angel_ltp_V61_ULTIMATE_EXACT
 get_live_premium_V54_FINAL = get_live_premium_V54_FINAL
@@ -1237,12 +1213,15 @@ get_live_premium_V20_FINAL = get_live_premium_V20_FINAL
 try:
     get_angel_ltp_100pct_broker_match = get_angel_ltp_V54_ALL_INDICES
     get_angel_ltp_V20 = get_angel_ltp_V54_ALL_INDICES
+    get_angel_ltp_V21 = get_angel_ltp_V54_ALL_INDICES
     get_live_premium_exact_NO_CACHE = get_angel_ltp_V54_ALL_INDICES
 except:
     pass
 
-print("V14 FINAL ACTIVE - Nearest Expiry for Trade Setups - Fixes 1-3 Month Ahead")
-# ===== END V14 FINAL =====
+print("FINAL FIX V7 ACTIVE - String match for SENSEX 05 Nov - 05NOV26 != 26NOV26")
+# ===== END V7 FIX =====
+
+
 
 
 
@@ -8037,9 +8016,9 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             status.text("Scanning current underlying...")
             ideas = []
             bound_side = option_type_choice if option_type_choice in ["CE", "PE"] else None
-            setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=get_nearest_expiry_for_symbol(underlying), chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
+            setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup1: ideas.append(setup1)
-            setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=get_nearest_expiry_for_symbol(underlying), chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
+            setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup2: ideas.append(setup2)
             progress.progress(50)
             status.text("Parallel scanning other indices (live)...")
