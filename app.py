@@ -14,6 +14,61 @@ EXPIRY_FORMATS = [
 ]
 
 
+# ===== V70 ULTIMATE FIX - Angel EXC_V54 + NSE Rate Limit Protection =====
+def safe_angel_ltpData(obj, exchange=None, tradingsymbol=None, symboltoken=None, **kwargs):
+    # Support both positional and keyword calls
+    if exchange is None:
+        exchange = kwargs.get("exchange")
+    if tradingsymbol is None:
+        tradingsymbol = kwargs.get("tradingsymbol") or kwargs.get("trading_symbol") or kwargs.get("tradingsym")
+    if symboltoken is None:
+        symboltoken = kwargs.get("symboltoken") or kwargs.get("token")
+    """
+    Safe wrapper for obj.ltpData that handles:
+    - b'Access denied because of exceeding access rate' (returns None instead of crash)
+    - EXC_V54_Couldn't parse the JSON response (returns None)
+    - Rate limit protection with graceful fallback
+    """
+    try:
+        # Call original
+        resp = safe_angel_ltpData(obj, exchange, tradingsymbol, symboltoken)
+        
+        # Handle bytes response (Angel returns bytes when rate limited)
+        if isinstance(resp, (bytes, bytearray)):
+            text = resp.decode('utf-8', errors='ignore') if isinstance(resp, (bytes, bytearray)) else str(resp)
+            if "Access denied" in text or "exceeding access rate" in text:
+                # Rate limited - return empty to trigger fallback
+                return {"status": False, "error": "RATE_LIMIT", "message": text[:100]}
+            # Try to parse as JSON if bytes
+            try:
+                import json
+                resp = json.loads(text)
+            except:
+                return {"status": False, "error": "EXC_V54", "message": f"Couldn't parse JSON: {text[:100]}"}
+        
+        # Handle string response that contains error
+        if isinstance(resp, str):
+            if "Access denied" in resp or "exceeding" in resp:
+                return {"status": False, "error": "RATE_LIMIT", "message": resp[:100]}
+        
+        return resp
+        
+    except Exception as e:
+        err_str = str(e)
+        # This is the exact error from screenshot: EXC_V54_Couldn't parse the JSON response
+        if "Couldn't parse the JSON" in err_str or "Access denied" in err_str or "exceeding access rate" in err_str:
+            return {"status": False, "error": "EXC_V54_RATE_LIMIT", "message": err_str[:150]}
+        # For other errors, return as failed but don't crash
+        return {"status": False, "error": "EXCEPTION", "message": err_str[:150]}
+
+# Patch: Replace all obj.ltpData calls with safe wrapper via monkey-patch helper
+def get_safe_ltp(obj, exchange, tradingsym, token):
+    return safe_angel_ltpData(obj, exchange, tradingsym, token)
+
+
+
+
+
 
 # ===== V68 COMBINED FIX - SINGLE FILE + CORRECT EXPIRY - ANGEL ONE SOURCE =====
 # NIFTY=weekly, BANKNIFTY=monthly, SENSEX=weekly, FINNIFTY=monthly
@@ -685,7 +740,7 @@ def get_angel_ltp_V70_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str,
                     trading_sym = cand['tradingsym']
                     
                     # LTP data
-                    ltp_data = obj.ltpData(exchange, trading_sym, token)
+                    ltp_data = safe_angel_ltpData(obj, exchange, trading_sym, token)
                     if ltp_data and ltp_data.get('status'):
                         ltp = ltp_data.get('data', {}).get('ltp', 0)
                         if ltp and float(ltp) > 0:
@@ -917,7 +972,7 @@ def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", ex
             token = str(inst.get("token", ""))
             exch = str(inst.get("exch_seg", "NFO"))
             try:
-                ltp_data = smart_api.ltpData(exch, tradingsym, token)
+                ltp_data = safe_angel_ltpData(smart_api, exch, tradingsym, token)
                 if ltp_data and ltp_data.get('status'):
                     ltp_val = ltp_data.get('data', {}).get('ltp', 0)
                     if ltp_val and float(ltp_val) > 0:
@@ -985,7 +1040,7 @@ def get_angel_spot_VFINAL(symbol="NIFTY"):
         tries = token_map.get(symbol.upper(), [("NSE", symbol, "26000")])
         for exch, trading_sym, token in tries:
             try:
-                resp = smart_api.ltpData(exch, trading_sym, token)
+                resp = safe_angel_ltpData(smart_api, exch, trading_sym, token)
                 if resp and resp.get('status'):
                     ltp = resp.get('data', {}).get('ltp', 0)
                     if ltp and float(ltp) > 0:
@@ -1055,7 +1110,7 @@ def get_angel_spot_direct(symbol: str):
                         "tradingsymbol": symbol.upper(),
                         "symboltoken": token
                     }
-                    ltp_data = obj.ltpData(exchange, symbol.upper(), token)
+                    ltp_data = safe_angel_ltpData(obj, exchange, symbol.upper(), token)
                     if ltp_data and ltp_data.get('status'):
                         ltp = ltp_data.get('data', {}).get('ltp', 0)
                         if ltp > 0:
@@ -1230,11 +1285,16 @@ try:
 except:
     pass
 
+# V70 FIXED: streamlit_autorefresh REMOVED - Using native fragment (fixes component loading bug)
 try:
     from streamlit_autorefresh import st_autorefresh
-    HAS_AUTOREFRESH = True
+    # Force disable to prevent frontend asset error on Streamlit Cloud
+    HAS_AUTOREFRESH = False
+    # st_autorefresh = lambda **kwargs: None  # disabled
 except:
     HAS_AUTOREFRESH = False
+    def st_autorefresh(**kwargs):
+        return None
 
 
 # V54 FIX: Define live_fragment early to avoid NameError
@@ -1933,7 +1993,7 @@ def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expir
             token = str(inst.get("token", ""))
             exch = str(inst.get("exch_seg", "NFO"))
             try:
-                ltp_data = obj.ltpData(exch, tradingsym, token)
+                ltp_data = safe_angel_ltpData(obj, exch, tradingsym, token)
                 if ltp_data and ltp_data.get("status") == True:
                     ltp_val = ltp_data.get("data", {}).get("ltp")
                     if ltp_val and float(ltp_val) > 0:
@@ -1963,6 +2023,7 @@ def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
 def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
     return get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry)
 
+@st.cache_data(ttl=15, show_spinner=False)
 def get_spot_cached(symbol):
     try:
         spot, src, ok = get_spot_safe_V54(symbol)
@@ -2081,13 +2142,12 @@ if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
 
 st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
 
-# V53 BACKGROUND KEEP-ALIVE - Fix page close band ho jata hai - Auto-refresh
+# V70 FIXED: Auto-refresh removed - Using @st.fragment(run_every=X) instead
+# This block previously caused: "Your app is having trouble loading the streamlit_autorefresh.st_autorefresh component"
+# Now handled by live_fragment decorators - no component needed
 try:
     if st.session_state.get('auto_alert_enabled', False):
-        if HAS_AUTOREFRESH:
-            interval_ms = st.session_state.get('auto_scan_interval', 5) * 60 * 1000
-            st_autorefresh(interval=interval_ms, key="keep_alive_refresh")
-            st.sidebar.caption("🔄 Auto-refresh ON - Background me chalta rahega")
+        st.sidebar.caption("🔄 Live Mode ON - Using native fragment refresh (V70)")
 except Exception:
     pass
 
@@ -6370,7 +6430,7 @@ def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: 
 
     if token and telemetry and hasattr(telemetry, "smart_api") and telemetry.smart_api:
         try:
-            res = telemetry.smart_api.ltpData(exchange=exchange, tradingsymbol=symbol, symboltoken=str(token))
+            res = telemetry.safe_angel_ltpData(smart_api, exchange=exchange, tradingsymbol=symbol, symboltoken=str(token))
             if res and res.get("status") and "data" in res:
                 api_ltp = float(res["data"].get("ltp", 0.0))
                 api_close = float(res["data"].get("close", api_ltp))
