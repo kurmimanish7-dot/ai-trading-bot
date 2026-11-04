@@ -1,1059 +1,3 @@
-# V71 NETWORK FIX - Reduced fragment frequency to fix 'Cannot load frontend code'
-# Changed all run_every=1/2 sec to 15 sec - Streamlit Cloud cannot handle 1 sec polling
-
-# ===== V61 ULTIMATE FIX - Based on Multiple Sources Research =====
-# Research from 3 experts:
-# 1. Angel Master Structure: token, symbol NIFTY03NOV2623050CE, expiry 03NOV2026, strike*100, OPTIDX, NFO
-# 2. Expiry Exact Matching: Parse both to date and compare exact date, not substring
-# 3. Token Filtering: Filter FUTIDX, exact expiry, LTP sanity
-
-from datetime import datetime, date
-import re
-
-EXPIRY_FORMATS = [
-    "%d%b%Y", "%d-%b-%Y", "%d %b %Y", "%d%b%y", "%d-%b-%y", "%d %b %y",
-    "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d-%m-%Y", "%d/%m/%Y"
-]
-
-
-# ===== V70 ULTIMATE FIX - Angel EXC_V54 + NSE Rate Limit Protection =====
-def safe_angel_ltpData(obj, exchange=None, tradingsymbol=None, symboltoken=None, **kwargs):
-    # Support both positional and keyword calls
-    if exchange is None:
-        exchange = kwargs.get("exchange")
-    if tradingsymbol is None:
-        tradingsymbol = kwargs.get("tradingsymbol") or kwargs.get("trading_symbol") or kwargs.get("tradingsym")
-    if symboltoken is None:
-        symboltoken = kwargs.get("symboltoken") or kwargs.get("token")
-    """
-    Safe wrapper for obj.ltpData that handles:
-    - b'Access denied because of exceeding access rate' (returns None instead of crash)
-    - EXC_V54_Couldn't parse the JSON response (returns None)
-    - Rate limit protection with graceful fallback
-    """
-    try:
-        # Call original
-        resp = safe_angel_ltpData(obj, exchange, tradingsymbol, symboltoken)
-        
-        # Handle bytes response (Angel returns bytes when rate limited)
-        if isinstance(resp, (bytes, bytearray)):
-            text = resp.decode('utf-8', errors='ignore') if isinstance(resp, (bytes, bytearray)) else str(resp)
-            if "Access denied" in text or "exceeding access rate" in text:
-                # Rate limited - return empty to trigger fallback
-                return {"status": False, "error": "RATE_LIMIT", "message": text[:100]}
-            # Try to parse as JSON if bytes
-            try:
-                import json
-                resp = json.loads(text)
-            except:
-                return {"status": False, "error": "EXC_V54", "message": f"Couldn't parse JSON: {text[:100]}"}
-        
-        # Handle string response that contains error
-        if isinstance(resp, str):
-            if "Access denied" in resp or "exceeding" in resp:
-                return {"status": False, "error": "RATE_LIMIT", "message": resp[:100]}
-        
-        return resp
-        
-    except Exception as e:
-        err_str = str(e)
-        # This is the exact error from screenshot: EXC_V54_Couldn't parse the JSON response
-        if "Couldn't parse the JSON" in err_str or "Access denied" in err_str or "exceeding access rate" in err_str:
-            return {"status": False, "error": "EXC_V54_RATE_LIMIT", "message": err_str[:150]}
-        # For other errors, return as failed but don't crash
-        return {"status": False, "error": "EXCEPTION", "message": err_str[:150]}
-
-# Patch: Replace all obj.ltpData calls with safe wrapper via monkey-patch helper
-def get_safe_ltp(obj, exchange, tradingsym, token):
-    return safe_angel_ltpData(obj, exchange, tradingsym, token)
-
-
-
-
-
-
-# ===== V68 COMBINED FIX - SINGLE FILE + CORRECT EXPIRY - ANGEL ONE SOURCE =====
-# NIFTY=weekly, BANKNIFTY=monthly, SENSEX=weekly, FINNIFTY=monthly
-# No external files needed!
-
-# --- Embedded Execution Engine (Single File - No Active (Embedded)) ---
-FIXED_TARGETS_EMB = {"NIFTY": 15.0, "BANKNIFTY": 40.0, "FINNIFTY": 15.0, "MIDCPNIFTY": 15.0, "SENSEX": 15.0}
-RISK_REWARD_RATIO_EMB = 1.5
-SL_LIMITS_EMB = {"MIN_PERCENT": 5.0, "MAX_PERCENT": 50.0, "DEFAULT_PERCENT": 20.0}
-RISK_CONFIG_EMB = {"MAX_DAILY_LOSS": 5000.0, "MAX_TRADES_PER_DAY": 10, "MAX_OPEN_POSITIONS": 3, "MAX_ORDER_QTY": 150, "MAX_CAPITAL_EXPOSURE": 50000.0, "MAX_TRADE_DURATION_MIN": 120, "MANDATORY_SL": True, "KILL_SWITCH": False}
-EXECUTION_CONFIG_EMB = {"PAPER_MODE": True, "PAPER_SLIPPAGE_PERCENT": 0.5, "PAPER_PARTIAL_FILL_PROB": 0.1, "MARKET_ORDER_TIMEOUT_SEC": 10, "ORDER_STATUS_CHECK_INTERVAL": 2, "POSITION_MONITOR_INTERVAL": 3, "TELEGRAM_SIGNAL_EXPIRY_MIN": 5, "ENABLE_LIVE_AFTER_AUTH": False}
-TELEGRAM_CONFIG_EMB = {"ENABLE_INLINE_BUTTONS": True, "YES_BUTTON": "YES - EXECUTE TRADE", "NO_BUTTON": "NO - REJECT TRADE"}
-ANGEL_CONFIG_EMB = {"PRODUCT_TYPE": "CARRYFORWARD", "ORDER_TYPE": "MARKET", "EXCHANGE": "NFO"}
-EOD_CONFIG_EMB = {"SQUARE_OFF_TIME": "15:15", "ENABLE_EOD_SQUARE_OFF": True}
-
-def get_target_points_emb(symbol: str) -> float:
-    return FIXED_TARGETS_EMB.get(symbol.upper(), 15.0)
-
-def calculate_risk_reward_emb(entry_price: float, symbol: str):
-    target_points = get_target_points_emb(symbol)
-    risk_per_unit = target_points / RISK_REWARD_RATIO_EMB
-    sl_percent = (risk_per_unit / entry_price * 100) if entry_price>0 else SL_LIMITS_EMB["DEFAULT_PERCENT"]
-    sl_percent = max(SL_LIMITS_EMB["MIN_PERCENT"], min(sl_percent, SL_LIMITS_EMB["MAX_PERCENT"]))
-    sl_price = entry_price * (1 - sl_percent/100)
-    target_price = entry_price + target_points
-    actual_risk = entry_price - sl_price
-    actual_rr = target_points / actual_risk if actual_risk>0 else 0
-    can_satisfy = SL_LIMITS_EMB["MIN_PERCENT"] <= sl_percent <= SL_LIMITS_EMB["MAX_PERCENT"]
-    return {"entry_price": entry_price, "target_points": target_points, "target_price": target_price, "risk_per_unit": risk_per_unit, "sl_percent": sl_percent, "sl_price": sl_price, "risk_reward": actual_rr, "can_satisfy": can_satisfy, "symbol": symbol}
-
-# --- Correct Expiry Logic - Angel One Source ---
-EXPIRY_TYPE_MAP_CORRECT = {"NIFTY": "WEEKLY", "BANKNIFTY": "MONTHLY", "SENSEX": "WEEKLY", "FINNIFTY": "MONTHLY", "MIDCPNIFTY": "WEEKLY"}
-
-def get_expiry_type_for_symbol_correct(symbol: str) -> str:
-    sym_upper = symbol.upper().strip()
-    if "BANKNIFTY" in sym_upper:
-        return "MONTHLY"
-    if "FINNIFTY" in sym_upper or sym_upper == "FIN":
-        return "MONTHLY"
-    if "SENSEX" in sym_upper:
-        return "WEEKLY"
-    if sym_upper == "NIFTY":
-        return "WEEKLY"
-    if "MIDCP" in sym_upper:
-        return "WEEKLY"
-    return EXPIRY_TYPE_MAP_CORRECT.get(sym_upper, "WEEKLY")
-
-def get_expiry_list_from_angel_master_correct(symbol: str, use_cache=True):
-    try:
-        cache_key = f"angel_expiry_correct_{symbol.upper()}"
-        if use_cache and cache_key in st.session_state:
-            cached = st.session_state[cache_key]
-            if 'timestamp' in cached and (datetime.now() - cached['timestamp']).total_seconds() < 600:
-                return cached['expiries']
-        import requests as req_lib
-        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        try:
-            r = req_lib.get(master_url, timeout=10)
-            if r.status_code != 200:
-                raise Exception(f"HTTP {r.status_code}")
-            instruments = r.json()
-        except:
-            return generate_calendar_expiries_fallback_correct(symbol)
-        filtered = []
-        sym_upper = symbol.upper().strip()
-        for inst in instruments:
-            if not isinstance(inst, dict):
-                continue
-            if str(inst.get("exch_seg","")).upper() not in ["NFO", "BFO"]:
-                continue
-            if "FUT" in str(inst.get("instrumenttype","")).upper():
-                continue
-            tradingsym = str(inst.get("symbol","")).upper()
-            name = str(inst.get("name","")).upper()
-            if sym_upper == "NIFTY":
-                if not tradingsym.startswith("NIFTY"):
-                    continue
-                if any(x in tradingsym for x in ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "SENSEX"]):
-                    continue
-            elif "BANKNIFTY" in sym_upper:
-                if "BANKNIFTY" not in tradingsym and "BANKNIFTY" not in name:
-                    continue
-            elif "FINNIFTY" in sym_upper or sym_upper == "FIN":
-                if "FINNIFTY" not in tradingsym and "FINNIFTY" not in name:
-                    continue
-            elif "SENSEX" in sym_upper:
-                if "SENSEX" not in tradingsym and "SENSEX" not in name:
-                    continue
-            elif "MIDCP" in sym_upper:
-                if "MIDCPNIFTY" not in tradingsym and "MIDCP" not in tradingsym:
-                    continue
-            else:
-                if sym_upper not in tradingsym and sym_upper not in name:
-                    continue
-            exp_raw = str(inst.get("expiry","")).strip()
-            if not exp_raw or exp_raw in ["", "-1"]:
-                continue
-            exp_date = parse_expiry_to_date_ULTIMATE(exp_raw)
-            if exp_date:
-                filtered.append(exp_date)
-        unique_expiries = sorted(list(set(filtered)))
-        st.session_state[cache_key] = {'expiries': unique_expiries, 'timestamp': datetime.now(), 'source': 'ANGEL_MASTER'}
-        return unique_expiries
-    except Exception as e:
-        print(f"Angel expiry error for {symbol}: {e}")
-        return generate_calendar_expiries_fallback_correct(symbol)
-
-def generate_calendar_expiries_fallback_correct(symbol: str):
-    today = datetime.now().date()
-    expiries = []
-    if get_expiry_type_for_symbol_correct(symbol) == "WEEKLY":
-        for i in range(10):
-            if symbol.upper() == "SENSEX":
-                days_ahead = (4 - today.weekday()) % 7
-            else:
-                days_ahead = (1 - today.weekday()) % 7
-            next_exp = today + timedelta(days=days_ahead + i*7)
-            expiries.append(next_exp)
-    else:
-        for i in range(6):
-            year = today.year + (today.month + i - 1) // 12
-            month = (today.month + i - 1) % 12 + 1
-            if month == 12:
-                next_month = datetime(year+1, 1, 1).date()
-            else:
-                next_month = datetime(year, month+1, 1).date()
-            last_day = next_month - timedelta(days=1)
-            offset = (last_day.weekday() - 3) % 7
-            last_thursday = last_day - timedelta(days=offset)
-            if last_thursday >= today:
-                expiries.append(last_thursday)
-    return sorted(list(set(expiries)))
-
-def get_weekly_expiry_from_source_correct(symbol: str):
-    expiries = get_expiry_list_from_angel_master_correct(symbol)
-    if not expiries:
-        expiries = generate_calendar_expiries_fallback_correct(symbol)
-    today = datetime.now().date()
-    future = [d for d in expiries if d >= today]
-    if future:
-        return min(future)
-    return expiries[-1] if expiries else None
-
-def get_monthly_expiry_from_source_correct(symbol: str):
-    expiries = get_expiry_list_from_angel_master_correct(symbol)
-    if not expiries:
-        expiries = generate_calendar_expiries_fallback_correct(symbol)
-    today = datetime.now().date()
-    by_month = {}
-    for exp in expiries:
-        key = exp.strftime("%Y-%m")
-        if key not in by_month:
-            by_month[key] = []
-        by_month[key].append(exp)
-    monthly_exps = []
-    for month_key in sorted(by_month.keys()):
-        last_exp = max(by_month[month_key])
-        monthly_exps.append(last_exp)
-    monthly_exps = sorted(monthly_exps)
-    future_monthly = [d for d in monthly_exps if d >= today]
-    if future_monthly:
-        return min(future_monthly)
-    return monthly_exps[-1] if monthly_exps else (expiries[-1] if expiries else None)
-
-
-
-# ===== FIX BANKNIFTY MONTHLY - CURRENT MONTH NOT NEXT MONTH =====
-# Bug: Showing next month expiry (27 Nov) when should show current month (30 Oct)
-# Today: 31 Oct 2026 Saturday - Oct expiry was 29 Oct (last Thursday), already passed!
-# So next expiry Nov is correct AFTER expiry, but user wants current month logic fixed
-# For monthly, if current month expiry already passed, show next month BUT mark as monthly
-# However, for 31 Oct, Oct expiry 29 Oct already expired, so Nov is correct for trading
-# But to fix user perception, ensure logic: 
-# - If today is after monthly expiry of current month, show next month
-# - Else show current month
-
-def get_monthly_expiry_fixed_current_month(symbol: str):
-    """
-    FIXED: BANKNIFTY monthly - Show current month if not expired, else next month
-    But use Angel source to get actual monthly expiries
-    """
-    try:
-        expiries = get_expiry_list_from_angel_master_correct(symbol)
-        if not expiries:
-            expiries = generate_calendar_expiries_fallback_correct(symbol)
-        
-        today = datetime.now().date()
-        
-        # Group by month and get last of each month (monthly)
-        by_month = {}
-        for exp in expiries:
-            key = exp.strftime("%Y-%m")
-            if key not in by_month:
-                by_month[key] = []
-            by_month[key].append(exp)
-        
-        monthly_exps = []
-        for month_key in sorted(by_month.keys()):
-            last_exp = max(by_month[month_key])
-            monthly_exps.append(last_exp)
-        
-        monthly_exps = sorted(monthly_exps)
-        
-        # FIX: For monthly, current month = month of today
-        # If today is 31 Oct, current month is Oct, last Thursday was 29 Oct
-        # Since 31 Oct > 29 Oct, Oct expiry expired, so next is Nov - CORRECT for trading
-        # But user says bug - so we need to show current month if user explicitly wants
-        # Actually, for monthly symbols, we should show last expiry of CURRENT MONTH
-        # even if it has passed? No, that would be wrong for trading
-        # Let's implement: If today > last expiry of current month, show that expiry as "EXPIRED" 
-        # and next month as active, but for LTP fetching, use next month
-        
-        # For display, show current month monthly if exists, else next
-        # But for trading, use next valid >= today
-        
-        # Current logic: nearest monthly >= today - This is correct for trading
-        future_monthly = [d for d in monthly_exps if d >= today]
-        if future_monthly:
-            return min(future_monthly)
-        
-        # If no future monthly (e.g., today is 31 Dec and last expiry 30 Dec passed)
-        # Return last monthly (expired) but mark it
-        return monthly_exps[-1] if monthly_exps else None
-        
-    except Exception as e:
-        print(f"Monthly fix error: {e}")
-        return None
-
-def get_target_expiry_with_current_month_fix(symbol: str):
-    """
-    FINAL FIX: Per user + Current month fix for BANKNIFTY
-    NIFTY weekly, BANKNIFTY monthly (current month if not expired), SENSEX weekly, FINNIFTY monthly
-    """
-    expiry_type = get_expiry_type_for_symbol_correct(symbol)
-    today = datetime.now().date()
-    
-    if expiry_type == "WEEKLY":
-        exp_date = get_weekly_expiry_from_source_correct(symbol)
-        source = "ANGEL_WEEKLY_FIXED"
-    else:
-        # MONTHLY - Fixed to handle current month correctly
-        exp_date = get_monthly_expiry_fixed_current_month(symbol)
-        source = "ANGEL_MONTHLY_FIXED_CURRENT"
-        
-        # Additional check: If exp_date is next month and today is still in current month
-        # But current month expiry already passed, it's actually correct to show next month
-        # However, log it for user clarity
-        if exp_date and exp_date.month != today.month:
-            # Current month expiry already passed, showing next month - this is correct
-            print(f"{symbol} monthly: Current month expiry passed, showing next month {exp_date}")
-    
-    if exp_date:
-        return exp_date, exp_date.strftime("%d %b %Y"), source
-    else:
-        # Fallback
-        if expiry_type == "WEEKLY":
-            days_ahead = (3 - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            exp_date = today + timedelta(days=days_ahead)
-        else:
-            # Monthly fallback - last Thursday of current month if not expired, else next month
-            year = today.year
-            month = today.month
-            # Try current month last Thursday
-            if month == 12:
-                next_month = datetime(year+1, 1, 1).date()
-            else:
-                next_month = datetime(year, month+1, 1).date()
-            last_day = next_month - timedelta(days=1)
-            offset = (last_day.weekday() - 3) % 7
-            last_thursday = last_day - timedelta(days=offset)
-            
-            if last_thursday >= today:
-                exp_date = last_thursday
-            else:
-                # Current month expired, go to next month
-                year = today.year + (today.month) // 12
-                month = (today.month % 12) + 1
-                if month == 12:
-                    next_month = datetime(year+1, 1, 1).date()
-                else:
-                    next_month = datetime(year, month+1, 1).date()
-                last_day = next_month - timedelta(days=1)
-                offset = (last_day.weekday() - 3) % 7
-                exp_date = last_day - timedelta(days=offset)
-        
-        return exp_date, exp_date.strftime("%d %b %Y"), "CALENDAR_FIXED"
-
-# Override the main expiry function
-def get_target_expiry_per_user_logic_correct_FINAL(symbol: str):
-    return get_target_expiry_with_current_month_fix(symbol)
-
-
-
-def get_target_expiry_per_user_logic_correct_ORIG(symbol: str):
-    expiry_type = get_expiry_type_for_symbol_correct(symbol)
-    if expiry_type == "WEEKLY":
-        exp_date = get_weekly_expiry_from_source_correct(symbol)
-        source = "ANGEL_MASTER_WEEKLY"
-    else:
-        exp_date = get_monthly_expiry_from_source_correct(symbol)
-        source = "ANGEL_MASTER_MONTHLY"
-    if exp_date:
-        expiry_label = exp_date.strftime("%d %b %Y")
-        return exp_date, expiry_label, source
-    else:
-        today = datetime.now().date()
-        if expiry_type == "WEEKLY":
-            days_ahead = (3 - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            exp_date = today + timedelta(days=days_ahead)
-        else:
-            year = today.year
-            month = today.month
-            if month == 12:
-                next_month = datetime(year+1, 1, 1).date()
-            else:
-                next_month = datetime(year, month+1, 1).date()
-            last_day = next_month - timedelta(days=1)
-            offset = (last_day.weekday() - 3) % 7
-            exp_date = last_day - timedelta(days=offset)
-        return exp_date, exp_date.strftime("%d %b %Y"), "CALENDAR_FALLBACK"
-
-def get_all_expiries_for_dropdown_correct(symbol: str):
-    all_exps = get_expiry_list_from_angel_master_correct(symbol)
-    if not all_exps:
-        all_exps = generate_calendar_expiries_fallback_correct(symbol)
-    expiry_type = get_expiry_type_for_symbol_correct(symbol)
-    if expiry_type == "MONTHLY":
-        by_month = {}
-        for exp in all_exps:
-            key = exp.strftime("%Y-%m")
-            if key not in by_month:
-                by_month[key] = []
-            by_month[key].append(exp)
-        monthly_only = []
-        for month_key in sorted(by_month.keys()):
-            last_exp = max(by_month[month_key])
-            monthly_only.append(last_exp)
-        all_exps = sorted(monthly_only)
-    labels = [d.strftime("%d %b %Y") for d in all_exps[:6]]
-    return labels
-
-def load_expiries_correct(symbol: str):
-    try:
-        return get_all_expiries_for_dropdown_correct(symbol)
-    except:
-        return [datetime.now().date().strftime("%d %b %Y")]
-
-HAS_EMBEDDED_ENGINE = True
-HAS_CORRECT_EXPIRY = True
-# ===== END V68 COMBINED FIX =====
-
-
-
-def parse_expiry_to_date_ULTIMATE(s: str):
-    """Parse any expiry format to date - robust - multiple sources"""
-    if not s:
-        return None
-    s = str(s).strip()
-    # Clean
-    s_clean = re.sub(r"\s+", " ", s).strip()
-    candidates = [
-        s_clean,
-        s_clean.upper(),
-        s_clean.title(),
-        s_clean.replace(" ", ""),
-        s_clean.replace("-", ""),
-        s_clean.replace(" ", "").upper()
-    ]
-    for cand in candidates:
-        for fmt in EXPIRY_FORMATS:
-            try:
-                # Handle %b case sensitivity
-                try_cand = cand
-                if "%b" in fmt:
-                    # Convert 03nov2026 -> 03Nov2026
-                    try_cand = cand[:2] + cand[2:5].title() + cand[5:] if len(cand) > 5 else cand.title()
-                dt = datetime.strptime(try_cand, fmt)
-                return dt.date()
-            except:
-                continue
-        # Try extract DDMMMYYYY from symbol like NIFTY03NOV2623050CE
-        m = re.search(r"(\d{2})([A-Z]{3})(\d{2,4})", cand.upper())
-        if m:
-            day = m.group(1)
-            mon = m.group(2)
-            yr = m.group(3)
-            yr_full = "20" + yr if len(yr) == 2 and int(yr) < 50 else "19" + yr if len(yr) == 2 else yr
-            exp_str = f"{day}{mon}{yr_full}"
-            try:
-                dt = datetime.strptime(exp_str, "%d%b%Y")
-                return dt.date()
-            except:
-                pass
-    return None
-
-
-
-
-# ===== FIXED SENSEX LTP - EXACT EXPIRY MATCH + ALL TOKENS FROM ANGEL SOURCE =====
-# Bug: 05 Nov label but 26 Nov LTP 1274.75 vs broker 515.8 for 05 Nov
-# Root: EXACT_EXPIRY_ONLY fallback picking wrong expiry
-# Fix: Exact expiry match only, no EXACT_EXPIRY_ONLY, all tokens from Angel master
-
-def get_all_index_tokens_from_angel_master():
-    """
-    SOURCE: Angel One master - Get ALL index tokens, not just 4!
-    Read from OpenAPIScripMaster.json
-    """
-    try:
-        cache_key = "all_index_tokens_angel"
-        if cache_key in st.session_state:
-            cached = st.session_state[cache_key]
-            if 'timestamp' in cached and (datetime.now() - cached['timestamp']).total_seconds() < 600:
-                return cached['tokens']
-        
-        import requests as req_lib
-        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        r = req_lib.get(master_url, timeout=10)
-        if r.status_code != 200:
-            raise Exception(f"HTTP {r.status_code}")
-        instruments = r.json()
-        
-        tokens = {}
-        # All indices
-        indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "MIDCPNIFTY", "BANKEX", "SENSEX50"]
-        
-        for inst in instruments:
-            if not isinstance(inst, dict):
-                continue
-            symbol = str(inst.get("symbol","")).upper()
-            name = str(inst.get("name","")).upper()
-            token = str(inst.get("token",""))
-            exch_seg = str(inst.get("exch_seg","")).upper()
-            instrumenttype = str(inst.get("instrumenttype","")).upper()
-            
-            # Index spot tokens: NSE/BSE, instrumenttype = OPTIDX? No, for spot it's different
-            # Spot indices have token and exch_seg NSE/BSE and no expiry
-            # Look for indices without expiry or with specific tokens
-            
-            # Check if it's an index (no strike, no expiry, or name is index)
-            if exch_seg in ["NSE", "BSE"]:
-                # Spot index tokens have specific pattern
-                if "NIFTY" in symbol or "NIFTY" in name:
-                    if "BANKNIFTY" in symbol or "BANKNIFTY" in name:
-                        if not tokens.get("BANKNIFTY"):
-                            tokens["BANKNIFTY"] = token
-                        else:
-                            # Keep first
-                            pass
-                    elif "FINNIFTY" in symbol or "FIN" in name and "NIFTY" in name:
-                        if not tokens.get("FINNIFTY"):
-                            tokens["FINNIFTY"] = token
-                    elif "MIDCP" in symbol or "MIDCP" in name:
-                        if not tokens.get("MIDCPNIFTY"):
-                            tokens["MIDCPNIFTY"] = token
-                    elif symbol == "NIFTY" or name == "NIFTY":
-                        if not tokens.get("NIFTY"):
-                            tokens["NIFTY"] = token
-                if "SENSEX" in symbol or "SENSEX" in name:
-                    if "BANKEX" in symbol or "BANKEX" in name:
-                        tokens["BANKEX"] = token
-                    elif "SENSEX" in symbol:
-                        if not tokens.get("SENSEX"):
-                            tokens["SENSEX"] = token
-            
-            # Also collect from known tokens
-            # NIFTY 99926000, BANKNIFTY 99926009, FINNIFTY 99926037 are known Angel index tokens
-            
-        # Add known Angel index tokens (verified from Angel docs)
-        known_tokens = {
-            "NIFTY": "99926000",
-            "BANKNIFTY": "99926009",
-            "FINNIFTY": "99926037",
-            "SENSEX": "99919000",
-            "MIDCPNIFTY": "99926034",
-            "BANKEX": "99919001"
-        }
-        
-        for k, v in known_tokens.items():
-            if k not in tokens:
-                tokens[k] = v
-        
-        # Cache
-        st.session_state[cache_key] = {'tokens': tokens, 'timestamp': datetime.now(), 'source': 'ANGEL_MASTER_ALL_TOKENS'}
-        
-        return tokens
-        
-    except Exception as e:
-        print(f"All tokens fetch error: {e}")
-        # Fallback known tokens
-        return {
-            "NIFTY": "99926000",
-            "BANKNIFTY": "99926009",
-            "FINNIFTY": "99926037",
-            "SENSEX": "99919000",
-            "MIDCPNIFTY": "99926034",
-            "BANKEX": "99919001"
-        }
-
-def get_angel_ltp_V70_EXACT_EXPIRY_ONLY(symbol: str, strike: int, opt_type: str, expiry: str):
-    """
-    V70 FINAL: Exact expiry match ONLY - No EXACT_EXPIRY_ONLY fallback
-    Bug fix: SENSEX 05 Nov label but 26 Nov LTP - Now exact match only
-    SOURCE: Angel One master with exact date comparison
-    """
-    try:
-        target_symbol = symbol.upper().strip()
-        target_strike = int(strike)
-        target_opt = opt_type.upper().strip()
-        
-        # Parse target expiry to date
-        target_exp_date = parse_expiry_to_date_ULTIMATE(expiry)
-        if not target_exp_date:
-            return 0, f"INVALID_EXPIRY_{expiry}", False
-        
-        # Fetch Angel master
-        import requests as req_lib
-        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        
-        try:
-            r = req_lib.get(master_url, timeout=10)
-            if r.status_code != 200:
-                raise Exception(f"HTTP {r.status_code}")
-            instruments = r.json()
-        except Exception as e:
-            return 0, f"MASTER_FETCH_FAILED_{str(e)[:30]}", False
-        
-        candidates = []
-        
-        for inst in instruments:
-            if not isinstance(inst, dict):
-                continue
-            
-            # Filter NFO/BFO only
-            exch_seg = str(inst.get("exch_seg","")).upper()
-            if exch_seg not in ["NFO", "BFO"]:
-                continue
-            
-            # Filter OPTIDX only (not FUTIDX)
-            instrumenttype = str(inst.get("instrumenttype","")).upper()
-            if "FUT" in instrumenttype:
-                continue
-            if "OPT" not in instrumenttype:
-                continue
-            
-            tradingsym = str(inst.get("symbol","")).upper()
-            name = str(inst.get("name","")).upper()
-            
-            # Symbol filter - exact per index
-            if target_symbol == "NIFTY":
-                if not tradingsym.startswith("NIFTY"):
-                    continue
-                if any(x in tradingsym for x in ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]):
-                    continue
-            elif "BANKNIFTY" in target_symbol:
-                if "BANKNIFTY" not in tradingsym:
-                    continue
-            elif "FINNIFTY" in target_symbol:
-                if "FINNIFTY" not in tradingsym:
-                    continue
-            elif "SENSEX" in target_symbol and "BANKEX" not in target_symbol:
-                if "SENSEX" not in tradingsym:
-                    continue
-                if "BANKEX" in tradingsym:
-                    continue
-            elif "MIDCP" in target_symbol:
-                if "MIDCPNIFTY" not in tradingsym and "MIDCP" not in tradingsym:
-                    continue
-            elif "BANKEX" in target_symbol:
-                if "BANKEX" not in tradingsym:
-                    continue
-            else:
-                if target_symbol not in tradingsym:
-                    continue
-            
-            # Strike filter - exact
-            inst_strike = inst.get("strike", -1)
-            try:
-                inst_strike_int = int(float(inst_strike) / 100) if float(inst_strike) > 1000 else int(inst_strike)
-            except:
-                try:
-                    inst_strike_int = int(inst_strike)
-                except:
-                    continue
-            
-            if inst_strike_int != target_strike:
-                continue
-            
-            # Option type filter - exact CE/PE
-            # Check in trading symbol and instrument
-            if target_opt == "CE":
-                if not (tradingsym.endswith("CE") or "CE" in tradingsym[-5:]):
-                    # Also check opt type field
-                    if str(inst.get("symbol","")).upper().endswith("CE") == False:
-                        # Check more
-                        if "CALL" not in str(inst.get("instrumenttype","")).upper() and "CE" not in tradingsym:
-                            # Try to parse
-                            if "CE" not in tradingsym:
-                                continue
-            elif target_opt == "PE":
-                if not (tradingsym.endswith("PE") or "PE" in tradingsym[-5:]):
-                    if "PE" not in tradingsym:
-                        continue
-            
-            # EXPIRY FILTER - EXACT DATE ONLY - NO EXACT_EXPIRY_ONLY - THIS IS THE FIX!
-            inst_expiry_raw = str(inst.get("expiry","")).strip()
-            if not inst_expiry_raw:
-                continue
-            
-            inst_exp_date = parse_expiry_to_date_ULTIMATE(inst_expiry_raw)
-            if not inst_exp_date:
-                continue
-            
-            # EXACT MATCH ONLY - 05 Nov 2026 != 26 Nov 2026 - FIX FOR SENSEX BUG
-            if inst_exp_date != target_exp_date:
-                continue  # SKIP if not exact - No fallback to any expiry!
-            
-            # Valid candidate with exact expiry
-            token = str(inst.get("token",""))
-            if token:
-                candidates.append({
-                    'token': token,
-                    'tradingsym': tradingsym,
-                    'expiry_raw': inst_expiry_raw,
-                    'expiry_date': inst_exp_date,
-                    'strike': inst_strike_int,
-                    'ltp': 0
-                })
-        
-        if not candidates:
-            return 0, f"NO_CANDIDATE_EXACT_{target_symbol}_{target_strike}{target_opt}_EXP_{target_exp_date.strftime('%d%b%Y')}_CHECK_MASTER", False
-        
-        # Fetch LTP for all candidates and pick valid
-        # Use Angel LTP API
-        try:
-            from SmartApi import SmartConnect
-            import pyotp
-            
-            api_key = st.secrets.get("ANGEL_API_KEY", "") or st.secrets.get("API_KEY", "")
-            client_id = st.secrets.get("ANGEL_CLIENT_ID", "") or st.secrets.get("CLIENT_ID", "")
-            password = st.secrets.get("ANGEL_PASSWORD", "") or st.secrets.get("PASSWORD", "")
-            totp_secret = st.secrets.get("ANGEL_TOTP_SECRET", "") or st.secrets.get("TOTP_SECRET", "")
-            
-            if not api_key or not client_id:
-                # Try without auth - use public LTP endpoint
-                # For now, try to fetch via SmartAPI without auth if possible
-                # Or use direct API
-                raise Exception("No Angel creds - try Yahoo")
-            
-            obj = SmartConnect(api_key=api_key)
-            totp = pyotp.TOTP(totp_secret).now() if totp_secret else ""
-            session = obj.generateSession(client_id, password, totp)
-            
-            if not session or not session.get('status'):
-                raise Exception("Angel session failed")
-            
-            # Get LTP for each candidate token
-            best_ltp = 0
-            best_candidate = None
-            
-            for cand in candidates:
-                try:
-                    token = cand['token']
-                    exchange = "BFO" if "SENSEX" in target_symbol or "BANKEX" in target_symbol else "NFO"
-                    trading_sym = cand['tradingsym']
-                    
-                    # LTP data
-                    ltp_data = safe_angel_ltpData(obj, exchange, trading_sym, token)
-                    if ltp_data and ltp_data.get('status'):
-                        ltp = ltp_data.get('data', {}).get('ltp', 0)
-                        if ltp and float(ltp) > 0:
-                            ltp_f = float(ltp)
-                            # Sanity check: Option LTP should be < 5000 for sensex, < 1000 for nifty
-                            # Broker shows 515.8 for SENSEX 74500 CE 05 Nov - valid
-                            # 1274.75 for 26 Nov is for far expiry - should not be picked for 05 Nov
-                            if target_symbol == "SENSEX" and ltp_f > 3000:
-                                continue  # Too high for near expiry
-                            if target_symbol == "NIFTY" and ltp_f > 2000:
-                                continue
-                            
-                            cand['ltp'] = ltp_f
-                            if best_ltp == 0 or ltp_f < best_ltp or best_ltp > 2000:  # Prefer lower valid LTP for near expiry
-                                # For near expiry, LTP should be lower than far expiry
-                                # 05 Nov 515.8 < 26 Nov 1274.75 - correct
-                                if ltp_f < 5000:  # Valid range
-                                    best_ltp = ltp_f
-                                    best_candidate = cand
-                except Exception as e:
-                    print(f"LTP fetch error for {cand['token']}: {e}")
-                    continue
-            
-            if best_candidate and best_ltp > 0:
-                return best_ltp, f"ANGEL_DIRECT_V70_EXACT_{target_symbol}_{target_strike}{target_opt}_EXP_{target_exp_date.strftime('%d%b%Y')}_TOKEN_{best_candidate['token']}_LTP_{best_ltp}_BROKER_MATCH", True
-            else:
-                # No LTP fetched but candidates exist - try alternative method
-                # Return candidate info for debugging
-                return 0, f"NO_LTP_BUT_CANDIDATES_{len(candidates)}_EXACT_{target_exp_date.strftime('%d%b%Y')}_TOKENS_{','.join([c['token'] for c in candidates[:3]])}", False
-                
-        except Exception as e:
-            # Angel API failed, try to use LTP from master if available (sometimes master has ltp field)
-            # Or return candidate info
-            print(f"Angel LTP error: {e}")
-            # For SENSEX, we know broker LTP 515.8 for 05 Nov - if we have exact candidate, we can try Yahoo or other
-            # For now return failure with exact info
-            return 0, f"ANGEL_LTP_FAILED_{str(e)[:50]}_EXACT_CANDIDATES_{len(candidates)}_EXP_{target_exp_date.strftime('%d%b%Y')}", False
-        
-    except Exception as e:
-        import traceback
-        return 0, f"EXC_V70_{str(e)[:100]}_{traceback.format_exc()[:100]}", False
-
-# Override old LTP functions to use V70 exact
-def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_V70_EXACT_EXPIRY_ONLY(symbol, strike, opt_type, expiry)
-
-def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_V70_EXACT_EXPIRY_ONLY(symbol, strike, opt_type, expiry)
-
-def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_V70_EXACT_EXPIRY_ONLY(symbol, strike, opt_type, expiry)
-
-
-def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    """
-    V61 ULTIMATE - 100% Guarantee Current Week Only
-    - No scoring, no substring, EXACT date() == date() only
-    - Fixes 03 Nov vs 17 Nov bug - 294.80 vs 101.15
-    - Based on 3 expert researches
-    """
-    try:
-        from SmartApi import SmartConnect
-        import pyotp
-        import requests
-        import streamlit as st
-        
-        # Get credentials
-        api_key = st.secrets.get("ANGEL_API_KEY", "") or st.secrets.get("API_KEY", "")
-        client_id = st.secrets.get("ANGEL_CLIENT_ID", "") or st.secrets.get("CLIENT_ID", "")
-        password = st.secrets.get("ANGEL_PASSWORD", "") or st.secrets.get("PASSWORD", "")
-        totp_secret = st.secrets.get("ANGEL_TOTP_SECRET", "") or st.secrets.get("TOTP_SECRET", "")
-        
-        if not api_key or not client_id:
-            return 0, "ANGEL_KEYS_MISSING_ADD_SECRETS", False
-        
-        # Session
-        global _angel_session_cache, _angel_session_time
-        import time
-        now = time.time()
-        if '_angel_session_cache' in globals() and _angel_session_cache and (now - _angel_session_time < 300):
-            smart_api = _angel_session_cache
-        else:
-            smart_api = SmartConnect(api_key=api_key)
-            totp = pyotp.TOTP(totp_secret).now() if totp_secret else ""
-            data = smart_api.generateSession(client_id, password, totp)
-            if not data or not data.get('status'):
-                return 0, f"LOGIN_FAIL_{data}", False
-            _angel_session_cache = smart_api
-            _angel_session_time = now
-        
-        # Parse target
-        try:
-            target_strike = int(float(strike))
-        except:
-            return 0, f"STRIKE_FAIL_{strike}", False
-        
-        target_opt = opt_type.upper().strip()
-        if target_opt == "C": target_opt = "CE"
-        if target_opt == "P": target_opt = "PE"
-        
-        target_exp_date = parse_expiry_to_date_ULTIMATE(expiry)
-        if not target_exp_date:
-            return 0, f"EXPIRY_PARSE_FAIL_{expiry}", False
-        
-        # Master
-        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        try:
-            mr = requests.get(master_url, timeout=15)
-            if mr.status_code != 200:
-                return 0, f"MASTER_HTTP_{mr.status_code}", False
-            instruments = mr.json()
-        except:
-            return 0, "MASTER_EXC", False
-        
-        symbol_upper = symbol.upper().strip()
-        invalid = ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY"] if symbol_upper == "NIFTY" else []
-        
-        candidates_exact = []
-        candidates_fallback = []
-        
-        for inst in instruments:
-            if not isinstance(inst, dict):
-                continue
-            exch_seg = str(inst.get("exch_seg", "")).upper()
-            if exch_seg not in ["NFO", "BFO"]:
-                continue
-            inst_type = str(inst.get("instrumenttype", "")).upper()
-            if "FUT" in inst_type:  # FUTIDX, FUTSTK - exclude
-                continue
-            
-            tradingsym = str(inst.get("symbol", "")).strip()
-            tradingsym_upper = tradingsym.upper()
-            name = str(inst.get("name","")).upper()
-            
-            # Symbol filter - PER-INDEX LOGIC - FINNIFTY monthly bug fixed!
-            if symbol_upper == "NIFTY":
-                if not tradingsym_upper.startswith("NIFTY"):
-                    continue
-                if any(inv in tradingsym_upper for inv in invalid):
-                    continue
-            elif symbol_upper == "BANKNIFTY":
-                if "BANKNIFTY" not in tradingsym_upper and "BANKNIFTY" not in name:
-                    continue
-            elif symbol_upper in ["FINNIFTY", "FIN NIFTY", "FIN"]:
-                # FINNIFTY: Must contain FINNIFTY - monthly bug fix with exact expiry!
-                if "FINNIFTY" not in tradingsym_upper:
-                    if not (tradingsym_upper.startswith("FIN") and "NIFTY" in tradingsym_upper):
-                        if "FINNIFTY" not in name:
-                            continue
-            elif symbol_upper in ["MIDCPNIFTY", "MIDCAP", "NIFTY MIDCAP"]:
-                if "MIDCPNIFTY" not in tradingsym_upper and "MIDCPNIFTY" not in name:
-                    if "MIDCP" not in tradingsym_upper:
-                        continue
-            elif symbol_upper in ["SENSEX", "BSESN"]:
-                if "SENSEX" not in tradingsym_upper and "SENSEX" not in name:
-                    continue
-            else:
-                if not tradingsym_upper.startswith(symbol_upper):
-                    if symbol_upper not in tradingsym_upper:
-                        continue
-            
-            # Strike - Angel stores *100: 23050 -> 2305000.000000
-            inst_strike_raw = inst.get("strike")
-            extracted_strike = None
-            if inst_strike_raw is not None and str(inst_strike_raw).strip() not in ["", "-1", "-1.000000", "0", "0.000000"]:
-                try:
-                    s_val = float(inst_strike_raw)
-                    if s_val > 100000:  # 2305000 -> 23050
-                        s_val = s_val / 100.0
-                    if s_val > 100000:
-                        s_val = s_val / 10.0
-                    extracted_strike = int(round(s_val))
-                except:
-                    pass
-            
-            if extracted_strike is None:
-                # Fallback from symbol
-                for pat in [r"(\d{4,6})\s*(CE|PE)\s*$", r"(\d{4,6})(CE|PE)$"]:
-                    m = re.search(pat, tradingsym_upper)
-                    if m:
-                        for g in m.groups():
-                            if g and g.isdigit() and len(g) >= 4:
-                                try:
-                                    extracted_strike = int(g)
-                                    break
-                                except:
-                                    pass
-                        if extracted_strike:
-                            break
-            
-            if extracted_strike is None or extracted_strike != target_strike:
-                continue
-            
-            # Option type
-            inst_opt = "CE" if "CE" in tradingsym_upper else "PE" if "PE" in tradingsym_upper else None
-            if inst_opt and inst_opt != target_opt:
-                continue
-            
-            # Expiry - AUTHORITATIVE field: DDMMMYYYY like 03NOV2026
-            inst_expiry_raw = str(inst.get("expiry", "")).strip()
-            inst_exp_date = parse_expiry_to_date_ULTIMATE(inst_expiry_raw)
-            
-            # If expiry field empty, try symbol
-            if not inst_exp_date:
-                inst_exp_date = parse_expiry_to_date_ULTIMATE(tradingsym)
-            
-            if not inst_exp_date:
-                continue
-            
-            # ULTIMATE FIX: EXACT DATE MATCH - 03 Nov != 17 Nov
-            if inst_exp_date != target_exp_date:
-                # Save for fallback log but skip exact
-                candidates_fallback.append((inst, tradingsym, inst_expiry_raw, inst_exp_date))
-                continue
-            
-            # Exact match!
-            candidates_exact.append((inst, tradingsym, inst_expiry_raw, inst_exp_date))
-        
-        # Prefer exact, else fallback
-        candidates = candidates_exact if candidates_exact else []
-        
-        if not candidates:
-            # No exact - return clear error, don't return wrong expiry!
-            fallback_info = f"FALLBACK_{len(candidates_fallback)}_WRONG_EXPIRY" if candidates_fallback else "NO_CANDIDATE"
-            return 0, f"NO_EXACT_EXPIRY_{symbol_upper}_{target_strike}{target_opt}_{target_exp_date.strftime('%d%b%Y')}_{fallback_info}_NEED_EXACT_NOT_17NOV", False
-        
-        # Try LTP for exact candidates - first with LTP >0 wins
-        for inst, tradingsym, inst_expiry_raw, inst_exp_date in candidates:
-            token = str(inst.get("token", ""))
-            exch = str(inst.get("exch_seg", "NFO"))
-            try:
-                ltp_data = safe_angel_ltpData(smart_api, exch, tradingsym, token)
-                if ltp_data and ltp_data.get('status'):
-                    ltp_val = ltp_data.get('data', {}).get('ltp', 0)
-                    if ltp_val and float(ltp_val) > 0:
-                        f_ltp = float(ltp_val)
-                        exp_log = inst_exp_date.strftime("%d%b%Y")
-                        # LTP sanity: weekly ATM should be <250, monthly could be 294
-                        # For 03 Nov weekly 23050 CE, LTP should be ~101, not 294
-                        return f_ltp, f"ANGEL_DIRECT_EXACT_{symbol_upper}_{target_strike}{target_opt}_EXP_{exp_log}_TOKEN_{token}_LTP_{f_ltp}_CURRENT_WEEK_GUARANTEE_FINNIFTY_WEEKLY_GUARANTEE", True
-            except:
-                continue
-        
-        return 0, f"NO_LTP_EXACT_{symbol_upper}_{target_strike}{target_opt}_{target_exp_date.strftime('%d%b%Y')}_CAND_{len(candidates)}", False
-        
-    except Exception as e:
-        import traceback
-        return 0, f"EXC_V61_{str(e)[:100]}_{traceback.format_exc()[:100]}", False
-
-# Keep original for compatibility but point to V61
-def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_V61_ULTIMATE_EXACT(symbol, strike, opt_type, expiry)
-
-def get_angel_ltp_VFINAL(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_V61_ULTIMATE_EXACT(symbol, strike, opt_type, expiry)
-
-def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_V61_ULTIMATE_EXACT(symbol, strike, opt_type, expiry)
-
-def get_angel_ltp_VFINAL_DIRECT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_V61_ULTIMATE_EXACT(symbol, strike, opt_type, expiry)
-
-def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    return get_angel_ltp_V61_ULTIMATE_EXACT(symbol, strike, opt_type, expiry)
-
-# Angel Spot - All data from Angel
-_angel_session_cache = None
-_angel_session_time = 0
-
-def get_angel_spot_VFINAL(symbol="NIFTY"):
-    try:
-        from SmartApi import SmartConnect
-        import pyotp, time, streamlit as st
-        global _angel_session_cache, _angel_session_time
-        api_key = st.secrets.get("ANGEL_API_KEY", "") or st.secrets.get("API_KEY", "")
-        client_id = st.secrets.get("ANGEL_CLIENT_ID", "") or st.secrets.get("CLIENT_ID", "")
-        password = st.secrets.get("ANGEL_PASSWORD", "") or st.secrets.get("PASSWORD", "")
-        totp_secret = st.secrets.get("ANGEL_TOTP_SECRET", "") or st.secrets.get("TOTP_SECRET", "")
-        if not api_key or not client_id:
-            return 0, "NO_CREDS", False
-        now = time.time()
-        if _angel_session_cache and (now - _angel_session_time < 300):
-            smart_api = _angel_session_cache
-        else:
-            smart_api = SmartConnect(api_key=api_key)
-            totp = pyotp.TOTP(totp_secret).now() if totp_secret else ""
-            data = smart_api.generateSession(client_id, password, totp)
-            if not data or not data.get('status'):
-                return 0, "LOGIN_FAIL", False
-            _angel_session_cache = smart_api
-            _angel_session_time = now
-        token_map = {
-            "NIFTY": [("NSE", "NIFTY 50", "99926000")],
-            "BANKNIFTY": [("NSE", "Nifty Bank", "99926009")],
-            "FINNIFTY": [("NSE", "Nifty Fin Service", "99926037")],
-        }
-        tries = token_map.get(symbol.upper(), [("NSE", symbol, "26000")])
-        for exch, trading_sym, token in tries:
-            try:
-                resp = safe_angel_ltpData(smart_api, exch, trading_sym, token)
-                if resp and resp.get('status'):
-                    ltp = resp.get('data', {}).get('ltp', 0)
-                    if ltp and float(ltp) > 0:
-                        return float(ltp), f"ANGEL_SPOT_{symbol}_{float(ltp):.2f}_{token}", True
-            except:
-                continue
-        return 0, f"NO_LTP_{symbol}", False
-    except Exception as e:
-        return 0, f"EXC_{str(e)[:30]}", False
-
-
 # -*- coding: utf-8 -*-
 """
 AI Institutional Live Trading Advisor (Quantitative GEX & Multi-Factor Equity Engine)
@@ -1070,156 +14,6 @@ Production Institutional Release:
 import datetime
 from datetime import datetime, date, time as dtime, timedelta
 import json
-from collections import defaultdict
-
-
-# ===== FIX AWAITING TICK - ANGEL DIRECT SPOT + YAHOO FALLBACK =====
-# NSE blocks Streamlit Cloud IP, so use Angel One index tokens + Yahoo
-
-ANGEL_INDEX_TOKENS = {
-    "NIFTY": "99926000",
-    "BANKNIFTY": "99926009", 
-    "FINNIFTY": "99926037",
-    "SENSEX": "99919000",
-    "MIDCPNIFTY": "99926034"
-}
-
-def get_angel_spot_direct(symbol: str):
-    """Get spot from Angel One directly - SOURCE Angel, no NSE block"""
-    try:
-        # Try via Angel LTP API
-        token = ANGEL_INDEX_TOKENS.get(symbol.upper(), "99926000")
-        # Use SmartAPI
-        try:
-            from SmartApi import SmartConnect
-            import pyotp
-            
-            # Get creds from secrets
-            api_key = st.secrets.get("ANGEL_API_KEY", "") or st.secrets.get("API_KEY", "")
-            client_id = st.secrets.get("ANGEL_CLIENT_ID", "") or st.secrets.get("CLIENT_ID", "")
-            password = st.secrets.get("ANGEL_PASSWORD", "") or st.secrets.get("PASSWORD", "")
-            totp_secret = st.secrets.get("ANGEL_TOTP_SECRET", "") or st.secrets.get("TOTP_SECRET", "")
-            
-            if api_key and client_id:
-                obj = SmartConnect(api_key=api_key)
-                totp = pyotp.TOTP(totp_secret).now() if totp_secret else ""
-                data = obj.generateSession(client_id, password, totp)
-                if data and data.get('status'):
-                    # Get LTP for index
-                    exchange = "NSE" if symbol.upper() != "SENSEX" else "BSE"
-                    params = {
-                        "exchange": exchange,
-                        "tradingsymbol": symbol.upper(),
-                        "symboltoken": token
-                    }
-                    ltp_data = safe_angel_ltpData(obj, exchange, symbol.upper(), token)
-                    if ltp_data and ltp_data.get('status'):
-                        ltp = ltp_data.get('data', {}).get('ltp', 0)
-                        if ltp > 0:
-                            return float(ltp), f"ANGEL_DIRECT_SPOT_{symbol}_TOKEN_{token}"
-        except Exception as e:
-            print(f"Angel spot error: {e}")
-        
-        # Fallback to cached spot or Yahoo
-        return 0, f"ANGEL_SPOT_FAILED_{str(e)[:50]}"
-    except Exception as e:
-        return 0, f"ANGEL_SPOT_EXC_{str(e)[:50]}"
-
-def get_yahoo_spot_fallback(symbol: str):
-    """Yahoo Finance fallback - Works on Streamlit Cloud"""
-    try:
-        import yfinance as yf
-        ticker_map = {
-            "NIFTY": "^NSEI",
-            "BANKNIFTY": "^NSEBANK",
-            "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
-            "SENSEX": "^BSESN",
-            "MIDCPNIFTY": "NIFTY_MID_SELECT.NS"
-        }
-        ticker = ticker_map.get(symbol.upper(), "^NSEI")
-        try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period="1d", interval="1m")
-            if not hist.empty:
-                ltp = float(hist['Close'].iloc[-1])
-                if ltp > 0:
-                    return ltp, f"YAHOO_FALLBACK_{symbol}_{ticker}_LTP_{ltp}"
-            # Try info
-            info = stock.info
-            ltp = info.get('regularMarketPrice', 0)
-            if ltp > 0:
-                return float(ltp), f"YAHOO_INFO_{symbol}_{ltp}"
-        except:
-            pass
-        return 0, f"YAHOO_FAILED_{symbol}"
-    except Exception as e:
-        return 0, f"YAHOO_EXC_{str(e)[:30]}"
-
-def get_nifty_spot_ULTIMATE_FIX():
-    """Ultimate spot - Angel direct first, then Yahoo, then cache - Never Awaiting Tick"""
-    # 1. Try Angel direct (primary - no NSE block)
-    for sym in ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"]:
-        try:
-            token = ANGEL_INDEX_TOKENS.get(sym)
-            if not token:
-                continue
-            # Quick Angel LTP via simple API
-            import requests as req
-            # Use Angel's public LTP endpoint if available
-            # For now try cached or Yahoo
-        except:
-            pass
-    
-    # 2. Yahoo fallback (works on Cloud)
-    for sym in ["NIFTY"]:
-        ltp, src = get_yahoo_spot_fallback(sym)
-        if ltp > 1000:  # Valid NIFTY spot >1000
-            return ltp, src, True
-    
-    # 3. Try Angel spot direct
-    ltp, src = get_angel_spot_direct("NIFTY")
-    if ltp > 1000:
-        return ltp, src, True
-    
-    # 4. Last cached spot from session
-    if 'last_nifty_spot' in st.session_state and st.session_state.last_nifty_spot > 1000:
-        return st.session_state.last_nifty_spot, "CACHED_SPOT", True
-    
-    # 5. Default fallback - Use realistic value to avoid Awaiting Tick
-    # For 31 Oct 2026, NIFTY around 25000 (from screenshot Max Pain 25000)
-    return 25000, "DEFAULT_FALLBACK_25000", False
-
-# Override old get_nifty_spot functions
-def get_nifty_spot_with_angel_primary():
-    ltp, src, ok = get_nifty_spot_ULTIMATE_FIX()
-    if ok and ltp > 0:
-        st.session_state.last_nifty_spot = ltp
-        st.session_state.last_spot_source = src
-        return ltp, src, ok
-    # Even if not ok, return cached/default to avoid Awaiting Tick
-    if ltp > 0:
-        return ltp, src, True
-    return 25000, "FALLBACK_25000_AVOID_AWAITING_TICK", True
-
-# Patch all spot functions to use new
-def get_live_index_spot(symbol: str):
-    """Get spot for any index - Angel + Yahoo - Never Awaiting Tick"""
-    # Try Yahoo first (fast, works on Cloud)
-    ltp, src = get_yahoo_spot_fallback(symbol)
-    if ltp > 100:
-        return ltp, src, True
-    # Try Angel
-    ltp2, src2 = get_angel_spot_direct(symbol)
-    if ltp2 > 100:
-        return ltp2, src2, True
-    # Cached
-    cache_key = f"last_{symbol.lower()}_spot"
-    if cache_key in st.session_state and st.session_state[cache_key] > 100:
-        return st.session_state[cache_key], "CACHED", True
-    # Default realistic
-    defaults = {"NIFTY": 25000, "BANKNIFTY": 52000, "FINNIFTY": 23000, "SENSEX": 80000, "MIDCPNIFTY": 12000}
-    return defaults.get(symbol.upper(), 25000), f"DEFAULT_{symbol}", False
-
 import logging
 import math
 import time
@@ -1233,70 +27,11 @@ import pandas as pd
 import requests
 import concurrent.futures
 import streamlit as st
-
-# ===== V52 DIRECT ANGEL - No hardcoded strike/premium - Only exact expiry match =====
-# ===== FINAL FIX V7 - String Match for SENSEX 05 Nov - Exact Only =====
-# Fix: For SENSEX 05 Nov, search for 05NOV26 string in tradingsymbol, not just date parse
-# This prevents 26NOV token being picked for 05NOV request
-
-def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    try:
-        from angel_data_source import get_angel_ltp_EXACT_EXPIRY_ONLY
-        import streamlit as st
-        api_key = st.secrets.get("ANGEL_API_KEY", "") or st.secrets.get("API_KEY", "")
-        client_id = st.secrets.get("ANGEL_CLIENT_ID", "") or st.secrets.get("CLIENT_ID", "")
-        password = st.secrets.get("ANGEL_PASSWORD", "") or st.secrets.get("PASSWORD", "")
-        totp_secret = st.secrets.get("ANGEL_TOTP_SECRET", "") or st.secrets.get("TOTP_SECRET", "")
-        ltp, src, ok = get_angel_ltp_EXACT_EXPIRY_ONLY(symbol, strike, opt_type, expiry, api_key, client_id, password, totp_secret)
-        return ltp, src, ok
-    except Exception as e:
-        return 0, f"V7_EXC_{str(e)[:100]}", False
-
-def get_angel_ltp_V61_ULTIMATE_EXACT(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
-
-def get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry):
-    return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
-
-def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    return get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
-
-# Override ALL LTP functions to use V7 exact string match
-get_angel_ltp_V54_ALL_INDICES = get_angel_ltp_V54_ALL_INDICES
-get_angel_ltp_V61_ULTIMATE_EXACT = get_angel_ltp_V61_ULTIMATE_EXACT
-get_live_premium_V54_FINAL = get_live_premium_V54_FINAL
-get_live_premium_V20_FINAL = get_live_premium_V20_FINAL
-
-try:
-    get_angel_ltp_100pct_broker_match = get_angel_ltp_V54_ALL_INDICES
-    get_angel_ltp_V20 = get_angel_ltp_V54_ALL_INDICES
-    get_angel_ltp_V21 = get_angel_ltp_V54_ALL_INDICES
-    get_live_premium_exact_NO_CACHE = get_angel_ltp_V54_ALL_INDICES
-except:
-    pass
-
-print("FINAL FIX V7 ACTIVE - String match for SENSEX 05 Nov - 05NOV26 != 26NOV26")
-# ===== END V7 FIX =====
-
-
-
-
-
-try:
-    st.set_page_config(page_title="AI Institutional Live Trading Advisor", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
-except:
-    pass
-
-# V70 FIXED: streamlit_autorefresh REMOVED - Using native fragment (fixes component loading bug)
 try:
     from streamlit_autorefresh import st_autorefresh
-    # Force disable to prevent frontend asset error on Streamlit Cloud
-    HAS_AUTOREFRESH = False
-    # st_autorefresh = lambda **kwargs: None  # disabled
+    HAS_AUTOREFRESH = True
 except:
     HAS_AUTOREFRESH = False
-    def st_autorefresh(**kwargs):
-        return None
 
 
 # V54 FIX: Define live_fragment early to avoid NameError
@@ -1381,6 +116,12 @@ from zoneinfo import ZoneInfo
 # ===== V12 FINAL AUDIT FIX - FAST SCAN + LIVE PRICE + GEMINI FIX =====
 # 1. Live spot cached 30 sec, 2. Parallel scan, 3. Gemini 2.5-flash fixed
 # All original 3480 lines features retained
+
+def get_spot_cached(symbol): # V14 ULTRA: NO CACHE
+    try:
+        return get_spot(symbol)
+    except:
+        return None
 
 def get_chain_cached(symbol, expiry): # V14 ULTRA: NO CACHE
     try:
@@ -1728,323 +469,6 @@ UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX
 # =====================================================================
 # 5. COMPLETE 12-TIER TIMEFRAME CONFIGURATION MATRIX
 # =====================================================================
-
-
-def get_spot_safe_V54(symbol="NIFTY"):
-    try:
-        try:
-            import yfinance as yf
-            ticker_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "^CNXFIN", "MIDCPNIFTY": "^NIFTY_MID_SELECT", "SENSEX": "^BSESN"}
-            yf_symbol = ticker_map.get(symbol.upper(), "^NSEI")
-            stock = yf.Ticker(yf_symbol)
-            hist = stock.history(period="1d", interval="1m")
-            if not hist.empty:
-                spot = float(hist['Close'].iloc[-1])
-                if spot > 0:
-                    return spot, f"YAHOO_V54_{yf_symbol}_{spot:.2f}", True
-        except:
-            pass
-        try:
-            import requests, urllib.parse
-            proxies = ["https://api.allorigins.win/raw?url=", "https://corsproxy.io/?url="]
-            nse_url = "https://www.nseindia.com/api/allIndices"
-            for proxy_base in proxies:
-                try:
-                    full_url = proxy_base + urllib.parse.quote(nse_url, safe='')
-                    r = requests.get(full_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
-                    if r.status_code == 200:
-                        data = r.json()
-                        for idx in data.get("data", []):
-                            idx_name = idx.get("index","").upper()
-                            if symbol.upper() in idx_name or (symbol=="NIFTY" and "NIFTY 50" in idx.get("index","")) or (symbol=="FINNIFTY" and "FINNIFTY" in idx_name):
-                                spot = float(idx.get("last",0))
-                                if spot > 0:
-                                    return spot, f"NSE_PROXY_V54_{symbol}_{spot:.2f}", True
-                except:
-                    continue
-        except:
-            pass
-        return 0, "ALL_SOURCES_FAILED_V54", False
-    except:
-        return 0, "EXC_V54_SPOT", False
-
-def get_angel_ltp_V54_ALL_INDICES(symbol="NIFTY", strike=0, opt_type="CE", expiry=""):
-    """
-    V54 DIRECT ANGEL - ALL INDICES - Fixes FINNIFTY NO_CANDIDATE
-    - Supports: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX
-    - No hardcoded strike/premium
-    - Exact expiry matching with fallback
-    """
-    try:
-        try:
-            api_key = ""; client_id = ""; password = ""; totp_secret = ""
-            for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
-                if k in st.secrets:
-                    api_key = str(st.secrets[k]).strip()
-                    break
-            for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"]:
-                if k in st.secrets:
-                    client_id = str(st.secrets[k]).strip()
-                    break
-            for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"]:
-                if k in st.secrets:
-                    password = str(st.secrets[k]).strip()
-                    break
-            for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
-                if k in st.secrets:
-                    totp_secret = str(st.secrets[k]).strip()
-                    break
-        except:
-            return 0, "NO_SECRETS", False
-        if not api_key or not client_id:
-            return 0, "ANGEL_KEYS_MISSING", False
-        
-        try:
-            from SmartApi import SmartConnect
-            import pyotp, requests, re
-            from datetime import datetime
-        except ImportError as e:
-            return 0, f"LIB_MISSING_{str(e)[:30]}", False
-        
-        totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
-        obj = SmartConnect(api_key=api_key)
-        session_data = obj.generateSession(client_id, password, totp_code)
-        if not (session_data and session_data.get("status") == True):
-            return 0, f"LOGIN_FAIL", False
-        
-        master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        try:
-            mr = requests.get(master_url, timeout=15)
-            if mr.status_code != 200:
-                return 0, f"MASTER_HTTP_{mr.status_code}", False
-            instruments = mr.json()
-        except:
-            return 0, f"MASTER_EXC", False
-        
-        symbol = symbol.upper().strip()
-        try:
-            target_strike = int(float(strike))
-        except:
-            return 0, f"STRIKE_PARSE_FAIL_{strike}", False
-        
-        target_opt = opt_type.upper().strip()
-        if target_opt == "C":
-            target_opt = "CE"
-        if target_opt == "P":
-            target_opt = "PE"
-        
-        target_exp_dt = None
-        try:
-            exp_str = str(expiry).strip()
-            for fmt in ["%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%Y-%m-%d", "%d %b %y", "%d%b%Y", "%d%B%Y"]:
-                try:
-                    target_exp_dt = datetime.strptime(exp_str, fmt)
-                    break
-                except:
-                    continue
-            if not target_exp_dt:
-                for fmt in ["%d %b %Y", "%d %B %Y"]:
-                    try:
-                        target_exp_dt = datetime.strptime(exp_str.upper(), fmt)
-                        break
-                    except:
-                        continue
-        except:
-            pass
-        
-        if not target_exp_dt:
-            return 0, f"EXPIRY_PARSE_FAIL_{expiry}", False
-        
-        # V54: Support all indices
-        search_label = symbol
-        # For NIFTY, avoid FINNIFTY etc
-        invalid = []
-        if symbol == "NIFTY":
-            invalid = ["FINNIFTY", "BANKNIFTY", "MIDCPNIFTY", "SENSEX"]
-        elif symbol == "BANKNIFTY":
-            invalid = ["FINNIFTY", "MIDCPNIFTY"]
-        elif symbol == "FINNIFTY":
-            invalid = []  # FINNIFTY is specific
-        elif symbol == "MIDCPNIFTY":
-            invalid = []
-        
-        # First pass: exact match with expiry
-        candidates_exact = []
-        candidates_any_expiry = []
-        
-        for inst in instruments:
-            if not isinstance(inst, dict):
-                continue
-            exch_seg = str(inst.get("exch_seg", "")).upper()
-            if exch_seg not in ["NFO", "BFO"]:
-                continue
-            inst_type = str(inst.get("instrumenttype", "")).upper()
-            if inst_type and "FUT" in inst_type:
-                continue
-            
-            tradingsym = str(inst.get("symbol", "")).strip()
-            tradingsym_upper = tradingsym.upper()
-            name = str(inst.get("name","")).upper()
-            name = str(inst.get("name", "")).upper()
-            
-            # Check symbol starts with search label
-            # For SENSEX, it might be SENSEX in BFO
-            if search_label == "SENSEX":
-                if not (tradingsym_upper.startswith("SENSEX") or "SENSEX" in name):
-                    continue
-            elif search_label == "NIFTY":
-                if not tradingsym_upper.startswith("NIFTY"):
-                    continue
-                if any(inv in tradingsym_upper for inv in invalid):
-                    continue
-            else:
-                # For BANKNIFTY, FINNIFTY, MIDCPNIFTY
-                if not tradingsym_upper.startswith(search_label):
-                    # Also check name field
-                    if search_label not in tradingsym_upper and search_label not in name:
-                        continue
-            
-            # Strike
-            inst_strike_raw = inst.get("strike")
-            extracted_strike = None
-            if inst_strike_raw is not None and str(inst_strike_raw).strip() not in ["", "-1", "-1.000000", "0", "0.000000"]:
-                try:
-                    s_val = float(inst_strike_raw)
-                    if s_val > 100000:
-                        s_val = s_val / 100.0
-                    if s_val > 100000:
-                        s_val = s_val / 10.0
-                    extracted_strike = int(round(s_val))
-                except:
-                    pass
-            
-            if extracted_strike is None:
-                for pat in [r'(\d{4,6})\s*(CE|PE)\s*$', r'(\d{4,6})(CE|PE)$']:
-                    m = re.search(pat, tradingsym_upper)
-                    if m:
-                        try:
-                            for g in m.groups():
-                                if g and g.isdigit() and len(g) >= 4:
-                                    extracted_strike = int(g)
-                                    break
-                        except:
-                            pass
-                        if extracted_strike:
-                            break
-            
-            if extracted_strike is None or extracted_strike != target_strike:
-                continue
-            
-            # Option type
-            inst_opt = None
-            if "CE" in tradingsym_upper:
-                inst_opt = "CE"
-            elif "PE" in tradingsym_upper:
-                inst_opt = "PE"
-            
-            if inst_opt and inst_opt != target_opt:
-                continue
-            
-            # Expiry
-            inst_expiry_raw = str(inst.get("expiry", "")).strip()
-            inst_exp_dt = None
-            if inst_expiry_raw:
-                for fmt in ["%d%b%Y", "%d%b%y", "%d-%b-%Y", "%Y-%m-%d", "%d %b %Y", "%d %B %Y"]:
-                    try:
-                        clean = inst_expiry_raw.replace(" ", "").upper()
-                        inst_exp_dt = datetime.strptime(clean, fmt)
-                        break
-                    except:
-                        try:
-                            inst_exp_dt = datetime.strptime(inst_expiry_raw, fmt)
-                            break
-                        except:
-                            continue
-            
-            if not inst_exp_dt:
-                m_exp = re.search(r'(\d{2})([A-Z]{3})(\d{2,4})', tradingsym_upper)
-                if m_exp:
-                    day = m_exp.group(1)
-                    mon = m_exp.group(2)
-                    yr = m_exp.group(3)
-                    yr_full = "20" + yr if len(yr) == 2 and int(yr) < 50 else "19" + yr if len(yr) == 2 else yr
-                    exp_str_sym = f"{day}{mon}{yr_full}"
-                    try:
-                        inst_exp_dt = datetime.strptime(exp_str_sym, "%d%b%Y")
-                    except:
-                        pass
-            
-            # Save for any expiry (fallback)
-            candidates_any_expiry.append((inst, tradingsym, inst_expiry_raw, inst_exp_dt))
-            
-            # Exact expiry match
-            if target_exp_dt and inst_exp_dt:
-                if inst_exp_dt.date() != target_exp_dt.date():
-                    continue
-            
-            candidates_exact.append((inst, tradingsym, inst_expiry_raw, inst_exp_dt))
-        
-        # Use exact if found, else fallback to any expiry
-        candidates = candidates_exact if candidates_exact else candidates_any_expiry
-        
-        if not candidates:
-            return 0, f"NO_CANDIDATE_{search_label}_{target_strike}{target_opt}_{target_exp_dt.strftime('%d%b%Y') if target_exp_dt else expiry}_CHECKED_{len(instruments)}_INSTRUMENTS", False
-        
-        # Get LTP direct from Angel
-        for inst, tradingsym, inst_expiry, inst_exp_dt in candidates:
-            token = str(inst.get("token", ""))
-            exch = str(inst.get("exch_seg", "NFO"))
-            try:
-                ltp_data = safe_angel_ltpData(obj, exch, tradingsym, token)
-                if ltp_data and ltp_data.get("status") == True:
-                    ltp_val = ltp_data.get("data", {}).get("ltp")
-                    if ltp_val and float(ltp_val) > 0:
-                        f_ltp = float(ltp_val)
-                        exp_str_for_log = inst_exp_dt.strftime("%d%b%Y") if inst_exp_dt else inst_expiry
-                        match_type = "EXACT" if candidates_exact else "FALLBACK_EXACT_EXPIRY_ONLY"
-                        return f_ltp, f"ANGEL_DIRECT_V54_{match_type}_{search_label}_{target_strike}{target_opt}_EXP_{exp_str_for_log}_{tradingsym}_TOKEN_{token}_LTP_{f_ltp}", True
-            except:
-                continue
-        
-        return 0, f"NO_LTP_{search_label}_{target_strike}{target_opt}_CAND_{len(candidates)}_EXACT_{len(candidates_exact)}_ANY_{len(candidates_any_expiry)}", False
-    except Exception as e:
-        return 0, f"EXC_V54_{str(e)[:150]}", False
-
-def get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry):
-    try:
-        ltp, src, ok = get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
-        if ok and ltp > 0:
-            return ltp, src, True
-    except:
-        pass
-    return 0, "V54_FAILED", False
-
-def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
-    return get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry)
-
-def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
-    return get_live_premium_V54_FINAL(symbol, strike, opt_type, expiry)
-
-@st.cache_data(ttl=15, show_spinner=False)
-def get_spot_cached(symbol):
-    try:
-        spot, src, ok = get_spot_safe_V54(symbol)
-        if ok:
-            return spot
-        return 0
-    except:
-        return 0
-
-def get_spot_safe_for_display(symbol="NIFTY"):
-    try:
-        spot, src, ok = get_spot_safe_V54(symbol)
-        if ok and spot > 0:
-            return spot, src, True
-        return 0, "V54_SPOT_FAILED", False
-    except:
-        return 0, "V54_SPOT_EXC", False
-
-
 TIMEFRAME_CONFIG = {
     "1m": {"label": f"{BOLT} 1 Minute (Scalping / High-Speed)", "smartapi": "ONE_MINUTE", "yfinance": "1m", "yf_range": "2d", "days": 2, "minutes": 1, "holding": "Quick Scalp (1-5 Mins)", "target1_mult": 1.15, "target2_mult": 1.25, "sl_mult": 0.92, "atr_mult": 0.8, "desc": "Ultra-fast scalp setup. High sensitivity, tight SL."},
     "5m": {"label": f"{CHART_BAR} 5 Minutes (Standard Intraday)", "smartapi": "FIVE_MINUTE", "yfinance": "5m", "yf_range": "5d", "days": 5, "minutes": 5, "holding": "Intraday Momentum (15-45 Mins)", "target1_mult": 1.20, "target2_mult": 1.35, "sl_mult": 0.85, "atr_mult": 1.0, "desc": "Standard institutional execution resolution."},
@@ -2063,7 +487,11 @@ TIMEFRAME_CONFIG = {
 # =====================================================================
 # 6. CONFIGURATION, THEME & STYLES
 # =====================================================================
-# V52: Removed dup set_page_config 490-494
+st.set_page_config(
+    page_title="AI Institutional Live Trading Advisor (Quantitative GEX & Equity Engine)",
+    page_icon=BOLT,
+    layout="wide",
+)
 
 # ================= V53 PERSISTENT SETTINGS - Fix reset after page close =================
 import os
@@ -2144,12 +572,13 @@ if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
 
 st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
 
-# V70 FIXED: Auto-refresh removed - Using @st.fragment(run_every=X) instead
-# This block previously caused: "Your app is having trouble loading the streamlit_autorefresh.st_autorefresh component"
-# Now handled by live_fragment decorators - no component needed
+# V53 BACKGROUND KEEP-ALIVE - Fix page close band ho jata hai - Auto-refresh
 try:
     if st.session_state.get('auto_alert_enabled', False):
-        st.sidebar.caption("🔄 Live Mode ON - Using native fragment refresh (V70)")
+        if HAS_AUTOREFRESH:
+            interval_ms = st.session_state.get('auto_scan_interval', 5) * 60 * 1000
+            st_autorefresh(interval=interval_ms, key="keep_alive_refresh")
+            st.sidebar.caption("🔄 Auto-refresh ON - Background me chalta rahega")
 except Exception:
     pass
 
@@ -2162,10 +591,23 @@ def telegram_callback_poller():
         # print(f"Poller error: {e}")
         pass
 
-# V52: Global poller removed
+# Call poller on every run - will check Telegram YES/NO
+try:
+    telegram_callback_poller()
+except:
+    pass
 
 
-# V52: Persistent status moved
+
+# Show persistent status
+try:
+    ps_count = len(st.session_state.get('persistent_settings', {}))
+    if ps_count > 0:
+        st.sidebar.success(f"💾 Settings Loaded: {ps_count} saved | Page close ke baad bhi rahega")
+    else:
+        st.sidebar.info("💾 First run - Settings ab save honge, page close ke baad bhi rahenge")
+except:
+    pass
 
 
 
@@ -2567,8 +1009,11 @@ def handle_telegram_callback_query():
                 pending_key = callback_data.replace("YES_BUY_", "")
                 pdata = st.session_state.get(pending_key)
                 if not pdata:
-                    # Try to find in persistent
-                    continue
+                    pdata = load_pending_from_file(pending_key)
+                    if pdata:
+                        st.session_state[pending_key] = pdata
+                    if not pdata:
+                        continue
                     
                 idea = pdata.get('idea', {})
                 live_ltp = pdata.get('live_ltp', 0)
@@ -2977,7 +1422,7 @@ def auto_check_emergency_exit_from_lights(light1, light2):
                         continue
                     
                     # Get live LTP
-                    live_ltp, _, is_ok = get_angel_ltp_V54_ALL_INDICES(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
+                    live_ltp, _, is_ok = get_angel_ltp_100pct_broker_match(symbol, pos.get('strike',0), opt_type, pos.get('expiry',''))
                     if not is_ok or live_ltp <= 0:
                         live_ltp = pos.get('entry_price', 0)
                     
@@ -3063,7 +1508,7 @@ def auto_check_and_exit_positions():
                 expiry = pos.get('expiry','')
                 
                 # Get live LTP - use broker matched
-                live_ltp, live_src, is_ok = get_angel_ltp_V54_ALL_INDICES(symbol, strike, opt_type, expiry)
+                live_ltp, live_src, is_ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
                 
                 if not is_ok or live_ltp <= 0:
                     # Try fallback proxy if Angel fails
@@ -3899,6 +2344,160 @@ def get_broker_matched_ltp_FINAL(symbol, strike, opt_type, selected_expiry):
 
 
 
+def get_angel_ltp_100pct_broker_match(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
+    """
+    V37 FIXED: FINNIFTY LTP bug fixed - now correctly fetches FINNIFTY not NIFTY
+    """
+    try:
+        api_key = ""; client_id = ""; password = ""; totp_secret = ""
+        for k in ["ANGEL_API_KEY", "API_KEY", "SMARTAPI_KEY"]:
+            if k in st.secrets:
+                api_key = str(st.secrets[k]).strip(); break
+        for k in ["ANGEL_CLIENT_ID", "ANGEL_CLIENT_CODE", "CLIENT_ID", "CLIENT_CODE"]:
+            if k in st.secrets:
+                client_id = str(st.secrets[k]).strip(); break
+        for k in ["ANGEL_PASSWORD", "ANGEL_PIN", "PASSWORD", "PIN"]:
+            if k in st.secrets:
+                password = str(st.secrets[k]).strip(); break
+        for k in ["ANGEL_TOTP_SECRET", "TOTP_SECRET"]:
+            if k in st.secrets:
+                totp_secret = str(st.secrets[k]).strip(); break
+        if not api_key or not client_id:
+            return 0, "ANGEL_KEYS_MISSING", False
+        try:
+            from SmartApi import SmartConnect
+            import pyotp
+            import requests
+            import re
+        except ImportError as e:
+            return 0, f"LIB_MISSING_{str(e)[:20]}", False
+        totp_code = pyotp.TOTP(totp_secret).now() if totp_secret else ""
+        obj = SmartConnect(api_key=api_key)
+        data = obj.generateSession(client_id, password, totp_code)
+        if not (data and data.get("status") == True):
+            return 0, f"ANGEL_LOGIN_FAIL_{str(data)[:40]}", False
+        try:
+            master_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+            mr = requests.get(master_url, timeout=12)
+            if mr.status_code != 200:
+                return 0, "MASTER_FETCH_FAILED", False
+            instruments = mr.json()
+            symbol = symbol.upper().strip()
+            if symbol == "NIFTY":
+                def is_match(sym):
+                    sym_u = sym.upper()
+                    if "FINNIFTY" in sym_u or "BANKNIFTY" in sym_u or "MIDCPNIFTY" in sym_u or "NIFTYNXT" in sym_u:
+                        return False
+                    return sym_u.startswith("NIFTY") and str(strike) in sym_u and opt_type.upper() in sym_u
+                search_label = "NIFTY"
+            elif symbol == "BANKNIFTY":
+                def is_match(sym):
+                    return "BANKNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "BANKNIFTY"
+            elif symbol in ["FINNIFTY", "FIN NIFTY", "FIN"]:
+                def is_match(sym):
+                    sym_u = sym.upper()
+                    return ("FINNIFTY" in sym_u or (sym_u.startswith("FIN") and "NIFTY" in sym_u)) and str(strike) in sym_u and opt_type.upper() in sym_u
+                search_label = "FINNIFTY"
+            elif symbol in ["MIDCPNIFTY", "MIDCAP", "MIDCP"]:
+                def is_match(sym):
+                    return "MIDCPNIFTY" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "MIDCPNIFTY"
+            elif symbol in ["SENSEX", "BSESN"]:
+                def is_match(sym):
+                    return "SENSEX" in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = "SENSEX"
+            else:
+                def is_match(sym):
+                    return symbol in sym.upper() and str(strike) in sym.upper() and opt_type.upper() in sym.upper()
+                search_label = symbol
+            target_exp_norm = ""
+            try:
+                target_exp_norm = expiry_norm(expiry) if expiry else ""
+                target_exp_dt = datetime.strptime(target_exp_norm, "%Y-%m-%d") if target_exp_norm else None
+            except:
+                target_exp_dt = None
+            candidates = []
+            for inst in instruments:
+                if not isinstance(inst, dict):
+                    continue
+                sym = str(inst.get("symbol", "")).upper()
+                if not is_match(sym):
+                    continue
+                if inst.get("exch_seg") not in ["NFO", "BFO"]:
+                    continue
+                exp_score = 0
+                if target_exp_dt:
+                    try:
+                        m = re.search(r"(\d{2})([A-Z]{3})(\d{2,4})", sym)
+                        if m:
+                            if target_exp_dt.strftime("%b").upper() in sym:
+                                exp_score += 10
+                            if str(target_exp_dt.day) in sym:
+                                exp_score += 5
+                            if str(target_exp_dt.year)[-2:] in sym or str(target_exp_dt.year) in sym:
+                                exp_score += 3
+                    except:
+                        pass
+                else:
+                    exp_score = 1
+                candidates.append((exp_score, inst))
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            for score, inst in candidates[:10]:
+                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
+                try:
+                    ltp_data = obj.ltpData(exch, sym, token)
+                    if ltp_data and ltp_data.get("status") == True:
+                        ltp_val = ltp_data.get("data", {}).get("ltp")
+                        if ltp_val and float(ltp_val) > 0:
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}{expiry.replace('-','').upper() if expiry else ''}{strike}{opt_type.upper()}_{ltp_val}", True
+                except:
+                    continue
+            for score, inst in candidates[:20]:
+                sym = inst.get("symbol", ""); token = str(inst.get("token", "")); exch = inst.get("exch_seg", "NFO")
+                try:
+                    ltp_data = obj.ltpData(exch, sym, token)
+                    if ltp_data and ltp_data.get("status") == True:
+                        ltp_val = ltp_data.get("data", {}).get("ltp")
+                        if ltp_val and float(ltp_val) > 0:
+                            return float(ltp_val), f"ANGEL_BROKER_MATCHED_{search_label}_FALLBACK_{strike}{opt_type}_{ltp_val}", True
+                except:
+                    continue
+            return 0, f"NO_LTP_FOUND_{search_label}_{strike}{opt_type}", False
+        except Exception as e:
+            return 0, f"ANGEL_SEARCH_ERROR_{str(e)[:50]}", False
+    except Exception as e:
+        return 0, f"ANGEL_ERROR_{str(e)[:50]}", False
+
+
+def get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry):
+    """
+    V20: Tries Angel first (100% broker matched), then proxy, then NSE
+    """
+    # Try Angel first - 100% broker matched, works on Cloud
+    ltp, src, ok = get_angel_ltp_100pct_broker_match(symbol, strike, opt_type, expiry)
+    if ok and ltp > 0:
+        return ltp, src, True
+    
+    # If Angel keys missing, try proxy
+    ltp2, src2, ok2 = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
+    if ok2 and ltp2 > 0:
+        return ltp2, src2, True
+    
+    # Try ultimate
+    try:
+        ltp3, src3, ok3 = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
+        if ok3 and ltp3 > 0:
+            return ltp3, src3, True
+    except:
+        pass
+    
+    # All failed - return 0 with clear message
+    if "ANGEL_KEYS_MISSING" in src:
+        return 0, "ADD_ANGEL_KEYS_IN_SECRETS_FOR_108.20", False
+    return 0, src, False
+
+
 def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", expiry=None):
     """
     V19 FINAL: Uses proxy to bypass NSE IP block on Streamlit Cloud
@@ -3967,6 +2566,20 @@ def get_nse_ltp_V19_PROXY_BYPASS(symbol="NIFTY", strike=22750, opt_type="CE", ex
         pass
     
     return 0, "PROXY_ALL_FAILED", False
+
+def get_live_premium_V19_FINAL(symbol, strike, opt_type, expiry):
+    ltp, src, ok = get_nse_ltp_V19_PROXY_BYPASS(symbol, strike, opt_type, expiry)
+    if ok and ltp > 0:
+        return ltp, src, True
+    # Try older fetchers
+    try:
+        ltp2, src2, ok2 = get_live_premium_V18_FINAL(symbol, strike, opt_type, expiry)
+        if ok2 and ltp2 > 0:
+            return ltp2, src2, True
+    except:
+        pass
+    return 0, "V19_PROXY_FAILED_ADD_ANGEL", False
+
 
 def get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol="NIFTY", strike=22750, opt_type="CE", expiry="27-Oct-2026"):
     """
@@ -4073,6 +2686,44 @@ def get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol="NIFTY", strike=22750, opt_type="CE"
     return 0, "ALL_4_SOURCES_FAILED_CLOUD_BLOCKED", False
 
 
+def get_live_premium_exact_NO_CACHE(symbol, strike, opt_type, expiry):
+    """V20: Angel first for 100% broker match"""
+    return get_live_premium_V20_FINAL(symbol, strike, opt_type, expiry)
+
+
+def get_live_premium_V18_FINAL(symbol, strike, opt_type, expiry):
+    """V18 FINAL: Always returns broker-matched LTP or 0, never fake 56.30"""
+    # Try ultimate fetcher
+    ltp, src, ok = get_nse_ltp_ULTIMATE_CLOUD_PROOF(symbol, strike, opt_type, expiry)
+    if ok and ltp > 0:
+        return ltp, src, True
+    
+    # Fallback to old ultra fetcher
+    try:
+        ltp2, src2, ok2, _ = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, expiry)
+        if ok2 and ltp2 > 0:
+            return ltp2, src2, True
+    except:
+        pass
+    
+    # Fallback to broker matched
+    try:
+        ltp3, src3, ok3, _ = get_broker_matched_ltp_FINAL(symbol, strike, opt_type, expiry)
+        if ok3 and ltp3 > 0:
+            return ltp3, src3, True
+    except:
+        pass
+    
+    return 0, "CLOUD_BLOCKED_ADD_ANGEL_KEY_FOR_108.20", False
+
+
+def get_live_premium_exact_NO_CACHE_OLD(symbol, strike, opt_type, expiry): # Deprecated
+    """Wrapper now calls ULTRA fetcher"""
+    ltp, src, ok, exp_found = get_nse_option_ltp_ULTRA_FRESH(symbol, strike, opt_type, expiry)
+    if ok and ltp > 0:
+        return ltp, src, True
+    return 0, src, False
+
 # ========== END V14 ULTRA FETCHER ==========
 
 
@@ -4122,6 +2773,32 @@ def get_fresh_nse_ltp(symbol="NIFTY", strike=22600, opt_type="CE", expiry="27-Oc
         return 0, "NSE_FAILED"
     except Exception as e:
         return 0, f"NSE_ERROR_{str(e)[:30]}"
+
+def get_live_premium_exact_NO_CACHE_OLD(symbol, strike, opt_type, expiry): # Deprecated
+    """V13 NEW: Zero-cache live premium fetcher for high-conviction trade card - 100% market accurate"""
+    # This function has NO @st.cache decorator - always fresh
+    ltp, source = get_fresh_nse_ltp(symbol, strike, opt_type, expiry)
+    if ltp and ltp > 0:
+        return ltp, source, True
+    # Fallback to chain if NSE direct fails - but still live
+    try:
+        chain_df, _ = get_chain(symbol, expiry)  # ttl=2
+        if not chain_df.empty:
+            mask = (chain_df['strikePrice'] == int(strike)) & (chain_df['option_type'] == opt_type)
+            if 'expiryDate' in chain_df.columns:
+                mask = mask & (chain_df['expiryDate'] == expiry_norm(expiry))
+            filtered = chain_df[mask]
+            if not filtered.empty:
+                row = filtered.iloc[0]
+                fresh = float(row.get('lastPrice', 0) or 0)
+                if fresh > 0:
+                    return fresh, "CHAIN_LIVE", True
+    except Exception:
+        pass
+    return 0, "NO_LIVE_DATA", False
+
+
+
 
 # ================= V18.4 COMPLETE NSE/BSE + MUHURAT + HOLIDAY ENGINE =================
 from datetime import date as date_v184
@@ -4588,6 +3265,210 @@ def get_nse_session() -> NSEExchangeSession:
     return NSEExchangeSession()
 
 nse_client = get_nse_session()
+
+# ===== V21 TURBO DATA FIX - NSE BLOCK FIX FOR STREAMLIT CLOUD =====
+import random as _rand_v21
+_V21_UAS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+]
+
+def _v21_yahoo(symbol):
+    try:
+        import requests as _rq
+        mp = {"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK","FINNIFTY":"^NSEBANK","SENSEX":"^BSESN","INDIA_VIX":"^INDIAVIX"}
+        ysym = mp.get(symbol,"^NSEI")
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}?interval=1m&range=1d"
+        r = _rq.get(url, headers={"User-Agent": _rand_v21.choice(_V21_UAS)}, timeout=4)
+        if r.status_code==200:
+            j=r.json()
+            p=j['chart']['result'][0]['meta']['regularMarketPrice']
+            if p and float(p)>0:
+                return float(p)
+    except:
+        pass
+    return None
+
+def _v21_proxy_spot(symbol):
+    try:
+        import requests as _rq, json as _js, urllib.parse as _up
+        pu = f"https://api.allorigins.win/raw?url={_up.quote('https://www.nseindia.com/api/allIndices', safe='')}"
+        r=_rq.get(pu, timeout=6, headers={"User-Agent": _rand_v21.choice(_V21_UAS)})
+        if r.status_code==200:
+            data=_js.loads(r.text)
+            if "data" in data:
+                chk="NIFTY 50" if symbol=="NIFTY" else ("NIFTY BANK" if symbol=="BANKNIFTY" else symbol)
+                for it in data["data"]:
+                    if chk in str(it.get("index","")).upper() or chk in str(it.get("indexSymbol","")).upper():
+                        try:
+                            fv=float(it.get("last"))
+                            if fv>0:
+                                return fv
+                        except:
+                            pass
+    except:
+        pass
+    return None
+
+# Override fetch_verified_spot with turbo version
+def fetch_verified_spot(symbol: str):
+    now_str=datetime.now(IST).strftime("%H:%M:%S IST")
+    try:
+        ck=f"_spot_{symbol}"
+        if ck in _spot_cache_v19:
+            val,ts=_spot_cache_v19[ck]
+            import time as _tt
+            if _tt.time()-ts<2 and val and val>0:
+                return {"price":val,"change":0.0,"p_change":0.0,"source":"CACHE","status":"CACHED","timestamp":now_str}
+    except:
+        pass
+    yp=_v21_yahoo(symbol)
+    if yp and yp>0:
+        try:
+            _spot_cache_v19[f"_spot_{symbol}"]=(yp,time.time())
+        except:
+            pass
+        return {"price":yp,"change":0.0,"p_change":0.0,"source":"YAHOO","status":"LIVE_YAHOO","timestamp":now_str}
+    pp=_v21_proxy_spot(symbol)
+    if pp and pp>0:
+        try:
+            _spot_cache_v19[f"_spot_{symbol}"]=(pp,time.time())
+        except:
+            pass
+        return {"price":pp,"change":0.0,"p_change":0.0,"source":"PROXY","status":"LIVE_PROXY","timestamp":now_str}
+    for _ in range(2):
+        try:
+            import requests as _rq
+            sess=_rq.Session()
+            sess.headers.update({"User-Agent":_rand_v21.choice(_V21_UAS),"Referer":"https://www.nseindia.com/option-chain"})
+            try:
+                sess.get("https://www.nseindia.com", timeout=3)
+            except:
+                pass
+            ts=int(time.time()*1000)
+            url=f"https://www.nseindia.com/api/allIndices?_={ts}"
+            r=sess.get(url, timeout=5)
+            if r.status_code==200:
+                data=r.json()
+                if "data" in data:
+                    chk="NIFTY BANK" if symbol=="BANKNIFTY" else ("NIFTY 50" if symbol=="NIFTY" else symbol)
+                    for it in data["data"]:
+                        if str(it.get("indexSymbol","")).upper()==chk or str(it.get("index","")).upper()==chk:
+                            try:
+                                fv=float(it.get("last"))
+                                if fv>0:
+                                    try:
+                                        _spot_cache_v19[f"_spot_{symbol}"]=(fv,time.time())
+                                    except:
+                                        pass
+                                    return {"price":fv,"change":float(it.get("variation",0)),"p_change":float(it.get("percentChange",0)),"source":"NSE","status":"LIVE_NSE","timestamp":now_str}
+                            except:
+                                pass
+        except:
+            time.sleep(0.2)
+            continue
+    try:
+        ck=f"_spot_{symbol}"
+        if ck in _spot_cache_v19:
+            val,_=_spot_cache_v19[ck]
+            if val and val>0:
+                return {"price":val,"change":0.0,"p_change":0.0,"source":"STALE","status":"STALE","timestamp":now_str}
+    except:
+        pass
+    return {"price":None,"change":0.0,"p_change":0.0,"source":"FAILED","status":"FAILED","timestamp":now_str}
+
+def get_spot(symbol: str):
+    return fetch_verified_spot(symbol).get("price")
+
+def get_spot_cached(symbol):
+    return get_spot(symbol)
+
+def get_chain(symbol: str, expiry):
+    try:
+        url=f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
+        raw=nse_client.get_json(url)
+        if raw and isinstance(raw, dict):
+            rec=raw.get("records",{})
+            items=rec.get("data",[])
+            if items:
+                import pandas as pd
+                rows=[]
+                sync_tag=datetime.now(IST).strftime("%H:%M:%S")
+                for item in items:
+                    strike=item.get("strikePrice")
+                    try:
+                        sf=float(strike)
+                    except:
+                        continue
+                    if "CE" in item and isinstance(item["CE"], dict):
+                        ce=item["CE"]
+                        rows.append({"strikePrice":sf,"option_type":"CE","lastPrice":float(ce.get("lastPrice",0) or 0),"openInterest":int(ce.get("openInterest",0) or 0),"changeinOpenInterest":int(ce.get("changeinOpenInterest",0) or 0),"change":float(ce.get("change",0) or 0),"impliedVolatility":float(ce.get("impliedVolatility",0) or 0),"bidQty":0,"bidprice":0,"askQty":0,"askPrice":0,"lastUpdateTime":sync_tag,"expiryDate":item.get("expiryDate",expiry),"price_source":"NSE_LIVE"})
+                    if "PE" in item and isinstance(item["PE"], dict):
+                        pe=item["PE"]
+                        rows.append({"strikePrice":sf,"option_type":"PE","lastPrice":float(pe.get("lastPrice",0) or 0),"openInterest":int(pe.get("openInterest",0) or 0),"changeinOpenInterest":int(pe.get("changeinOpenInterest",0) or 0),"change":float(pe.get("change",0) or 0),"impliedVolatility":float(pe.get("impliedVolatility",0) or 0),"bidQty":0,"bidprice":0,"askQty":0,"askPrice":0,"lastUpdateTime":sync_tag,"expiryDate":item.get("expiryDate",expiry),"price_source":"NSE_LIVE"})
+                if rows:
+                    import pandas as pd
+                    df=pd.DataFrame(rows)
+                    return df, df.copy()
+    except:
+        pass
+    try:
+        import requests as _rq, json as _js, urllib.parse as _up
+        chain_url=f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
+        proxy_url=f"https://api.allorigins.win/raw?url={_up.quote(chain_url, safe='')}"
+        r=_rq.get(proxy_url, timeout=8, headers={"User-Agent":_rand_v21.choice(_V21_UAS)})
+        if r.status_code==200:
+            data=_js.loads(r.text)
+            if isinstance(data, dict) and "records" in data:
+                rec=data.get("records",{})
+                items=rec.get("data",[])
+                rows=[]
+                sync_tag=datetime.now(IST).strftime("%H:%M:%S")
+                for item in items:
+                    strike=item.get("strikePrice")
+                    try:
+                        sf=float(strike)
+                    except:
+                        continue
+                    if "CE" in item and isinstance(item["CE"], dict):
+                        ce=item["CE"]
+                        rows.append({"strikePrice":sf,"option_type":"CE","lastPrice":float(ce.get("lastPrice",0) or 0),"openInterest":int(ce.get("openInterest",0) or 0),"changeinOpenInterest":int(ce.get("changeinOpenInterest",0) or 0),"change":float(ce.get("change",0) or 0),"impliedVolatility":float(ce.get("impliedVolatility",0) or 0),"bidQty":0,"bidprice":0,"askQty":0,"askPrice":0,"lastUpdateTime":sync_tag,"expiryDate":item.get("expiryDate",expiry),"price_source":"PROXY"})
+                    if "PE" in item and isinstance(item["PE"], dict):
+                        pe=item["PE"]
+                        rows.append({"strikePrice":sf,"option_type":"PE","lastPrice":float(pe.get("lastPrice",0) or 0),"openInterest":int(pe.get("openInterest",0) or 0),"changeinOpenInterest":int(pe.get("changeinOpenInterest",0) or 0),"change":float(pe.get("change",0) or 0),"impliedVolatility":float(pe.get("impliedVolatility",0) or 0),"bidQty":0,"bidprice":0,"askQty":0,"askPrice":0,"lastUpdateTime":sync_tag,"expiryDate":item.get("expiryDate",expiry),"price_source":"PROXY"})
+                if rows:
+                    import pandas as pd
+                    df=pd.DataFrame(rows)
+                    return df, df.copy()
+    except:
+        pass
+    import pandas as pd
+    empty=pd.DataFrame()
+    return empty, empty.copy()
+
+def get_chain_cached(symbol, expiry):
+    return get_chain(symbol, expiry)
+
+def get_india_vix():
+    try:
+        vix_data=fetch_verified_spot("INDIA_VIX")
+        vix=vix_data.get("price")
+        if vix is None or vix<=0:
+            vix=_v21_yahoo("INDIA_VIX")
+            if not vix:
+                vix=13.5
+        regime="NORMAL"
+        if vix:
+            if vix<12:
+                regime="LOW_VOL"
+            elif vix>20:
+                regime="HIGH_VOL"
+            elif vix>16:
+                regime="ELEVATED"
+        return {"vix":vix,"regime":regime,"source":"V21_TURBO","timestamp":datetime.now(IST).strftime("%H:%M:%S IST")}
+    except:
+        return {"vix":13.5,"regime":"NORMAL","source":"FALLBACK","timestamp":datetime.now(IST).strftime("%H:%M:%S IST")}
+# ===== END V21 TURBO =====
+
 
 def secret(name: str) -> str:
     """V21: Robust secret finder - tries multiple cases"""
@@ -6432,7 +5313,7 @@ def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: 
 
     if token and telemetry and hasattr(telemetry, "smart_api") and telemetry.smart_api:
         try:
-            res = telemetry.safe_angel_ltpData(smart_api, exchange=exchange, tradingsymbol=symbol, symboltoken=str(token))
+            res = telemetry.smart_api.ltpData(exchange=exchange, tradingsymbol=symbol, symboltoken=str(token))
             if res and res.get("status") and "data" in res:
                 api_ltp = float(res["data"].get("ltp", 0.0))
                 api_close = float(res["data"].get("close", api_ltp))
@@ -7771,7 +6652,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     # Call it before ticker
     render_pending_confirmations_ui()
 
-    @live_fragment(run_every=15)
+    @live_fragment(run_every=1)
     def _instant_exit_v19():
         try:
             auto_check_and_exit_positions()
@@ -7779,7 +6660,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             pass
     _instant_exit_v19()
 
-    @live_fragment(run_every=15)
+    @live_fragment(run_every=2)
     def _tg_poll_v19():
         try:
             handle_telegram_callback_query()
@@ -7794,7 +6675,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @live_fragment(run_every=15)
+    @live_fragment(run_every=2)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
@@ -8135,17 +7016,13 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         with c1: st.metric("Selected Strike", f"{idea['strike']} {idea['option']}", delta=idea.get("buildup", f"{idea['action']} OPTION"))
                                                 # V15 FINAL BROKER-MATCHED - Fixes 56.30 vs 108.2
                         entry_ltp = idea.get('entry', idea.get('ltp', 0))
-                        live_ltp_now = 0
-                        live_src = "INIT"
-                        is_live_ok = False
-                        actual_exp_used = selected_expiry
-                        pnl_pct = 0
+                        # Store original entry as frozen signal
                         if 'original_entry' not in idea:
                             idea['original_entry'] = entry_ltp
                         
                         try:
                             # V27 FINAL: Angel first - 100% broker matched like debug app
-                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_V54_ALL_INDICES(
+                            live_ltp_now, live_src, is_live_ok = get_angel_ltp_100pct_broker_match(
                                 symbol=idea.get('symbol','NIFTY'),
                                 strike=idea.get('strike',22750),
                                 opt_type=idea.get('option','CE'),
@@ -8483,3 +7360,5 @@ def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
         
     except Exception as e:
         return False, str(e)[:80]
+
+
