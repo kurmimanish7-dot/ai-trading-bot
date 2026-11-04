@@ -1,7 +1,7 @@
-# V39 FINAL requirements.txt - AUDITED
-# Python 3.11.17 tested
+# V40 FIXED - Autorefresh bug removed
+# Python 3.11 tested - Streamlit Cloud compatible
 
-# Core
+# Core - Added pyarrow (fixes component loading bug)
 streamlit==1.39.0
 pandas==2.2.3
 numpy==1.26.4
@@ -9,6 +9,7 @@ requests==2.32.3
 pytz==2024.1
 python-dotenv==1.0.1
 openpyxl==3.1.5
+pyarrow==17.0.0
 
 # Market Data - Multi-source (Yahoo + Proxy + NSE)
 yfinance==0.2.44
@@ -23,5 +24,6 @@ logzero==1.7.0
 google-genai==0.8.0
 google-generativeai==0.8.4
 
-# Streamlit Addons
-streamlit-autorefresh==1.0.1
+# NOTE: streamlit-autorefresh REMOVED - replaced by native @st.fragment(run_every=10)
+# If you still want it, uncomment below but error may return:
+# streamlit-autorefresh==1.0.1
