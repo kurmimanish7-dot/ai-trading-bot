@@ -1,9 +1,21 @@
-google-genai
-pandas
-numpy
-pyotp
-smartapi-python
-requests
-logzero
-websocket-client
-streamlit
+# V71 NETWORK FIX - Stable Streamlit version to fix frontend loading
+# Streamlit 1.39.0 has frontend bug, downgrading to 1.35.0 (most stable for Cloud)
+
+streamlit==1.35.0
+pandas==2.2.3
+numpy==1.26.4
+requests==2.32.3
+pytz==2024.1
+python-dotenv==1.0.1
+openpyxl==3.1.5
+pyarrow==14.0.1
+
+yfinance==0.2.44
+
+smartapi-python==1.3.9
+pyotp==2.9.0
+websocket-client==1.8.0
+logzero==1.7.0
+
+google-genai==0.8.0
+google-generativeai==0.8.4
