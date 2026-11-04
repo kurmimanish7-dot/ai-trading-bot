@@ -1,3 +1,5 @@
+# V71 NETWORK FIX - Reduced fragment frequency to fix 'Cannot load frontend code'
+# Changed all run_every=1/2 sec to 15 sec - Streamlit Cloud cannot handle 1 sec polling
 
 # ===== V61 ULTIMATE FIX - Based on Multiple Sources Research =====
 # Research from 3 experts:
@@ -7769,7 +7771,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     # Call it before ticker
     render_pending_confirmations_ui()
 
-    @live_fragment(run_every=1)
+    @live_fragment(run_every=15)
     def _instant_exit_v19():
         try:
             auto_check_and_exit_positions()
@@ -7777,7 +7779,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             pass
     _instant_exit_v19()
 
-    @live_fragment(run_every=2)
+    @live_fragment(run_every=15)
     def _tg_poll_v19():
         try:
             handle_telegram_callback_query()
@@ -7792,7 +7794,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @live_fragment(run_every=2)
+    @live_fragment(run_every=15)
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
         spot = get_spot(selected_underlying)
         chain_result = get_chain(selected_underlying, current_expiry)
