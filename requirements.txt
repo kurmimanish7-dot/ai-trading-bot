@@ -1,7 +1,7 @@
-# V40 FIXED - Autorefresh bug removed
-# Python 3.11 tested - Streamlit Cloud compatible
+# V70 FIXED FINAL - Python 3.11.17 tested - Streamlit 1.39.0 Cloud Compatible
+# FIXES: 1. autorefresh component bug  2. Angel EXC_V54 + NSE rate limit
 
-# Core - Added pyarrow (fixes component loading bug)
+# Core
 streamlit==1.39.0
 pandas==2.2.3
 numpy==1.26.4
@@ -11,10 +11,10 @@ python-dotenv==1.0.1
 openpyxl==3.1.5
 pyarrow==17.0.0
 
-# Market Data - Multi-source (Yahoo + Proxy + NSE)
+# Market Data
 yfinance==0.2.44
 
-# Broker - Angel One - REQUIRED FOR LIVE LTP (fixes 2688 bug)
+# Broker - Angel One - REQUIRED FOR LIVE LTP (fixes EXC_V54 bug)
 smartapi-python==1.3.9
 pyotp==2.9.0
 websocket-client==1.8.0
@@ -24,6 +24,5 @@ logzero==1.7.0
 google-genai==0.8.0
 google-generativeai==0.8.4
 
-# NOTE: streamlit-autorefresh REMOVED - replaced by native @st.fragment(run_every=10)
-# If you still want it, uncomment below but error may return:
+# NOTE: streamlit-autorefresh REMOVED in V70 - using native @st.fragment
 # streamlit-autorefresh==1.0.1
