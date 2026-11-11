@@ -21,6 +21,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional, Tuple
+from otr_v2 import calculate_otr_v2
 
 import numpy as np
 import pandas as pd
