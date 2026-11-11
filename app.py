@@ -5365,7 +5365,7 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
 
 
 # =====================================================================
-# OTR v2 - EMBEDDED - Opening Trap Ratio + Global Impact (Bhai ka patch)
+# OTR v2 - EMBEDDED - Overall Trap Radar (Opening + Intraday + Closing) + Global Impact (Bhai ka patch)
 # Agar otr_v2.py file hai to external wala use hoga, nahi to ye wala
 # =====================================================================
 # ============ 1. GLOBAL IMPACT LAYER ============
@@ -5469,6 +5469,32 @@ def calculate_otr_v2(
         if gap_pct > 0.3 and spot <= prev_close:
             otr += 1.5; reasons.append(f"Gap-up {gap_pct:.2f}% fill ho gaya - bull trap")
             blocks.append("GAP_FILL_TRAP")
+
+    # --- A2. INTRADAY TRAP - Poore din ka trap, sirf opening ka nahi ---
+    # Bhai ne sahi bola: trap kabhi bhi ho sakta hai, isliye OTR har scan pe live check karega
+    # 11 baje ke baad ORB purana ho jata hai, tab VWAP + Day Open + 5-min momentum hi asli trap batayenge
+    # 1. Midday fake breakdown: Spot neeche ja raha hai + VWAP ke neeche + 5-min me tez gir raha hai
+    if spot and vwap and spot < vwap and spot_pct_5m < -0.25:
+        otr += 1.5; reasons.append(f"INTRADAY TRAP: Spot VWAP {vwap:.0f} ke neeche + 5-min me {spot_pct_5m:.2f}% gira - midday breakdown")
+        blocks.append("INTRADAY_BREAKDOWN")
+    # 2. VWAP rejection trap: Spot VWAP ke paas aake wapas neeche aaya - CE buyers trap
+    if spot and vwap and day_open and spot < vwap and spot < day_open and spot_pct_5m < -0.10:
+        otr += 0.5; reasons.append("VWAP rejection - VWAP se upar tik nahi paya, CE trap")
+    # 3. Closing / Expiry trap 14:30 ke baad: Tez move + premium velocity high = expiry trap
+    try:
+        from datetime import time as _dtime2
+        if current_time >= _dtime2(14, 30) and abs(spot_pct_5m) > 0.3 and abs(ce_premium_pct) > 8:
+            otr += 1.0; reasons.append(f"CLOSING TRAP: 14:30 ke baad tez move {spot_pct_5m:.2f}% + premium {ce_premium_pct:.1f}% - expiry trap risk")
+            blocks.append("CLOSING_TRAP")
+    except Exception:
+        pass
+    # 4. Lunch trap 11:30-13:30: Volume kam hota hai, fake breakout zyada banta hai
+    try:
+        from datetime import time as _dtime3
+        if _dtime3(11, 30) <= current_time <= _dtime3(13, 30) and first_15m_volume_ratio < 0.7:
+            otr += 0.5; reasons.append("LUNCH TRAP WINDOW 11:30-13:30: Volume kam hai, fake breakout ka risk")
+    except Exception:
+        pass
 
     # --- B. LIVE OI DELTA - 20% weight ---
     # Total PCR nahi, sirf aaj ke pehle 15 min ka change
