@@ -153,10 +153,36 @@ def scan_one_index_fast_v12(symbol, current_expiry, active_tf, vix_data, fii_dii
         alt_proxy = calculate_live_derivatives_proxy(alt_chain, alt_pcr)
         alt_market = analyze_market(symbol, alt_proxy, explicit_spot=alt_spot, tf_cfg=active_tf)
         ideas = []
+        # ===== OTR PER-INDEX FIX - Har index ka apna OTR, sirf NIFTY ka nahi =====
+        # Pehle is index ka ORB / VWAP / Day Open nikalenge
+        try:
+            _df = add_indicators(fetch_ohlcv(symbol, active_tf["smartapi"], active_tf["days"]), current_live_price=alt_spot)
+            _today = _df[_df["datetime"].dt.date == datetime.now(IST).date()] if "datetime" in _df.columns and not _df.empty else _df
+            if len(_today) >= 3:
+                _orb_h = float(_today.iloc[:3]["high"].max())
+                _orb_l = float(_today.iloc[:3]["low"].min())
+                _dopen = float(_today.iloc[0]["open"])
+            else:
+                _orb_h = float(alt_spot or 0); _orb_l = float(alt_spot or 0); _dopen = float(alt_spot or 0)
+            _vwap_alt = float(alt_market.get("vwap") or alt_spot or 0)
+            _otr_fn2 = get_otr_calculator()
+            _otr_alt = _otr_fn2(spot=float(alt_spot or 0), day_open=_dopen, prev_close=_dopen, orb_high=_orb_h, orb_low=_orb_l, vwap=_vwap_alt, macro=None, gift_gap_pct=0.0, vix_now=float(vix_data.get("vix", 13) if isinstance(vix_data, dict) else 13), vix_prev_close=13.0)
+            # CE trap ho to is index ka CE hata do, PE trap ho to PE hata do
+            # PE trap = ulta: Spot > OR High + Spot > VWAP + Spot > Day Open + OTR low par bhi PE banana trap hai
+            _is_bull_trap_for_pe = (alt_spot and _orb_h and alt_spot > _orb_h and alt_spot > _vwap_alt and alt_spot > _dopen)
+            _block_ce_alt = bool(_otr_alt.get("ce_blocked"))
+            _block_pe_alt = bool(_is_bull_trap_for_pe and _otr_alt.get("otr", 0) < 1.5)
+        except Exception:
+            _block_ce_alt = False; _block_pe_alt = False; _otr_alt = {"otr": 0}
         alt_spot_idea = make_trade_idea(alt_market, symbol, instrument="INDEX", expiry=alt_exp, chain=alt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
         if alt_spot_idea: ideas.append(alt_spot_idea)
         alt_opt_idea = make_trade_idea(alt_market, symbol, instrument="INDEX OPTION", expiry=alt_exp, chain=alt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
         if alt_opt_idea: ideas.append(alt_opt_idea)
+        # Per-index OTR filter - CE aur PE dono pe lagega
+        if _block_ce_alt:
+            ideas = [x for x in ideas if not (x.get("option") == "CE")]
+        if _block_pe_alt:
+            ideas = [x for x in ideas if not (x.get("option") == "PE")]
         return ideas
     except:
         return []
@@ -7405,6 +7431,24 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             progress.progress(90)
             status.text("Ranking...")
 
+            # ===== GLOBAL SAFETY NET - Main OTR sab index pe lagega =====
+            # NIFTY gir raha hai to BANKNIFTY ka CE bhi trap hi hai, correlation 0.85+ hai
+            try:
+                if st.session_state.get("otr_ce_blocked", False):
+                    _before = len(ideas)
+                    ideas = [x for x in ideas if not (x.get("option") == "CE")]
+                    if len(ideas) < _before:
+                        st.warning(f"🛑 GLOBAL OTR: NIFTY trap ki wajah se sab index ke CE hataye - {_before - len(ideas)} CE blocked")
+                # PE ka ulta trap: Agar main spot OR High + VWAP + Day Open sabke upar hai to PE block
+                try:
+                    _main_spot = float(current_spot or 0)
+                    if _main_spot and _main_spot > _orb_high and _main_spot > float(active_market.get("vwap") or 0) and _main_spot > _day_open_val:
+                        ideas = [x for x in ideas if not (x.get("option") == "PE")]
+                        st.warning("🛑 BULL TRAP: Spot sabke upar hai, isliye sab index ke PE block kiye")
+                except Exception:
+                    pass
+            except Exception:
+                pass
             unique_ideas = []
             seen = set()
             for item in ideas:
