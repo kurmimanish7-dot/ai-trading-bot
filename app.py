@@ -21,13 +21,21 @@ import uuid
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional, Tuple
-from otr_v2 import calculate_otr_v2
 
 import numpy as np
 import pandas as pd
 import requests
 import concurrent.futures
 import streamlit as st
+# ===== OTR v2 - Embedded + External fallback =====
+try:
+    from otr_v2 import calculate_otr_v2 as _otr_v2_external
+    HAS_OTR_EXTERNAL = True
+except Exception:
+    _otr_v2_external = None
+    HAS_OTR_EXTERNAL = False
+# Agar otr_v2.py alag file me hai to wahi chalega, nahi to neeche wala embedded function chalega
+
 try:
     from streamlit_autorefresh import st_autorefresh
     HAS_AUTOREFRESH = True
@@ -5329,6 +5337,204 @@ def get_optimal_option_strike(symbol: str, spot: float, side: str, chain: Option
     }
 
 
+
+# =====================================================================
+# OTR v2 - EMBEDDED - Opening Trap Ratio + Global Impact (Bhai ka patch)
+# Agar otr_v2.py file hai to external wala use hoga, nahi to ye wala
+# =====================================================================
+# ============ 1. GLOBAL IMPACT LAYER ============
+# Har global factor ka weight fix hai, taaki ek din Nasdaq gira to OTR khud CE block kar de
+
+def global_impact_score(macro=None, gift_gap_pct=0.0, us_vix_change_pct=0.0, usd_inr_change_pct=0.0):
+    """
+    macro = GlobalMacroEngine.fetch_macro_quotes() wala dict
+    gift_gap_pct = (GIFT Nifty - Prev Nifty Close) / Prev Close * 100
+    Returns: score -5 se +5, verdict, reasons list
+    Negative = Global bearish = CE ke liye dangerous
+    """
+    score = 0.0
+    reasons = []
+    if macro is None:
+        macro = {}
+
+    # Nasdaq / S&P - sabse bada global driver
+    nasdaq = macro.get("NASDAQ", {}).get("change_pct", 0.0) if isinstance(macro.get("NASDAQ"), dict) else 0.0
+    spx = macro.get("SP500", {}).get("change_pct", 0.0) if isinstance(macro.get("SP500"), dict) else nasdaq
+    us_avg = (nasdaq + spx) / 2.0
+    if us_avg <= -1.0:
+        score -= 2.0; reasons.append(f"US weak: Nasdaq/SPX {us_avg:.2f}%")
+    elif us_avg <= -0.4:
+        score -= 1.0; reasons.append(f"US soft: {us_avg:.2f}%")
+    elif us_avg >= 1.0:
+        score += 1.5; reasons.append(f"US strong: {us_avg:.2f}%")
+    elif us_avg >= 0.4:
+        score += 0.5; reasons.append(f"US mild positive: {us_avg:.2f}%")
+
+    # GIFT Nifty - India ka overnight gap batata hai
+    if gift_gap_pct <= -0.5:
+        score -= 1.5; reasons.append(f"GIFT gap-down {gift_gap_pct:.2f}% - opening trap risk")
+    elif gift_gap_pct <= -0.2:
+        score -= 0.5; reasons.append(f"GIFT soft {gift_gap_pct:.2f}%")
+    elif gift_gap_pct >= 0.5:
+        score += 1.0; reasons.append(f"GIFT gap-up {gift_gap_pct:.2f}%")
+    
+    # Crude - India ke liye inflation + FII sentiment
+    crude = macro.get("CRUDE_OIL", {}).get("change_pct", 0.0) if isinstance(macro.get("CRUDE_OIL"), dict) else 0.0
+    if crude >= 2.0:
+        score -= 1.0; reasons.append(f"Crude spike {crude:.2f}% - FII selling risk")
+    elif crude <= -2.0:
+        score += 0.5; reasons.append(f"Crude cool {crude:.2f}%")
+
+    # USDINR - Dollar strong = FII outflow
+    if usd_inr_change_pct >= 0.4:
+        score -= 1.0; reasons.append(f"USDINR up {usd_inr_change_pct:.2f}% - FII outflow pressure")
+    elif usd_inr_change_pct <= -0.3:
+        score += 0.5; reasons.append(f"USDINR down {usd_inr_change_pct:.2f}% - FII comfort")
+
+    # US VIX spike - Global fear
+    if us_vix_change_pct >= 10:
+        score -= 1.0; reasons.append(f"US VIX spike +{us_vix_change_pct:.1f}% - global fear")
+    
+    score = max(-5.0, min(5.0, score))
+    verdict = "BEARISH" if score <= -2 else ("BULLISH" if score >= 2 else "NEUTRAL")
+    return {"score": round(score, 2), "verdict": verdict, "reasons": reasons}
+
+
+# ============ 2. OTR v2 MAIN ENGINE ============
+def calculate_otr_v2(
+    spot=0, day_open=0, prev_close=0, prev_day_high=0, prev_day_low=0,
+    orb_high=0, orb_low=0, vwap=0,
+    ce_oi_change=0, pe_oi_change=0,
+    ce_premium_pct=0.0, spot_pct_5m=0.0,
+    vix_now=13.0, vix_prev_close=13.0,
+    macro=None, gift_gap_pct=0.0, usd_inr_change_pct=0.0, us_vix_change_pct=0.0,
+    breadth_adv=0, breadth_dec=0,
+    nifty_pct=0.0, banknifty_pct=0.0,
+    max_pain=0, gamma_flip=0,
+    first_15m_volume_ratio=1.0,
+    current_time=None
+):
+    """
+    Sab signals ko ek OTR score me jodta hai.
+    Returns dict with otr_score 0-10, ce_blocked, pe_only, verdict, reasons
+    OTR high = TRAP = CE mat lo
+    """
+    if current_time is None:
+        current_time = datetime.now(IST).time()
+    
+    otr = 0.0
+    reasons = []
+    blocks = []
+
+    # --- A. OPENING STRUCTURE - 40% weight ---
+    if orb_low and spot and spot < orb_low:
+        otr += 2.0; reasons.append(f"TRAP: Spot {spot:.0f} < OR Low {orb_low:.0f} - opening breakdown")
+        blocks.append("ORB_BREAKDOWN")
+    if vwap and spot and spot < vwap:
+        otr += 1.0; reasons.append(f"Spot < VWAP {vwap:.0f} - institutions bech rahe hain")
+    if day_open and spot and spot < day_open:
+        otr += 1.0; reasons.append(f"Spot < Day Open {day_open:.0f} - gap fill / weakness")
+    if prev_day_low and spot and spot < prev_day_low:
+        otr += 1.5; reasons.append(f"Spot < Prev Day Low {prev_day_low:.0f} - major breakdown")
+        blocks.append("PDL_BREAKDOWN")
+    # Gap fill trap: Gap-up khul ke gap fill kar diya to CE trap
+    if prev_close and day_open and spot:
+        gap_pct = (day_open - prev_close) / prev_close * 100
+        if gap_pct > 0.3 and spot <= prev_close:
+            otr += 1.5; reasons.append(f"Gap-up {gap_pct:.2f}% fill ho gaya - bull trap")
+            blocks.append("GAP_FILL_TRAP")
+
+    # --- B. LIVE OI DELTA - 20% weight ---
+    # Total PCR nahi, sirf aaj ke pehle 15 min ka change
+    if ce_oi_change > 0 and spot_pct_5m < 0:
+        otr += 1.5; reasons.append(f"SHORT BUILDUP: Spot down + CE OI +{ce_oi_change:,} - Call writing")
+        blocks.append("SHORT_BUILDUP")
+    if pe_oi_change < 0 and spot_pct_5m < 0:
+        otr += 0.5; reasons.append("PE OI unwinding - put support hat raha hai")
+    if ce_oi_change < 0 and pe_oi_change > 0 and spot_pct_5m > 0:
+        otr -= 0.5; reasons.append("Healthy: CE unwinding + PE building - real buying")
+
+    # --- C. PREMIUM VELOCITY - Theta Trap ---
+    if spot_pct_5m < -0.15 and ce_premium_pct < -5:
+        ratio = abs(ce_premium_pct / spot_pct_5m) if spot_pct_5m != 0 else 0
+        if ratio >= 8:
+            otr += 1.5; reasons.append(f"THETA TRAP: Spot {spot_pct_5m:.2f}% par CE {ce_premium_pct:.1f}% gira - velocity {ratio:.1f}x")
+            blocks.append("THETA_TRAP")
+
+    # --- D. GLOBAL IMPACT - 25% weight, OTR se connected ---
+    g = global_impact_score(macro, gift_gap_pct, us_vix_change_pct, usd_inr_change_pct)
+    if g["score"] <= -3:
+        otr += 2.0; reasons.append(f"GLOBAL BEARISH ({g['score']}): " + " | ".join(g["reasons"][:2]))
+        blocks.append("GLOBAL_BEARISH")
+    elif g["score"] <= -1.5:
+        otr += 1.0; reasons.append(f"Global soft ({g['score']}): " + " | ".join(g["reasons"][:1]))
+    elif g["score"] >= 2:
+        otr -= 0.5; reasons.append(f"Global supportive ({g['score']})")
+
+    # --- E. INDIA VIX + VOLATILITY ---
+    vix_change = vix_now - vix_prev_close
+    if vix_change >= 1.0:
+        otr += 1.0; reasons.append(f"VIX spike {vix_prev_close:.1f} -> {vix_now:.1f} (+{vix_change:.1f}) - premium crush risk")
+    if vix_now >= 18:
+        otr += 0.5; reasons.append(f"VIX high {vix_now:.1f} - option buying risky")
+
+    # --- F. BREADTH + SECTOR DIVERGENCE ---
+    total_breadth = breadth_adv + breadth_dec
+    if total_breadth > 0:
+        adv_pct = breadth_adv / total_breadth * 100
+        if adv_pct < 35:
+            otr += 1.0; reasons.append(f"Breadth weak: {breadth_adv} adv vs {breadth_dec} dec ({adv_pct:.0f}%)")
+        elif adv_pct > 65:
+            otr -= 0.5; reasons.append(f"Breadth strong {adv_pct:.0f}% adv")
+    # BankNifty vs Nifty divergence - Bank lead nahi kar raha to rally fake
+    if nifty_pct > 0.2 and banknifty_pct < -0.2:
+        otr += 1.0; reasons.append(f"Divergence: Nifty {nifty_pct:+.2f}% par BankNifty {banknifty_pct:+.2f}% - rally me dum nahi")
+        blocks.append("BANK_DIVERGENCE")
+
+    # --- G. MAX PAIN + GEX MAGNET ---
+    if max_pain and spot and spot > max_pain and (spot - max_pain) > 80:
+        otr += 0.5; reasons.append(f"Max Pain magnet neeche {max_pain:.0f} - CE ko neeche kheenchega")
+    if gamma_flip and spot and spot < gamma_flip:
+        otr += 0.5; reasons.append(f"Spot < Gamma Flip {gamma_flip:.0f} - negative gamma zone, fast fall")
+
+    # --- H. VOLUME CONFIRMATION ---
+    if first_15m_volume_ratio < 0.7:
+        otr += 0.5; reasons.append(f"Volume weak {first_15m_volume_ratio:.2f}x - breakout me dum nahi")
+
+    # --- I. TIME TRAP WINDOW ---
+    is_trap_window = dtime(9, 15) <= current_time <= dtime(9, 45)
+    if is_trap_window and otr >= 2:
+        otr += 0.5; reasons.append("9:15-9:45 trap window - extra caution")
+
+    otr = max(0.0, min(10.0, round(otr, 2)))
+
+    # Final verdict
+    if otr >= 5.5:
+        verdict = "NO TRADE - FULL TRAP"
+        ce_blocked, pe_only = True, False
+    elif otr >= 3.5:
+        verdict = "CE BLOCK - PE ONLY / WAIT"
+        ce_blocked, pe_only = True, True
+    elif otr >= 2.0:
+        verdict = "CE CAUTION - HALF QTY + TIGHT SL"
+        ce_blocked, pe_only = False, False
+    else:
+        verdict = "CE ALLOWED - CLEAN OPENING"
+        ce_blocked, pe_only = False, False
+
+    return {
+        "otr": otr, "verdict": verdict,
+        "ce_blocked": ce_blocked, "pe_only": pe_only,
+        "global": g, "blocks": blocks, "reasons": reasons,
+        "is_trap_window": is_trap_window
+    }
+
+# OTR helper - external ho to wahi, nahi to embedded
+def get_otr_calculator():
+    if HAS_OTR_EXTERNAL and _otr_v2_external is not None:
+        return _otr_v2_external
+    return calculate_otr_v2
+
 def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDEX", option_side: Optional[str] = None, expiry: Optional[str] = None, chain: Optional[pd.DataFrame] = None, confluence: Optional[Dict[str, Any]] = None, vix_info: Optional[Dict[str, Any]] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
     last = market.get("last")
@@ -7111,6 +7317,61 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             macro_q = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
             c_light3 = fetch_composite_macro_news(macro_q)
             scan_confluence = evaluate_all_permutations(c_light1, c_light2, c_light3)
+
+            # ===== OTR v2 DISPLAY + BLOCK - Yahi dikhega =====
+            try:
+                _otr_fn = get_otr_calculator()
+                try:
+                    _today_df = c_df[c_df["datetime"].dt.date == datetime.now(IST).date()] if "datetime" in c_df.columns else c_df
+                    if len(_today_df) >= 3:
+                        _orb_high = float(_today_df.iloc[:3]["high"].max())
+                        _orb_low = float(_today_df.iloc[:3]["low"].min())
+                        _day_open_val = float(_today_df.iloc[0]["open"])
+                    else:
+                        _orb_high = float(current_spot or 0)
+                        _orb_low = float(current_spot or 0)
+                        _day_open_val = float(current_spot or 0)
+                except Exception:
+                    _orb_high = float(current_spot or 0)
+                    _orb_low = float(current_spot or 0)
+                    _day_open_val = float(current_spot or 0)
+                _vix_now_val = 13.0
+                try:
+                    if vix_data and isinstance(vix_data, dict):
+                        _vix_now_val = float(vix_data.get("vix", 13) or 13)
+                except Exception:
+                    pass
+                _otr_result = _otr_fn(
+                    spot=float(current_spot or 0),
+                    day_open=_day_open_val,
+                    prev_close=_day_open_val,
+                    orb_high=_orb_high,
+                    orb_low=_orb_low,
+                    vwap=float(active_market.get("vwap") or current_spot or 0),
+                    macro=macro_q,
+                    gift_gap_pct=0.0,
+                    vix_now=_vix_now_val,
+                    vix_prev_close=13.0,
+                    nifty_pct=0.0,
+                    banknifty_pct=0.0
+                )
+                st.session_state["last_otr"] = _otr_result
+                st.session_state["otr_ce_blocked"] = bool(_otr_result.get("ce_blocked"))
+                if _otr_result["otr"] >= 5.5:
+                    st.error(f"🚨 OTR {_otr_result['otr']} - {_otr_result['verdict']}")
+                elif _otr_result["otr"] >= 3.5:
+                    st.warning(f"⚠️ OTR {_otr_result['otr']} - {_otr_result['verdict']} - CE BLOCK")
+                elif _otr_result["otr"] >= 2.0:
+                    st.info(f"⚠️ OTR {_otr_result['otr']} - {_otr_result['verdict']}")
+                else:
+                    st.success(f"✅ OTR {_otr_result['otr']} - {_otr_result['verdict']}")
+                st.write("**OTR Reasons:**")
+                for _r in _otr_result.get("reasons", []):
+                    st.write(f"- {_r}")
+            except Exception as _otr_e:
+                st.caption(f"OTR error: {_otr_e}")
+                st.session_state["otr_ce_blocked"] = False
+
             progress.progress(30)
             status.text("Scanning current underlying...")
             ideas = []
@@ -7119,6 +7380,13 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             if setup1: ideas.append(setup1)
             setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup2: ideas.append(setup2)
+            # OTR CE BLOCK - Agar OTR ne CE block kiya to CE wale ideas hata do
+            try:
+                if st.session_state.get("otr_ce_blocked", False):
+                    ideas = [x for x in ideas if not (x.get("option") == "CE")]
+                    st.warning("🛑 OTR ne CE block kiya - CE ideas hataye gaye, sirf PE / NO TRADE")
+            except Exception:
+                pass
             progress.progress(50)
             status.text("Parallel scanning other indices (live)...")
             alt_symbols = [s for s in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"] if s != underlying]
