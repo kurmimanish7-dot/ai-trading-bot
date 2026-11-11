@@ -176,7 +176,18 @@ def scan_one_index_fast_v12(symbol, current_expiry, active_tf, vix_data, fii_dii
             _block_ce_alt = False; _block_pe_alt = False; _otr_alt = {"otr": 0}
         alt_spot_idea = make_trade_idea(alt_market, symbol, instrument="INDEX", expiry=alt_exp, chain=alt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
         if alt_spot_idea: ideas.append(alt_spot_idea)
-        alt_opt_idea = make_trade_idea(alt_market, symbol, instrument="INDEX OPTION", expiry=alt_exp, chain=alt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
+        # ===== PE BOOST FIX - CE block hai to PE ko force generate karo =====
+        # Pehle OTR ne CE ko block kiya, par PE ka apna confluence kabhi CALL pe atak jata hai
+        # Isliye jab CE block hai, to PE ke liye confluence ko PUT pe force karenge
+        _confluence_for_opt = scan_confluence
+        if _block_ce_alt:
+            try:
+                _confluence_for_opt = dict(scan_confluence) if isinstance(scan_confluence, dict) else {}
+                _confluence_for_opt["action"] = "BUY PUT (PE)"
+                _confluence_for_opt["confidence"] = max(_confluence_for_opt.get("confidence", 70), 70)
+            except Exception:
+                pass
+        alt_opt_idea = make_trade_idea(alt_market, symbol, instrument="INDEX OPTION", expiry=alt_exp, chain=alt_chain, confluence=_confluence_for_opt, vix_info=vix_data, tf_cfg=active_tf)
         if alt_opt_idea: ideas.append(alt_opt_idea)
         # Per-index OTR filter - CE aur PE dono pe lagega
         if _block_ce_alt:
@@ -7430,7 +7441,16 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             bound_side = option_type_choice if option_type_choice in ["CE", "PE"] else None
             setup1 = make_trade_idea(active_market, underlying, instrument="INDEX", expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
             if setup1: ideas.append(setup1)
-            setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=scan_confluence, vix_info=vix_data, tf_cfg=active_tf)
+            # PE BOOST for main index - CE block hai to PE confluence force PUT karo
+            _conf_main = scan_confluence
+            try:
+                if st.session_state.get("otr_ce_blocked", False):
+                    _conf_main = dict(scan_confluence) if isinstance(scan_confluence, dict) else {}
+                    _conf_main["action"] = "BUY PUT (PE)"
+                    _conf_main["confidence"] = max(_conf_main.get("confidence", 70), 70)
+            except Exception:
+                pass
+            setup2 = make_trade_idea(active_market, underlying, instrument="INDEX OPTION", option_side=bound_side, expiry=selected_expiry, chain=opt_chain, confluence=_conf_main, vix_info=vix_data, tf_cfg=active_tf)
             if setup2: ideas.append(setup2)
             # OTR CE BLOCK - Agar OTR ne CE block kiya to CE wale ideas hata do
             try:
