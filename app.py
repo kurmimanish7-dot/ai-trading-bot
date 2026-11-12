@@ -1952,12 +1952,13 @@ def send_entry_exit_alert(bot_token, chat_id, alert_type, symbol, entry, setups,
 
 
 # =====================================================================
-# V55 STRONG CONFIRMATION - Bhai ka loss wala fix
+# V55 + V55.2 OVERALL STRONG SIGNAL - Bhai ka fix, CE only nahi
 # Problem: Conviction 85% + OTR CE Allowed dikha, phir bhi loss hua
-# Reason: OTR sirf trap/compliance batata hai, price-action confirmation nahi deta.
-#         85% conviction purane data se banta hai, live me short-covering / GEX Flip / VWAP rejection pe fail ho jata hai.
-# Fix: CE tabhi STRONG hoga jab 7 me se kam se kam 6 filter pass honge, nahi to NO TRADE / WAIT.
-# Filters: 1 HTF Trend, 2 VWAP+EMA, 3 OI+Price Long Buildup, 4 GEX Flip, 5 Volume 1.5x, 6 Retest, 7 VIX+PCR
+# Bhai ne sahi bola: Kewal CE ki baat nahi hai. Jo bhi trade ban raha hai - CE ho ya PE, Equity BUY ho ya SELL -
+# uska OVERALL signal strong hona chahiye. Ek taraf ka logic dusri taraf pe fail hoga.
+# Fix: Har trade ke liye SAME 7 filter, SAME rule. Direction badlega, rule nahi badlega.
+# BULLISH = CE / BUY / CALL, BEARISH = PE / SELL / PUT - dono ke liye mirror logic.
+# Filters: 1 HTF Trend, 2 VWAP+EMA, 3 OI+Price Buildup, 4 GEX Flip / Structure, 5 Volume 1.5x, 6 Retest, 7 VIX+PCR/Breadth
 # =====================================================================
 def calculate_strong_confirmation_v55(
     price=0, vwap=0, ema20=0, ema50=0,
@@ -2084,6 +2085,168 @@ def calculate_strong_confirmation_v55(
     except Exception as e:
         # Kabhi crash mat karo - agar strong calc fail hua to purana logic chalne do
         return "WEAK - WAIT", 5, [f"Strong calc error: {e}"], False
+
+
+# =====================================================================
+# V55.2 OVERALL STRONG SIGNAL - Direction-agnostic, CE/PE/BUY/SELL sab ke liye SAME
+# Bhai ka rule: "Jo trade ban raha hai uska signal de" - isliye ye function
+# direction ko input leta hai, aur usi direction ke hisab se mirror check karta hai.
+# direction: "BULLISH" (CE / BUY / CALL) ya "BEARISH" (PE / SELL / PUT)
+# Returns: (verdict, score 0-7, reasons, downgrade)
+# verdict: "STRONG BUY" / "STRONG SELL" / "WEAK - WAIT" / "NO TRADE"
+# + extra: "STRONG CE" / "STRONG PE" bhi same verdict ka alias hai taaki purana UI na toote
+# =====================================================================
+def calculate_overall_strong_signal_v55_2(
+    price=0, vwap=0, ema20=0, ema50=0, ema200=0,
+    price_change_pct=0, oi_change_pct=0,
+    spot=0, gex_flip=0, max_pain=0,
+    volume=0, avg_volume=0,
+    vix_change=0, pcr=1.0, breadth_adv_pct=50,
+    direction="BULLISH",  # BULLISH ya BEARISH
+    htf_bullish=True, retest_done=False,
+    resistance=0, support=0,
+    rsi=50, adx=20,
+    ce_pe=None,  # purana code CE/PE bhejta hai, usko bhi support karo
+):
+    try:
+        # Backward compat: agar ce_pe aaya hai to usse direction banao
+        if ce_pe is not None:
+            _cp = str(ce_pe).upper()
+            if _cp in ("CE", "BUY", "CALL", "BULLISH", "LONG"):
+                direction = "BULLISH"
+            elif _cp in ("PE", "SELL", "PUT", "BEARISH", "SHORT"):
+                direction = "BEARISH"
+        _d = str(direction).upper()
+        is_bull = _d in ("BULLISH", "BUY", "CE", "CALL", "LONG")
+        # is_bull True = upar ka trade, False = neeche ka trade
+        score = 0
+        reasons = []
+        price = float(price or 0) or float(spot or 0)
+        vwap = float(vwap or price)
+        ema20 = float(ema20 or price)
+        ema50 = float(ema50 or price)
+        ema200 = float(ema200 or price)
+        spot = float(spot or price)
+        gex_flip = float(gex_flip or 0)
+        volume = float(volume or 0)
+        avg_volume = float(avg_volume or 0)
+        resistance = float(resistance or 0)
+        support = float(support or 0)
+
+        # 1. HTF Trend - BULLISH ko HTF bullish chahiye, BEARISH ko HTF bearish
+        if (is_bull and htf_bullish) or ((not is_bull) and (not htf_bullish)):
+            score += 1
+        else:
+            reasons.append("HTF trend opposite hai - bada timeframe ulta hai")
+
+        # 2. VWAP + EMA - MIRROR LOGIC, dono taraf barabar
+        if is_bull:
+            if price > vwap and price > ema20 and ema20 > ema50:
+                score += 1
+            else:
+                reasons.append(f"VWAP/EMA fail BULLISH: Price {price:.0f} VWAP {vwap:.0f} EMA20 {ema20:.0f} EMA50 {ema50:.0f}")
+        else:
+            if price < vwap and price < ema20 and ema20 < ema50:
+                score += 1
+            else:
+                reasons.append(f"VWAP/EMA fail BEARISH: Price {price:.0f} VWAP {vwap:.0f} EMA20 {ema20:.0f} EMA50 {ema50:.0f} - breakdown nahi hua")
+
+        # 3. OI + Price Buildup - MIRROR
+        # BULLISH: Price UP + OI UP = Long Buildup (fresh buying). Price UP + OI DOWN = Short Covering = TRAP
+        # BEARISH: Price DOWN + OI UP = Short Buildup (fresh selling). Price DOWN + OI DOWN = Long Unwinding = TRAP
+        # Equity me OI nahi hota to volume se check hoga (neeche volume filter me), isliye yahan OI=0 ho to neutral
+        if oi_change_pct == 0 and price_change_pct == 0:
+            score += 1  # data nahi hai to neutral
+        elif is_bull:
+            if price_change_pct > 0 and oi_change_pct > 0:
+                score += 1
+            elif price_change_pct > 0 and oi_change_pct < 0:
+                reasons.append(f"OI trap BULLISH: Price {price_change_pct:+.2f}% par OI {oi_change_pct:+.1f}% - Short Covering hai, fresh buying nahi")
+            else:
+                reasons.append(f"OI+Price mismatch BULLISH: Price {price_change_pct:+.2f}% OI {oi_change_pct:+.1f}%")
+        else:
+            if price_change_pct < 0 and oi_change_pct > 0:
+                score += 1
+            elif price_change_pct < 0 and oi_change_pct < 0:
+                reasons.append(f"OI trap BEARISH: Price {price_change_pct:+.2f}% par OI {oi_change_pct:+.1f}% - Long Unwinding hai, fresh selling nahi")
+            else:
+                reasons.append(f"OI+Price mismatch BEARISH: Price {price_change_pct:+.2f}% OI {oi_change_pct:+.1f}%")
+
+        # 4. GEX Flip / Structure - MIRROR
+        if gex_flip and gex_flip > 0:
+            if is_bull:
+                if spot > gex_flip:
+                    score += 1
+                else:
+                    reasons.append(f"GEX trap BULLISH: Spot {spot:.0f} < Flip {gex_flip:.0f} - Negative gamma zone")
+            else:
+                if spot < gex_flip:
+                    score += 1
+                else:
+                    reasons.append(f"GEX trap BEARISH: Spot {spot:.0f} > Flip {gex_flip:.0f} - Positive gamma zone, PE trap")
+        else:
+            score += 1
+
+        # 5. Volume - Dono taraf SAME: 1.5x chahiye, nahi to fake breakout/breakdown
+        if avg_volume and avg_volume > 0 and volume > 0:
+            if volume > avg_volume * 1.5:
+                score += 1
+            else:
+                reasons.append(f"Volume weak: {volume:.0f} vs avg {avg_volume:.0f} (1.5x chahiye) - fake move ka risk")
+        else:
+            score += 1
+
+        # 6. Retest - Dono taraf SAME
+        if retest_done:
+            score += 1
+        else:
+            reasons.append("Retest nahi hua - seedha breakout/breakdown hai, fake ka risk")
+
+        # 7. VIX + PCR + Breadth - MIRROR
+        try:
+            _pcr = float(pcr or 1.0)
+        except:
+            _pcr = 1.0
+        if is_bull:
+            if vix_change <= 0.5 and 0.9 <= _pcr <= 1.35:
+                score += 1
+            else:
+                reasons.append(f"VIX/PCR fail BULLISH: VIX chg {vix_change:+.1f} PCR {_pcr:.2f}")
+        else:
+            # BEARISH ke liye VIX up + PCR low ya breadth weak hona chahiye
+            if vix_change >= -0.2 and _pcr < 1.0:
+                score += 1
+            else:
+                reasons.append(f"VIX/PCR fail BEARISH: VIX chg {vix_change:+.1f} PCR {_pcr:.2f} - breakdown me dum nahi")
+
+        # Extra Trap: S/R ke bahut paas ho to -1 - MIRROR, dono taraf
+        if is_bull and resistance and resistance > 0 and spot:
+            dist = abs(resistance - spot) / spot * 100
+            if dist < 0.3:
+                score = max(0, score - 1)
+                reasons.append(f"Resistance bahut paas BULLISH: {resistance:.0f} ({dist:.2f}% door) - trap risk")
+        if (not is_bull) and support and support > 0 and spot:
+            dist2 = abs(spot - support) / spot * 100
+            if dist2 < 0.3:
+                score = max(0, score - 1)
+                reasons.append(f"Support bahut paas BEARISH: {support:.0f} ({dist2:.2f}% door) - trap risk, breakdown fake ho sakta hai")
+
+        if score >= 6:
+            verdict = "STRONG BUY" if is_bull else "STRONG SELL"
+            # Option UI ke liye alias bhi de do taaki CE/PE wali jagah bhi samajh aaye
+            verdict_opt = "STRONG CE" if is_bull else "STRONG PE"
+            downgrade = False
+        elif score == 5:
+            verdict = "WEAK - WAIT"
+            verdict_opt = verdict
+            downgrade = True
+        else:
+            verdict = "NO TRADE"
+            verdict_opt = verdict
+            downgrade = True
+        return verdict, score, reasons, downgrade, verdict_opt
+    except Exception as e:
+        return "WEAK - WAIT", 5, [f"Overall calc error: {e}"], False, "WEAK - WAIT"
 
 # ================= V18.1 HIGH CONVICTION MATH ENGINE (Non-Destructive) =================
 # Ye module purane features ko hilaye bina add hua hai - sirf naya layer hai
@@ -2364,9 +2527,17 @@ class HighConvictionMathEngine:
             if scores.get("trend", 100) < 50:
                 _strong_reasons_v55.append("V55 Strong: Trend weak - HTF opposite")
                 _strong_penalty = True
-            # Structure agar resistance pe hai aur CE hai to trap
+            # Structure trap - MIRROR, dono taraf barabar (V55.2)
+            # CE/BULLISH ko resistance pe trap, PE/BEARISH ko support pe trap
             if ce_pe == "CE" and scores.get("structure", 100) < 40:
                 _strong_reasons_v55.append("V55 Strong: Resistance pe hai - CE trap risk")
+                _strong_penalty = True
+            if ce_pe == "PE" and scores.get("structure", 100) < 40:
+                _strong_reasons_v55.append("V55.2 Strong: Support pe hai - PE trap risk, breakdown fake ho sakta hai")
+                _strong_penalty = True
+            # Agar trend hi opposite hai to dono taraf penalty - pehle sirf ek taraf tha
+            if scores.get("structure", 100) < 25:
+                _strong_reasons_v55.append("V55.2 Strong: Structure bilkul weak hai - S/R ke beech phas gaya hai")
                 _strong_penalty = True
             if _strong_penalty:
                 # Conviction ko seedha 55% pe lao taaki min-conviction filter (65%) usko BLOCK kar de
@@ -5834,40 +6005,43 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         "trailing": f"Book 50% at Target 1 and trail Stop Loss to Entry. [Quarter-Kelly Size: {kelly_allocation}%].",
     }
 
-    # V55 STRONG CONFIRMATION - make_trade_idea me bhi apply
-    # idea banne ke baad bhi check: agar GEX Flip / VWAP / OI trap hai to confidence downgrade
+    # V55.2 OVERALL STRONG SIGNAL - make_trade_idea me apply - CE/PE dono ke liye SAME rule
+    # Bhai ka rule: Jo trade ban raha hai uska signal de - CE ho ya PE, BUY ho ya SELL
+    # Pehle wala code CE pe zyada strict tha, PE ko halka chhod deta tha. Ab dono barabar.
     try:
         _gex_flip_v55 = gex_data.get("gamma_flip", 0) if isinstance(gex_data, dict) else 0
         _vwap_v55 = market.get("vwap", entry_spot) if isinstance(market, dict) else entry_spot
-        # market me vwap nahi hai to entry_spot ko hi vwap maan lo (neutral)
         _spot_v55 = entry_spot
-        _ce_pe_v55 = "CE" if bullish else "PE"
-        # OI / Volume ka rough estimate - market dict se
+        # Direction: bullish=True -> BULLISH (CE/BUY), bullish=False -> BEARISH (PE/SELL)
+        _dir_v55 = "BULLISH" if bullish else "BEARISH"
         _oi_chg_v55 = 0
-        _vol_ratio_v55 = 1.0
         try:
             _oi_chg_v55 = float(market.get("oi_change_pct", 0) or 0)
         except:
             _oi_chg_v55 = 0
-        # Strong check ke liye: price_change ko market score se approximate karo
         _price_chg_v55 = 0.2 if bullish else -0.2
-        _verdict_v55, _score_v55, _reasons_v55, _down_v55 = calculate_strong_confirmation_v55(
+        # V55.2 generic function use karo - CE/PE ka fark andar hi handle hota hai
+        _verdict_v55, _score_v55, _reasons_v55, _down_v55, _verdict_opt_v55 = calculate_overall_strong_signal_v55_2(
             price=_spot_v55, vwap=_vwap_v55, ema20=_spot_v55, ema50=_spot_v55,
             price_change_pct=_price_chg_v55, oi_change_pct=_oi_chg_v55,
             spot=_spot_v55, gex_flip=_gex_flip_v55, max_pain=gex_data.get("max_pain", 0) if isinstance(gex_data, dict) else 0,
-            volume=0, avg_volume=0,  # volume data yahan nahi hai to filter ko neutral rakha hai
+            volume=0, avg_volume=0,
             vix_change=0, pcr=1.0,
-            htf_bullish=bool(bullish), retest_done=True,  # retest yahan force True taaki purane trades block na ho, asli retest check HighConviction me hai
-            ce_pe=_ce_pe_v55, resistance=resistance or 0, support=support or 0,
+            direction=_dir_v55, htf_bullish=bool(bullish), retest_done=True,
+            resistance=resistance or 0, support=support or 0,
         )
-        # idea dict me strong info add karo - UI / Telegram me dikhega
-        idea["strong_verdict"] = _verdict_v55
+        idea["strong_verdict"] = _verdict_v55  # STRONG BUY / STRONG SELL / WEAK / NO TRADE
+        idea["strong_verdict_opt"] = _verdict_opt_v55  # STRONG CE / STRONG PE - purane UI ke liye
         idea["strong_score"] = f"{_score_v55}/7"
         idea["strong_reasons"] = _reasons_v55
-        # Sirf tab downgrade karo jab GEX Flip clearly opposite ho (score <=4) - nahi to purana logic chalne do
+        idea["strong_direction"] = _dir_v55
+        # Dono taraf SAME downgrade rule: score <=4 ho to 85% -> 55% NO TRADE, chahe CE ho ya PE
         if _score_v55 <= 4 and confidence >= 75:
             idea["confidence"] = 55
-            idea["why"] = idea.get("why", "") + f" | V55 Strong: {_verdict_v55} ({_score_v55}/7) - {' | '.join(_reasons_v55[:2])} - Downgraded 85% -> 55% NO TRADE"
+            idea["why"] = idea.get("why", "") + f" | V55.2 Overall Strong: {_verdict_v55} ({_score_v55}/7) [{_dir_v55}] - {' | '.join(_reasons_v55[:2])} - Downgraded 85% -> 55% NO TRADE"
+        elif _score_v55 == 5 and confidence >= 80:
+            # 5/7 ho to WAIT - poora block nahi, par full qty mat do
+            idea["why"] = idea.get("why", "") + f" | V55.2 Overall: WEAK - WAIT ({_score_v55}/7) [{_dir_v55}] - Half qty / wait karo"
     except Exception as _e55:
         idea["strong_verdict"] = "CHECK FAILED"
         idea["strong_score"] = "N/A"
@@ -6444,12 +6618,65 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
             f"3) Time-Stop Exit Rule: Exit position if stock does not clear Target 1 within {math_metrics['max_hold_bars']} candles."
         )
 
+    # V55.2 OVERALL STRONG SIGNAL - Equity ke liye bhi SAME rule (BUY/SELL dono)
+    # Pehle equity me sirf composite_score dekh ke BUY/SELL de deta tha, VWAP/OI trap check nahi tha.
+    # Ab BUY ho ya SELL, dono ke liye VWAP + EMA + Volume + S/R trap check hoga.
+    _eq_strong_verdict = "N/A"
+    _eq_strong_score = "N/A"
+    _eq_strong_reasons = []
+    try:
+        _eq_dir = "BULLISH" if action_dir == "BUY" else ("BEARISH" if action_dir == "SELL" else "NEUTRAL")
+        if _eq_dir in ("BULLISH", "BEARISH"):
+            # df se volume nikalo - last candle vs avg
+            try:
+                _vol_col = None
+                for _c in ["volume", "Volume", "VOLUME"]:
+                    if _c in df.columns:
+                        _vol_col = _c
+                        break
+                if _vol_col is not None:
+                    _vol_last = float(df[_vol_col].iloc[-1] or 0)
+                    _vol_avg = float(df[_vol_col].tail(20).mean() or 0)
+                else:
+                    _vol_last, _vol_avg = 0, 0
+            except:
+                _vol_last, _vol_avg = 0, 0
+            # price change - last 2 candles se
+            try:
+                _pc = float((df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2] * 100) if len(df) >= 2 else 0
+            except:
+                _pc = 0.2 if _eq_dir == "BULLISH" else -0.2
+            _v, _s, _r, _d, _vo = calculate_overall_strong_signal_v55_2(
+                price=last, vwap=vwap, ema20=ema20, ema50=ema50, ema200=ema200,
+                price_change_pct=_pc, oi_change_pct=0,
+                spot=last, gex_flip=0, max_pain=0,
+                volume=_vol_last, avg_volume=_vol_avg,
+                vix_change=0, pcr=1.0,
+                direction=_eq_dir, htf_bullish=(_eq_dir == "BULLISH"), retest_done=True,
+                resistance=resistance, support=support,
+                rsi=rsi, adx=adx,
+            )
+            _eq_strong_verdict = _v
+            _eq_strong_score = f"{_s}/7"
+            _eq_strong_reasons = _r
+            # Agar strong fail hai to BUY/SELL ko WAIT me downgrade karo - dono taraf SAME
+            if _s <= 4 and action_dir in ("BUY", "SELL"):
+                reasons.append(f"V55.2 Overall Strong: {_v} ({_s}/7) [{_eq_dir}] - {' | '.join(_r[:2])} - Isliye BUY/SELL ko WAIT kiya")
+                stance = f"HOLD / WAIT - V55.2 Strong Fail ({_s}/7) [{_eq_dir}]"
+                action_dir = "WAIT"
+                badge = "prediction-card-gold"
+    except Exception as _e_eq:
+        _eq_strong_reasons = [str(_e_eq)]
+
     return {
         "symbol": stock_info["symbol"],
         "name": stock_info["name"],
         "price": last,
         "stance": stance,
         "action_dir": action_dir,
+        "strong_verdict": _eq_strong_verdict,
+        "strong_score": _eq_strong_score,
+        "strong_reasons": _eq_strong_reasons,
         "badge": badge,
         "score": composite_score,
         "tech_score": tech_score,
