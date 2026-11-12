@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V55.14 FINAL - 13 Nov 2026 - FAST - Chain 15s cache + Spot 8s cache + SCAN clear hataya + warm_cookies 16s->3s + Macro parallel - 30-40s SCAN ab 8-12s
+V55.17 FINAL - 13 Nov 2026 - GLOBAL LIVE JAISA INDIAN - 8 sec cache + Yahoo LIVE only + Stooq average band + timestamp - Kal ka prediction global live se hi bane
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
@@ -4295,6 +4295,24 @@ UNIVERSAL_EQUITIES = load_5000_equity_master()
 # =====================================================================
 # 10. GLOBAL MACRO & COMMODITIES ENGINE
 # =====================================================================
+# V55.17 GLOBAL LIVE JAISA INDIAN - Global ke live numbers se hi kal ka prediction banta hai, isliye Indian spot jaisa LIVE chahiye
+# Indian: fetch_verified_spot - 8 sec cache, Yahoo LIVE, NSE LIVE, koi Stooq averaging nahi, koi kal ka close nahi
+# Global pehle: session_state me ghanto cache + Yahoo+Stooq average (kal ka close mix) + cash stale
+# Ab: Global bhi 8 sec cache, Yahoo LIVE only, Stooq sirf last resort STALE tag ke saath, timestamp ke saath
+_global_macro_cache_v55 = {"data": None, "ts": 0}
+def _is_us_market_open_ist():
+    # US Market 9:30-16:00 ET = 19:00-01:30 IST (winter) / 18:30-01:00 IST (summer). Rough check: IST hour 19-23 ya 0-1 me open hai
+    try:
+        from datetime import datetime as _dt17
+        import pytz as _pz17
+        _ist = _pz17.timezone('Asia/Kolkata')
+        _now = _dt17.now(_ist)
+        _h = _now.hour + _now.minute/60.0
+        # 19:00-23:59 ya 00:00-01:30 -> US open (approx, DST ke hisab se 30 min idhar-udhar ho sakta hai, par futures se cover ho jayega)
+        return (_h >= 19.0) or (_h <= 1.5)
+    except:
+        return False
+
 class GlobalMacroEngine:
     def __init__(self):
         self.session = requests.Session()
@@ -4353,18 +4371,35 @@ class GlobalMacroEngine:
             return s_p, s_pct, "STOOQ_ONLY"
         return None, 0.0, "FAILED"
     def fetch_macro_quotes(self) -> Dict[str, Any]:
+        # V55.17: 8 sec cache - Indian spot jaisa. Pehle session_state me ghanto cache rehta tha, live nahi tha
+        try:
+            import time as _t17
+            if _global_macro_cache_v55.get("data") and (_t17.time() - _global_macro_cache_v55.get("ts", 0) < 8):
+                return _global_macro_cache_v55["data"]
+        except:
+            pass
         out = {
             "GIFT_NIFTY": {"symbol": "Gift Nifty Spread", "price": None, "change_pct": 0.0, "status": "NEUTRAL"},
             "NASDAQ": {"symbol": "Nasdaq 100", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
             "CRUDE_OIL": {"symbol": "Brent Crude Oil", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
             "GOLD": {"symbol": "Gold (MCX/COMEX)", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
         }
-        # NASDAQ - V55.9 FIX: Pehle ^IXIC (Composite) fetch karke Nasdaq 100 likhte the, isliye 25,560 dikhta tha jabki asli 100 hai 28,100+
-        # Ab ^NDX (Nasdaq 100) hi fetch karenge, Stooq ndx se verify karke
+        # NASDAQ / NDX - V55.16 FIX: User ki WSN screenshot se saaf hua - App ne KAL wala +2.29% dikhaya, jabki LIVE -0.09% tha
+        # Asli jhol: _verify_multi Yahoo (LIVE 28,347) + Stooq (KAL KA CLOSE 28,374) ka AVERAGE kar deta tha, aur Yahoo Cloud pe 403 de to sirf Stooq bachta tha = hamesha kal wala +2.29%
+        # Stooq DAILY hai, intraday ke liye relevant hi nahi hai. Isliye NDX ke liye Stooq AVERAGE BAND - sirf Yahoo LIVE ^NDX lo, nahi mila to NQ=F futures lo, Stooq sirf last resort aur uspe STALE likho
         try:
-            _p, _pct, _src = self._verify_multi("^NDX", "ndx")
-            if _p and _p > 0:
-                out["NASDAQ"] = {"symbol": "Nasdaq 100", "price": _p, "change_pct": _pct, "status": "GREEN" if _pct >= 0.25 else ("RED" if _pct <= -0.25 else "YELLOW"), "source": _src}
+            _p_live, _pct_live = self._fetch_yahoo_one("^NDX")
+            _p_fut2, _pct_fut2 = self._fetch_yahoo_one("NQ=F")
+            if _p_live and _p_live > 0:
+                # Yahoo LIVE mil gaya - yehi aaj ka asli hai, WSN wale 28,347 -0.09% se match karega
+                out["NASDAQ"] = {"symbol": "Nasdaq 100 (Live)", "price": _p_live, "change_pct": _pct_live, "status": "GREEN" if _pct_live >= 0.25 else ("RED" if _pct_live <= -0.25 else "YELLOW"), "source": "YAHOO_^NDX_LIVE", "fut_price": _p_fut2, "fut_pct": _pct_fut2, "note": "Live cash, Stooq average nahi"}
+            elif _p_fut2 and _p_fut2 > 0:
+                out["NASDAQ"] = {"symbol": "Nasdaq 100 Fut (Live)", "price": _p_fut2, "change_pct": _pct_fut2, "status": "GREEN" if _pct_fut2 >= 0.25 else ("RED" if _pct_fut2 <= -0.25 else "YELLOW"), "source": "YAHOO_NQ=F_FUTURES", "note": "Cash nahi mila, futures live"}
+            else:
+                # Dono Yahoo fail to Stooq lo, par STALE likh ke - taaki user ko pata chale ye kal ka hai, aaj ka nahi
+                _p_s, _pct_s = self._fetch_stooq_one("ndx")
+                if _p_s and _p_s > 0:
+                    out["NASDAQ"] = {"symbol": "Nasdaq 100 (STALE - Kal ka Close)", "price": _p_s, "change_pct": _pct_s, "status": "YELLOW", "source": "STOOQ_ONLY_STALE", "note": "Yahoo fail, kal ka close dikhaya"}
         except:
             pass
         # BRENT - BZ=F Yahoo + Stooq brz
@@ -4374,11 +4409,16 @@ class GlobalMacroEngine:
                 out["CRUDE_OIL"] = {"symbol": "Brent Crude Oil", "price": _p, "change_pct": _pct, "status": "RED" if _pct >= 1.0 else ("GREEN" if _pct <= -1.0 else "YELLOW"), "source": _src}
         except:
             pass
-        # GOLD - V55.9 NEW: Pehle kabhi fetch hi nahi hota tha, sirf Active likha tha. Ab GC=F + Stooq xauusd se aayega
+        # GOLD - V55.15 FIX: GC=F (COMEX futures) aur XAUUSD (spot) ko average mat karo - dono alag hai, $100-250 ka fark hota hai
+        # Screenshot me Gold $3,879 -3.02% tha, asli COMEX $4,001 / Spot $4,129 tha. Averaging se galat bana tha. Ab sirf GC=F futures hi lo
         try:
-            _p, _pct, _src = self._verify_multi("GC=F", "xauusd")
-            if _p and _p > 0:
-                out["GOLD"] = {"symbol": "Gold (COMEX)", "price": _p, "change_pct": _pct, "status": "GREEN" if _pct >= 0.25 else ("RED" if _pct <= -0.25 else "YELLOW"), "source": _src}
+            _p_g, _pct_g, _src_g = self._fetch_yahoo_one("GC=F")
+            if _p_g and _p_g > 0:
+                out["GOLD"] = {"symbol": "Gold (COMEX Fut)", "price": _p_g, "change_pct": _pct_g, "status": "GREEN" if _pct_g >= 0.25 else ("RED" if _pct_g <= -0.25 else "YELLOW"), "source": f"GC=F_{_src_g}"}
+            else:
+                _p2, _pct2, _src2 = self._verify_multi("GC=F", "xauusd")
+                if _p2 and _p2 > 0:
+                    out["GOLD"] = {"symbol": "Gold (COMEX Fut)", "price": _p2, "change_pct": _pct2, "status": "GREEN" if _pct2 >= 0.25 else ("RED" if _pct2 <= -0.25 else "YELLOW"), "source": _src2}
         except:
             pass
         # GIFT NIFTY - V55.10 FIX: Pehle NIFTY ke 5-day % ko Gift ka % bana diya tha, isliye +3.11% dikha jabki asli -0.01% tha
@@ -4422,6 +4462,18 @@ class GlobalMacroEngine:
                     pass
             if _gift_price and _gift_price > 0:
                 out["GIFT_NIFTY"] = {"symbol": "Gift Nifty", "price": _gift_price, "change_pct": _gift_pct, "status": "GREEN" if _gift_pct >= 0.1 else ("RED" if _gift_pct <= -0.1 else "NEUTRAL"), "source": "NSE_IX_PROXY"}
+        except:
+            pass
+        # V55.17: Timestamp + 8 sec cache store - taaki prediction ko pata chale data kitna fresh hai
+        try:
+            import time as _t17b
+            from datetime import datetime as _dt17b
+            import pytz as _pz17b
+            _ts_str = _dt17b.now(_pz17b.timezone('Asia/Kolkata')).strftime("%H:%M:%S IST")
+            out["_live_ts"] = _ts_str
+            out["_is_live"] = True
+            _global_macro_cache_v55["data"] = out
+            _global_macro_cache_v55["ts"] = _t17b.time()
         except:
             pass
         return out
@@ -5510,6 +5562,7 @@ def calculate_indian_market_prediction(macro_data: Dict[str, Any], domestic_pcr:
     fii_score = fii_dii_info.get("score", 0) if fii_dii_info else 0
     pcr = domestic_pcr if domestic_pcr else 1.0
 
+    # V55.17: Stale NDX se gap_points 107 pts galat ho jata tha (2.29*45=103 vs -0.09*45=-4). Isliye agar macro_data stale hai to note karo
     gap_points = (nasdaq_pct * 45.0) - (crude_pct * 25.0) + (fii_score * 35.0) + ((pcr - 1.0) * 80.0)
 
     if gap_points >= 40:
@@ -7961,11 +8014,24 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         # V55.7 RESEARCH BLANK FIX - Pehle 3 slow feed dobara fetch karta tha = 30+ sec blank, ab cached se turant aayega
         macro_data = {}
         try:
+            # V55.17: Display me bhi LIVE chahiye - session_state cache ghanto purana ho sakta hai, isliye timestamp check karo
             _cached_macro = st.session_state.get('_cached_macro_quotes', {})
-            if _cached_macro:
+            _cached_ts = st.session_state.get('_cached_macro_ts', 0)
+            try:
+                import time as _t17c
+                _age = _t17c.time() - float(_cached_ts or 0)
+            except:
+                _age = 999
+            if _cached_macro and _age < 8:
                 macro_data = _cached_macro
             else:
                 macro_data = global_macro_inst.fetch_macro_quotes() if global_macro_inst else {}
+                try:
+                    import time as _t17d
+                    st.session_state['_cached_macro_quotes'] = macro_data
+                    st.session_state['_cached_macro_ts'] = _t17d.time()
+                except:
+                    pass
                 try:
                     st.session_state['_cached_macro_quotes'] = macro_data
                 except:
@@ -8040,7 +8106,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         m1, m2, m3, m4 = st.columns(4)
         with m1:
             nq = macro_data.get("NASDAQ", {})
-            st.metric("Nasdaq 100 (Tech Beta)", f"${fmt(nq.get('price'))}" if nq.get("price") else "Active", delta=f"{nq.get('change_pct', 0.0):+.2f}%" if nq.get("price") else "Cues Stable")
+            st.metric("Nasdaq 100 (Live)", f"${fmt(nq.get('price'))}" if nq.get("price") else "Active", delta=f"{nq.get('change_pct', 0.0):+.2f}%" if nq.get("price") else "Cues Stable")
         with m2:
             cr = macro_data.get("CRUDE_OIL", {})
             st.metric("Brent Crude (Oil)", f"${fmt(cr.get('price'))}" if cr.get("price") else "Active", delta=f"{cr.get('change_pct', 0.0):+.2f}%" if cr.get("price") else "Normal", delta_color="inverse")
