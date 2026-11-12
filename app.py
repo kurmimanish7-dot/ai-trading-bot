@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V55.3 DEFINITIVE FIX - 13 Nov 2026 - SessionInfo / Bad message format JAD SE FIX
+V55.4 FINAL FIX - 13 Nov 2026 - SessionInfo / Bad message format - Telegram poller + cache clear + instant exit BAND
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
@@ -616,8 +616,7 @@ def get_persist(key, default):
 
 # V17.3 STABLE - No auto-refresh to prevent buffering
 if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
+    st.rerun()  # V55.4: cache clear hataya - clear() + rerun ek saath SessionInfo error deta hai
 
 st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
 
@@ -636,11 +635,13 @@ def telegram_callback_poller():
         # print(f"Poller error: {e}")
         pass
 
-# Call poller on every run - will check Telegram YES/NO
-try:
-    telegram_callback_poller()
-except:
-    pass
+# V55.4 - Telegram poller AUTO-RUN BAND - Yehi load hote hi error la raha tha
+# Pehle har page load pe Telegram API ko 3 sec tak call karta tha, Streamlit ka frontend tab tak wait karta tha
+# aur agar Telegram slow hota tha to frontend ko lagta tha session tut gaya -> "Bad message format"
+# Ab poller sirf tab chalega jab tu Telegram ON karega aur CHECK button dabayega, har load pe nahi.
+# Isliye ab khulte hi error nahi aayega. Telegram YES/NO chahiye to sidebar me CHECK dabana.
+# telegram_callback_poller() - AUTO CALL BAND, manual hi chalega
+pass
 
 
 
@@ -6849,8 +6850,7 @@ except:
 st.session_state.paper_portfolio["daily_loss_limit"] = max_loss_input
 
 if st.sidebar.button(f"{REFRESH} Force Refresh All Caches", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
+    st.rerun()  # V55.4: cache clear hataya - clear() + rerun ek saath SessionInfo error deta hai
 
 # Global Header Status Bar
 col_t1, col_t2, col_t3, col_t4 = st.columns(4)
@@ -7469,34 +7469,37 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         except Exception as e:
             pass
     
-    # V54 NEW: Check Telegram YES/NO callbacks first - Direct trade from Telegram
+    # V55.4 - Telegram callback check - SIRF tab jab Telegram ON ho, har load pe nahi
+    # Har load pe Telegram API call karna hi SessionInfo error ki jad thi
     try:
-        handle_telegram_callback_query()
+        _tg_on = st.session_state.get('tg_enabled', False)
+        _last_tg = st.session_state.get('_last_tg_poll', 0)
+        import time as _t55
+        if _tg_on and (_t55.time() - _last_tg > 30):
+            st.session_state['_last_tg_poll'] = _t55.time()
+            handle_telegram_callback_query()
     except Exception as e:
         print(f"Telegram callback check error: {e}")
     
     # Call it before ticker
     render_pending_confirmations_ui()
 
-    @live_fragment(run_every=15)  # V55 FIX: 0.5s -> 15s, SessionInfo race fix
-    def _instant_exit_v22():
-        try:
+    # V55.4 - Instant exit - SIRF tab jab position khuli ho, har load pe nahi
+    # Har load pe auto_check_and_exit_positions() call karna bhi SessionInfo ko chhedta tha
+    try:
+        _has_pos = bool(st.session_state.get('paper_portfolio', {}).get('positions'))
+        if _has_pos:
             auto_check_and_exit_positions()
-        except:
-            pass
-    _instant_exit_v22()
+    except:
+        pass
 
     # V55 FIX: Duplicate instant-exit hataya - _instant_exit_v22 hi kaafi hai.
     # Pehle 2 same fragment 0.5s pe chalte the, isliye SessionInfo error har 5 sec aata tha.
     # Ab sirf 1 fragment, 15s pe.
 
-    @live_fragment(run_every=15)  # V55 FIX: 1s -> 15s
-    def _tg_poll_v19():
-        try:
-            handle_telegram_callback_query()
-        except:
-            pass
-    _tg_poll_v19()
+    # V55.4 - _tg_poll_v19 BAND - Har 15 sec pe Telegram poll karna band, yehi error la raha tha
+    # Ab sirf manual CHECK se hi Telegram poll hoga
+    pass
 
 
     
@@ -7670,8 +7673,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         st.markdown(f"### {SHIELD} Live Position Exit Monitor ({tf['smartapi']}) - 🔴 LIVE STREAMING")
         if st.button(f"🔄 REFRESH LIVE EXIT ({tf['smartapi']}) - Spot + LTP LIVE", key=f"refresh_exit_{tf['smartapi']}", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+            st.rerun()  # V55.4: cache clear hataya
         st.caption(f"🔴 LIVE | Last: {datetime.now(IST).strftime('%H:%M:%S IST')} | Spot + Premium LTP live | Telegram ON hai to EMERGENCY EXIT pe alert ayega")
         
         # Original header removed, now combined
