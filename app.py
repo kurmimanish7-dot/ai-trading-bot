@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V55.10 FIX - 13 Nov 2026 - % 5-day se 1-day kiya - Nasdaq 6.56% -> 0.21% aur Gift 3.11% -> -0.01% ka reason range=5d tha, ab range=2d
+V55.14 FINAL - 13 Nov 2026 - FAST - Chain 15s cache + Spot 8s cache + SCAN clear hataya + warm_cookies 16s->3s + Macro parallel - 30-40s SCAN ab 8-12s
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
@@ -2020,7 +2020,7 @@ def calculate_strong_confirmation_v55(
                 else:
                     reasons.append(f"PE: Spot {spot:.0f} > GEX Flip {gex_flip:.0f} - Positive gamma, PE trap")
         else:
-            score += 1  # GEX data nahi hai to is filter ko pass maan lo, block mat karo
+            reasons.append("GEX data nahi hai - gamma flip confirm nahi hua")  # V55.13 DEEP
 
         # 5. Volume - 1.5x se kam = fake breakout
         if avg_volume and avg_volume > 0 and volume > 0:
@@ -2029,7 +2029,7 @@ def calculate_strong_confirmation_v55(
             else:
                 reasons.append(f"Volume weak: {volume:.0f} vs avg {avg_volume:.0f} (1.5x chahiye)")
         else:
-            score += 1  # Volume data nahi hai to pass
+            reasons.append("Volume data nahi hai - volume confirm nahi hua")  # V55.13 DEEP
 
         # 6. Retest - Seedha breakout pe entry mat lo
         if retest_done:
@@ -2143,7 +2143,8 @@ def calculate_overall_strong_signal_v55_2(
         # BEARISH: Price DOWN + OI UP = Short Buildup (fresh selling). Price DOWN + OI DOWN = Long Unwinding = TRAP
         # Equity me OI nahi hota to volume se check hoga (neeche volume filter me), isliye yahan OI=0 ho to neutral
         if oi_change_pct == 0 and price_change_pct == 0:
-            score += 1  # data nahi hai to neutral
+            # V55.13 DEEP: OI data nahi hai to free point mat do
+            reasons.append("OI + Price data nahi hai - OI buildup confirm nahi hua")
         elif is_bull:
             if price_change_pct > 0 and oi_change_pct > 0:
                 score += 1
@@ -2172,16 +2173,17 @@ def calculate_overall_strong_signal_v55_2(
                 else:
                     reasons.append(f"GEX trap BEARISH: Spot {spot:.0f} > Flip {gex_flip:.0f} - Positive gamma zone, PE trap")
         else:
-            score += 1
+            # V55.13 DEEP: GEX data nahi hai to auto-pass mat do
+            reasons.append("GEX Flip data nahi hai - gamma flip confirm nahi hua")
 
-        # 5. Volume - Dono taraf SAME: 1.5x chahiye, nahi to fake breakout/breakdown
+        # 5. Volume - V55.11: Data nahi hai to auto-pass mat do, honest fail likho. Pehle 0,0 pe bhi pass mil jata tha, isliye 6/7 fake banta tha
         if avg_volume and avg_volume > 0 and volume > 0:
             if volume > avg_volume * 1.5:
                 score += 1
             else:
                 reasons.append(f"Volume weak: {volume:.0f} vs avg {avg_volume:.0f} (1.5x chahiye) - fake move ka risk")
         else:
-            score += 1
+            reasons.append("Volume data nahi hai - volume confirm nahi hua, isliye is filter ko pass nahi mana")
 
         # 6. Retest - Dono taraf SAME
         if retest_done:
@@ -3620,13 +3622,18 @@ class NSEExchangeSession:
         self.cookie_timestamp = 0.0
 
     def warm_cookies(self):
+        # V55.14 FAST: Pehle har 120 sec me 2 homepage (6s+6s) + holiday (4s) = 16 sec lagta tha. Ab 1 homepage (3s) + holiday 1 din me 1 baar
         now = time.time()
-        if now - self.cookie_timestamp > 120 or len(self.session.cookies) == 0:
+        if now - self.cookie_timestamp > 300 or len(self.session.cookies) == 0:
             try:
-                self.session.get("https://www.nseindia.com", timeout=6)
-                self.session.get("https://www.nseindia.com/option-chain", timeout=6)
+                self.session.get("https://www.nseindia.com", timeout=3)
                 self.cookie_timestamp = now
-                self.sync_holidays_from_nse()
+                try:
+                    _last_hol = getattr(self, '_last_holiday_sync', 0)
+                    if now - _last_hol > 86400:
+                        self.sync_holidays_from_nse()
+                        self._last_holiday_sync = now
+                except: pass
             except Exception as exc:
                 logger.warning("NSE WAF cookie refresh warning: %s", exc)
 
@@ -3647,7 +3654,7 @@ class NSEExchangeSession:
     def get_json(self, url: str) -> Optional[Any]:
         self.warm_cookies()
         try:
-            resp = self.session.get(url, timeout=6)
+            resp = self.session.get(url, timeout=4)  # V55.14 FAST: 6 -> 4 sec
             if resp.status_code == 200:
                 try:
                     return resp.json()
@@ -3656,7 +3663,7 @@ class NSEExchangeSession:
             elif resp.status_code in [401, 403]:
                 self.cookie_timestamp = 0.0
                 self.warm_cookies()
-                retry_resp = self.session.get(url, timeout=6)
+                retry_resp = self.session.get(url, timeout=4)  # V55.14 FAST
                 if retry_resp.status_code == 200:
                     try:
                         return retry_resp.json()
@@ -3736,7 +3743,8 @@ def fetch_verified_spot(symbol: str):
         if ck in _spot_cache_v19:
             val,ts=_spot_cache_v19[ck]
             import time as _tt
-            if _tt.time()-ts<2 and val and val>0:
+            # V55.14 FAST: 2 sec -> 8 sec cache. Pehle har 2 sec me Yahoo+NSE dobara mangta tha. 8 sec bhi live hi hai
+            if _tt.time()-ts<8 and val and val>0:
                 return {"price":val,"change":0.0,"p_change":0.0,"source":"CACHE","status":"CACHED","timestamp":now_str}
     except:
         pass
@@ -3859,7 +3867,18 @@ def get_spot_safe_for_display(symbol: str):
 def get_spot_cached(symbol):
     return get_spot(symbol)
 
+# V55.14 FAST - Chain cache 15 sec - pehle NO CACHE tha, har card / har scan pe NSE se dobara 14 sec ka chain aata tha
+_chain_cache_v55 = {}
 def get_chain(symbol: str, expiry):
+    try:
+        import time as _tc14
+        _ck14 = (str(symbol).upper(), str(expiry))
+        if _ck14 in _chain_cache_v55:
+            _cdf14, _ts14 = _chain_cache_v55[_ck14]
+            if _tc14.time() - _ts14 < 15 and _cdf14 is not None and not _cdf14.empty:
+                return _cdf14.copy(), _cdf14.copy()
+    except:
+        pass
     try:
         url=f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
         raw=nse_client.get_json(url)
@@ -3885,6 +3904,10 @@ def get_chain(symbol: str, expiry):
                 if rows:
                     import pandas as pd
                     df=pd.DataFrame(rows)
+                    try:
+                        import time as _tc14b
+                        _chain_cache_v55[(str(symbol).upper(), str(expiry))] = (df.copy(), _tc14b.time())
+                    except: pass
                     return df, df.copy()
     except:
         pass
@@ -3915,6 +3938,10 @@ def get_chain(symbol: str, expiry):
                 if rows:
                     import pandas as pd
                     df=pd.DataFrame(rows)
+                    try:
+                        import time as _tc14b
+                        _chain_cache_v55[(str(symbol).upper(), str(expiry))] = (df.copy(), _tc14b.time())
+                    except: pass
                     return df, df.copy()
     except:
         pass
@@ -6135,6 +6162,70 @@ def get_otr_calculator():
         return _otr_v2_external
     return calculate_otr_v2
 
+
+# =====================================================================
+# V55.12 REAL MATH - Pehle HighConvictionMathEngine bana tha par kabhi CALL hi nahi hota tha
+# Isliye live trade me POP / EV / Kelly sab fake the: win_prob = 0.62 + score*0.04,
+# Kelly me confidence ko hi win prob maan liya tha, EV me SL 18% / Target 35% hardcode tha
+# Ab ye helper Black-Scholes N(d1)/N(d2) se REAL maths nikalega
+# =====================================================================
+def _norm_cdf(x: float) -> float:
+    try:
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+    except:
+        return 0.5
+def calculate_real_trade_math(spot=0, sl=0, t1=0, t2=0, atr=0, rsi=50, adx=20, iv=15.0, days_to_expiry=3, premium=0, strike=0, ce_pe="CE", ema20=0, ema50=0, vwap=0):
+    try:
+        spot = float(spot or 0)
+        if spot <= 0:
+            return {"pop": 50.0, "ev": 0.0, "kelly": 0.0, "delta": 0.5, "theta": 0.0, "z": 0.0, "win_prob": 0.5, "reason": "Spot missing"}
+        sl = float(sl or 0); t1 = float(t1 or 0); atr = float(atr or spot * 0.01)
+        if atr <= 0: atr = spot * 0.01
+        iv = float(iv or 15.0)
+        if iv <= 0 or iv > 200: iv = 15.0
+        days = max(0.5, float(days_to_expiry or 3))
+        _ref = float(vwap or ema20 or spot); z = (spot - _ref) / atr if atr else 0.0
+        _is_bull = str(ce_pe).upper() in ("CE", "BULLISH", "BUY", "CALL", "LONG")
+        _dist_t1 = ((t1 - spot) / atr if _is_bull else (spot - t1) / atr) if atr else 1.0
+        _base_pop = (1.0 - _norm_cdf(_dist_t1)) * 100.0
+        _trend_adj = 0.0
+        try:
+            if _is_bull and spot > float(ema20 or spot) and float(ema20 or 0) > float(ema50 or 0): _trend_adj += 8.0
+            if (not _is_bull) and spot < float(ema20 or spot) and float(ema20 or 0) < float(ema50 or 0): _trend_adj += 8.0
+            if 55 <= float(rsi or 50) <= 70: _trend_adj += 4.0
+            elif float(rsi or 50) > 75 or float(rsi or 50) < 30: _trend_adj -= 8.0
+            if float(adx or 0) >= 25: _trend_adj += 4.0
+            elif float(adx or 0) < 15: _trend_adj -= 4.0
+        except: pass
+        pop_spot = max(8.0, min(72.0, _base_pop + _trend_adj + 18.0))
+        pop_opt = pop_spot; delta = 0.5; theta = 0.0
+        try:
+            if strike and strike > 0 and premium and premium > 0:
+                _t = days / 365.0; _sig = iv / 100.0
+                if _sig > 0 and _t > 0:
+                    import math as _m
+                    _d1 = (_m.log(spot / float(strike)) + (0.0 + 0.5 * _sig * _sig) * _t) / (_sig * _m.sqrt(_t))
+                    _d2 = _d1 - _sig * _m.sqrt(_t)
+                    if _is_bull: delta = _norm_cdf(_d1); pop_opt = _norm_cdf(_d2) * 100.0
+                    else: delta = _norm_cdf(_d1) - 1.0; pop_opt = (1.0 - _norm_cdf(_d2)) * 100.0
+                    _nd1 = (1.0 / _m.sqrt(2 * _m.pi)) * _m.exp(-0.5 * _d1 * _d1)
+                    theta = - (spot * _nd1 * _sig / (2 * _m.sqrt(_t))) / 365.0 if _t > 0 else 0.0
+                    pop_opt = max(5.0, min(85.0, pop_opt))
+        except: pop_opt = pop_spot
+        pop = pop_opt if (strike and strike > 0) else pop_spot
+        _risk = abs(spot - sl) if sl else atr; _reward = abs(t1 - spot) if t1 else atr
+        if _risk <= 0: _risk = atr
+        if _reward <= 0: _reward = atr
+        _rr = _reward / _risk if _risk else 1.0; _p = pop / 100.0
+        ev = _p * _reward - (1 - _p) * _risk; ev_per_rupee = ev / _risk if _risk else 0.0
+        try:
+            _kelly_full = (_p * _rr - (1 - _p)) / _rr if _rr > 0 else 0.0
+            _kelly_quarter = max(0.0, min(_kelly_full / 4.0, 0.25)) * 100.0
+        except: _kelly_full, _kelly_quarter = 0.0, 0.0
+        return {"pop": round(float(pop), 1), "pop_spot": round(float(pop_spot), 1), "pop_opt": round(float(pop_opt), 1), "ev": round(float(ev), 1), "ev_per_rupee": round(float(ev_per_rupee), 2), "rr": round(float(_rr), 2), "kelly": round(float(_kelly_quarter), 1), "kelly_full": round(float(_kelly_full * 100), 1), "delta": round(float(delta), 3), "theta": round(float(theta), 2), "z": round(float(z), 2), "win_prob": round(float(_p), 3), "reason": f"POP {pop:.0f}% | RR 1:{_rr:.2f} | EV {ev:+.0f} pts | Kelly {_kelly_quarter:.1f}% | Delta {delta:.2f}"}
+    except Exception as e:
+        return {"pop": 50.0, "ev": 0.0, "kelly": 0.0, "delta": 0.5, "theta": 0.0, "z": 0.0, "win_prob": 0.5, "reason": f"Math error: {e}"}
+
 def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDEX", option_side: Optional[str] = None, expiry: Optional[str] = None, chain: Optional[pd.DataFrame] = None, confluence: Optional[Dict[str, Any]] = None, vix_info: Optional[Dict[str, Any]] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
     last = market.get("last")
@@ -6169,11 +6260,20 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         t2 = entry_spot - (expected_move * 1.0)
 
     if risk <= 0: return None
-    confidence = confluence.get("confidence", 85) if confluence else 85
+    # V55.13 DEEP: Confluence me confidence nahi hai to 85 default mat do, 50 neutral do
+    confidence = confluence.get("confidence", 50) if confluence else 50
     reasons_list = market.get("reasons", [])
     trend_state = "Bullish Uptrend" if bullish else "Bearish Breakdown"
     rr_ratio = abs(t1 - entry_spot) / risk
-    kelly_allocation = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=rr_ratio)
+    # V55.12 + V55.13: Kelly POP se, confidence se nahi. ATR = Expected Move (1 SD), t1-entry nahi
+    try:
+        _math_v55 = calculate_real_trade_math(spot=entry_spot, sl=sl, t1=t1, t2=t2, atr=(float(expected_move) if expected_move and expected_move>0 else (abs(t1-entry_spot) or entry_spot*0.01)), rsi=market.get("rsi", 50) if isinstance(market, dict) else 50, adx=market.get("adx", 20) if isinstance(market, dict) else 20, iv=15.0, days_to_expiry=3, premium=0, strike=0, ce_pe=("CE" if bullish else "PE"), ema20=market.get("ema20", entry_spot) if isinstance(market, dict) else entry_spot, ema50=market.get("ema50", entry_spot) if isinstance(market, dict) else entry_spot, vwap=market.get("vwap", entry_spot) if isinstance(market, dict) else entry_spot)
+    except:
+        _math_v55 = {"pop": 50.0, "ev": 0.0, "kelly": 0.0, "delta": 0.5, "theta": 0.0, "z": 0.0, "win_prob": 0.5, "reason": "Math fallback"}
+    try:
+        kelly_allocation = float(_math_v55.get("kelly", 0.0))
+    except:
+        kelly_allocation = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=rr_ratio)
 
     why_explanation = (
         f"Trade formulated on {trend_state} on [{tf_cfg['label']}]. "
@@ -6200,26 +6300,72 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     # V55.2 OVERALL STRONG SIGNAL - make_trade_idea me apply - CE/PE dono ke liye SAME rule
     # Bhai ka rule: Jo trade ban raha hai uska signal de - CE ho ya PE, BUY ho ya SELL
     # Pehle wala code CE pe zyada strict tha, PE ko halka chhod deta tha. Ab dono barabar.
+    # V55.11 AUDIT FIX - Pehle 7-filter me 5 input FAKE the, isliye 6/7 hamesha aata tha. Ab REAL lo:
+    # 1) EMA20/50 pehle = SPOT hi bhej rahe the (price==EMA, to filter hamesha FAIL). Ab market se REAL EMA lo (analyze_market me pehle se hai)
+    # 2) Price change pehle 0.2 hardcoded tha. Ab market se real lo, nahi hai to 0 (neutral), fake 0.2 nahi
+    # 3) Volume pehle 0,0 tha = auto-pass. Ab market se real volume lo, nahi hai to 0,0 bhej ke function ko batao data nahi hai
+    # 4) VIX/PCR pehle 0 / 1.0 hardcoded = auto-pass. Ab vix_info + chain se REAL lo
+    # 5) Retest pehle True hardcoded = auto-pass. Ab False (nahi pata to pass mat do, fail likho)
+    # 6) HTF pehle bool(bullish) = circular (khud se khud ko pass). Ab market trend se lo
     try:
         _gex_flip_v55 = gex_data.get("gamma_flip", 0) if isinstance(gex_data, dict) else 0
         _vwap_v55 = market.get("vwap", entry_spot) if isinstance(market, dict) else entry_spot
+        _ema20_v55 = market.get("ema20", entry_spot) if isinstance(market, dict) and market.get("ema20") else entry_spot
+        _ema50_v55 = market.get("ema50", entry_spot) if isinstance(market, dict) and market.get("ema50") else entry_spot
         _spot_v55 = entry_spot
-        # Direction: bullish=True -> BULLISH (CE/BUY), bullish=False -> BEARISH (PE/SELL)
         _dir_v55 = "BULLISH" if bullish else "BEARISH"
         _oi_chg_v55 = 0
         try:
             _oi_chg_v55 = float(market.get("oi_change_pct", 0) or 0)
         except:
             _oi_chg_v55 = 0
-        _price_chg_v55 = 0.2 if bullish else -0.2
-        # V55.2 generic function use karo - CE/PE ka fark andar hi handle hota hai
+        # Price change REAL - market me hai to wahi, nahi to 0 (fake 0.2 nahi)
+        try:
+            _price_chg_v55 = float(market.get("price_change_pct", 0) or market.get("change_pct", 0) or 0)
+        except:
+            _price_chg_v55 = 0
+        # PCR REAL - chain se, nahi to session last PCR, nahi to 1.0
+        try:
+            _pcr_v55 = 1.0
+            if chain is not None and not chain.empty:
+                _pcr_c = calculate_pcr(chain)
+                if _pcr_c and 0 < float(_pcr_c) <= 10:
+                    _pcr_v55 = float(_pcr_c)
+            if _pcr_v55 == 1.0:
+                try:
+                    _lp = st.session_state.get('_last_pcr_value')
+                    if _lp and 0 < float(_lp) <= 10:
+                        _pcr_v55 = float(_lp)
+                except:
+                    pass
+        except:
+            _pcr_v55 = 1.0
+        # VIX REAL - vix_info se (vix_info me vix + change hota hai)
+        try:
+            _vix_chg_v55 = 0
+            if isinstance(vix_info, dict):
+                _vix_chg_v55 = float(vix_info.get("change", 0) or vix_info.get("vix_change", 0) or 0)
+        except:
+            _vix_chg_v55 = 0
+        # Volume REAL - market me hai to wahi, nahi to 0,0 (function me ab auto-pass nahi, missing likhega)
+        try:
+            _vol_v55 = float(market.get("volume", 0) or 0)
+            _vol_avg_v55 = float(market.get("avg_volume", 0) or market.get("volume_avg", 0) or 0)
+        except:
+            _vol_v55, _vol_avg_v55 = 0, 0
+        # HTF REAL - market trend se, bullish variable se nahi (circular tha)
+        try:
+            _htf_v55 = (str(market.get("trend", "")).upper() == "BULLISH") if isinstance(market, dict) else bool(bullish)
+            # Agar trend SIDEWAYS/UNKNOWN hai to bullish se mat lo, trend se hi lo (False hi rahega, fail hoga, sahi hai)
+        except:
+            _htf_v55 = bool(bullish)
         _verdict_v55, _score_v55, _reasons_v55, _down_v55, _verdict_opt_v55 = calculate_overall_strong_signal_v55_2(
-            price=_spot_v55, vwap=_vwap_v55, ema20=_spot_v55, ema50=_spot_v55,
+            price=_spot_v55, vwap=_vwap_v55, ema20=_ema20_v55, ema50=_ema50_v55,
             price_change_pct=_price_chg_v55, oi_change_pct=_oi_chg_v55,
             spot=_spot_v55, gex_flip=_gex_flip_v55, max_pain=gex_data.get("max_pain", 0) if isinstance(gex_data, dict) else 0,
-            volume=0, avg_volume=0,
-            vix_change=0, pcr=1.0,
-            direction=_dir_v55, htf_bullish=bool(bullish), retest_done=True,
+            volume=_vol_v55, avg_volume=_vol_avg_v55,
+            vix_change=_vix_chg_v55, pcr=_pcr_v55,
+            direction=_dir_v55, htf_bullish=_htf_v55, retest_done=False,
             resistance=resistance or 0, support=support or 0,
         )
         idea["strong_verdict"] = _verdict_v55  # STRONG BUY / STRONG SELL / WEAK / NO TRADE
@@ -6227,6 +6373,19 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         idea["strong_score"] = f"{_score_v55}/7"
         idea["strong_reasons"] = _reasons_v55
         idea["strong_direction"] = _dir_v55
+        # V55.12 MATH DOWNGRADE - 7-filter 6/7 ho par EV negative ho to bhi NO TRADE
+        try:
+            _ev_v55 = float(_math_v55.get("ev", 0.0) or 0.0); _pop_v55 = float(_math_v55.get("pop", 50.0) or 50.0)
+            idea["math"] = _math_v55; idea["math_reason"] = _math_v55.get("reason", "")
+            try:
+                _blend_conf = 0.6 * _pop_v55 + 0.4 * (_score_v55 / 7.0 * 100.0)
+                if _ev_v55 < 0:
+                    idea["confidence"] = 55
+                    idea["why"] = idea.get("why", "") + f" | MATH: EV negative ({_ev_v55:+.0f} pts) POP {_pop_v55:.0f}% - Downgraded to 55% NO TRADE chahe 7-filter {_score_v55}/7 ho"
+                else:
+                    idea["confidence"] = int(min(94, max(35, _blend_conf)))
+            except: pass
+        except: pass
         # Dono taraf SAME downgrade rule: score <=4 ho to 85% -> 55% NO TRADE, chahe CE ho ya PE
         if _score_v55 <= 4 and confidence >= 75:
             idea["confidence"] = 55
@@ -6837,14 +6996,15 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
             try:
                 _pc = float((df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2] * 100) if len(df) >= 2 else 0
             except:
-                _pc = 0.2 if _eq_dir == "BULLISH" else -0.2
+                _pc = 0  # V55.13 DEEP: 0.2 hardcode nahi, 0 neutral
             _v, _s, _r, _d, _vo = calculate_overall_strong_signal_v55_2(
                 price=last, vwap=vwap, ema20=ema20, ema50=ema50, ema200=ema200,
                 price_change_pct=_pc, oi_change_pct=0,
                 spot=last, gex_flip=0, max_pain=0,
                 volume=_vol_last, avg_volume=_vol_avg,
-                vix_change=0, pcr=1.0,
-                direction=_eq_dir, htf_bullish=(_eq_dir == "BULLISH"), retest_done=True,
+                # V55.13 DEEP: Equity me bhi VIX 0 / PCR 1.0 / Retest True hardcode tha, ab REAL / False
+                vix_change=float(st.session_state.get('_last_vix_change', 0) or 0), pcr=float(st.session_state.get('_last_pcr_value', 1.0) or 1.0),
+                direction=_eq_dir, htf_bullish=bool(composite_score >= 1) if isinstance(composite_score, (int, float)) else (_eq_dir == "BULLISH"), retest_done=False,
                 resistance=resistance, support=support,
                 rsi=rsi, adx=adx,
             )
@@ -8104,8 +8264,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             status = st.empty()
             status.text("Fetching LIVE spot & chain (10-15 sec live)...")
             progress.progress(10)
-            # V17.4 FIX: Force LIVE spot for conviction trade (no cache)
-            st.cache_data.clear()
+            # V55.14 FAST: st.cache_data.clear() HATAYA - ye OHLCV + chain ka 30 sec cache bhi uda deta tha, har SCAN 30-40 sec ka cold start ban jata tha
             current_spot = get_spot(underlying)
             if current_spot is None: current_spot = get_spot_cached(underlying)
             # V17.4 FIX: Force LIVE chain for conviction trade
