@@ -7958,8 +7958,51 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         holding_safe = idea.get('holding','SHORT')
                         conf_safe = idea.get('confidence',0)
                         exp_safe = idea.get('expiry') or 'Current Weekly'
-                        html_card = '<div class="trade-card" style="border-left: 4px solid #00FF00;"><div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">LIVE SPOT: ' + str(spot_display) + '</div><h3>Trade Setup ' + str(i) + ' - ' + str(card_title_safe) + '</h3><b>Type:</b> ' + str(sub_badge_safe) + ' | <b>Timeframe:</b> ' + str(tf_safe) + ' | <b>Holding:</b> ' + str(holding_safe) + ' | <b>Conviction:</b> ' + str(conf_safe) + '% | <b>Expiry:</b> ' + str(exp_safe) + '</div>'
+                        # V55.2 FIX - 6/7 kaha dikhega? YAHIN - Card ke andar hi, Conviction ke bagal me
+                        # Pehle strong_score sirf idea dict me tha, card me render hi nahi ho raha tha, isliye screenshot me dikha nahi
+                        # Ab card ke top me bada sa STRONG SIGNAL box aayega: STRONG BUY 6/7 ya NO TRADE 3/7
+                        _sv = str(idea.get('strong_verdict', 'N/A'))
+                        _ss = str(idea.get('strong_score', 'N/A'))
+                        _sr = idea.get('strong_reasons', [])
+                        _sdir = str(idea.get('strong_direction', ''))
+                        # Score se color decide karo - 6/7 green, 5 yellow, 4 ya kam red
+                        try:
+                            _snum = int(str(_ss).split('/')[0]) if '/' in str(_ss) else 0
+                        except:
+                            _snum = 0
+                        if _snum >= 6:
+                            _sbg, _scol = "#00FF00", "black"
+                            _semoji = "✅"
+                        elif _snum == 5:
+                            _sbg, _scol = "#FFC107", "black"
+                            _semoji = "⚠️"
+                        elif _snum > 0:
+                            _sbg, _scol = "#FF4B4B", "white"
+                            _semoji = "🛑"
+                        else:
+                            _sbg, _scol = "#888888", "white"
+                            _semoji = "⏳"
+                        _sreasons_txt = " | ".join([str(x) for x in _sr[:2]]) if _sr else "Strong check ho raha hai..."
+                        html_card = '<div class="trade-card" style="border-left: 4px solid #00FF00;"><div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">LIVE SPOT: ' + str(spot_display) + '</div><h3>Trade Setup ' + str(i) + ' - ' + str(card_title_safe) + '</h3><b>Type:</b> ' + str(sub_badge_safe) + ' | <b>Timeframe:</b> ' + str(tf_safe) + ' | <b>Holding:</b> ' + str(holding_safe) + ' | <b>Conviction:</b> ' + str(conf_safe) + '% | <b>Expiry:</b> ' + str(exp_safe) + '</div><div style="background: ' + _sbg + '; color: ' + _scol + '; padding: 8px 10px; border-radius: 6px; margin-top: 6px; font-size: 15px; font-weight: bold;">' + _semoji + ' STRONG SIGNAL: ' + _sv + ' - ' + _ss + ' [' + _sdir + ']</div><div style="font-size: 12px; margin-top: 4px; color: #DDD;">' + _sreasons_txt + '</div></div>'
                         st.markdown(html_card, unsafe_allow_html=True)
+                        # Neeche alag se bhi bada box taaki mobile pe miss na ho - screenshot wali jagah pe hi dikhega
+                        try:
+                            if _snum >= 6:
+                                st.success(f"🛡️ STRONG SIGNAL: {_sv} - {_ss} [{_sdir}] | Trade lene layak hai")
+                            elif _snum == 5:
+                                st.warning(f"⚠️ STRONG SIGNAL: WEAK - WAIT - {_ss} [{_sdir}] | Half qty ya wait karo | { _sreasons_txt }")
+                            elif _snum > 0:
+                                st.error(f"🛑 STRONG SIGNAL: NO TRADE - {_ss} [{_sdir}] | Isliye Conviction kam dikh raha hai | { _sreasons_txt }")
+                            else:
+                                st.info(f"⏳ STRONG SIGNAL: Calculating... [{_sdir}]")
+                            # Reasons poori list - 7 filter me kaunsa fail hua
+                            if _sr:
+                                with st.expander("🔍 6/7 ka detail dekho - kaunsa filter pass / fail hua"):
+                                    for _rr in _sr:
+                                        st.write(f"- {_rr}")
+                                    st.caption("7 Filter: 1 HTF Trend | 2 VWAP+EMA | 3 OI+Price | 4 GEX Flip | 5 Volume 1.5x | 6 Retest | 7 VIX+PCR | 6/7 chahiye STRONG ke liye")
+                        except Exception:
+                            pass
                     except Exception as e:
                         try:
                             st.markdown(f"**Trade Setup {i} - {idea.get('symbol','NIFTY')} | Spot: {current_spot or 'Syncing...'}**")
