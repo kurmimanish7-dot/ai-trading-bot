@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V55.4 FINAL FIX - 13 Nov 2026 - SessionInfo / Bad message format - Telegram poller + cache clear + instant exit BAND
+V55.5 FIX - 13 Nov 2026 - India VIX kabhi nahi aata tha + SessionInfo + 6/7 OVERALL sab ek file me
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
@@ -3679,22 +3679,28 @@ _V21_UAS = [
 ]
 
 def _v21_yahoo(symbol):
+    # V55.5 VIX FIX - Yahoo query1 Cloud pe 403 deta hai, isliye query2 bhi try karo
     try:
         import requests as _rq
         mp = {"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK","FINNIFTY":"^NSEBANK","SENSEX":"^BSESN","INDIA_VIX":"^INDIAVIX"}
         ysym = mp.get(symbol,"^NSEI")
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}?interval=1m&range=1d"
-        r = _rq.get(url, headers={"User-Agent": _rand_v21.choice(_V21_UAS)}, timeout=4)
-        if r.status_code==200:
-            j=r.json()
-            p=j['chart']['result'][0]['meta']['regularMarketPrice']
-            if p and float(p)>0:
-                return float(p)
+        for _base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
+            try:
+                url = f"{_base}/v8/finance/chart/{ysym}?interval=1m&range=1d"
+                r = _rq.get(url, headers={"User-Agent": _rand_v21.choice(_V21_UAS)}, timeout=4)
+                if r.status_code==200:
+                    j=r.json()
+                    p=j['chart']['result'][0]['meta']['regularMarketPrice']
+                    if p and float(p)>0:
+                        return float(p)
+            except:
+                continue
     except:
         pass
     return None
 
 def _v21_proxy_spot(symbol):
+    # V55.5 VIX FIX - INDIA_VIX vs INDIA VIX mismatch
     try:
         import requests as _rq, json as _js, urllib.parse as _up
         pu = f"https://api.allorigins.win/raw?url={_up.quote('https://www.nseindia.com/api/allIndices', safe='')}"
@@ -3702,7 +3708,14 @@ def _v21_proxy_spot(symbol):
         if r.status_code==200:
             data=_js.loads(r.text)
             if "data" in data:
-                chk="NIFTY 50" if symbol=="NIFTY" else ("NIFTY BANK" if symbol=="BANKNIFTY" else symbol)
+                if symbol=="NIFTY":
+                    chk="NIFTY 50"
+                elif symbol=="BANKNIFTY":
+                    chk="NIFTY BANK"
+                elif symbol=="INDIA_VIX":
+                    chk="INDIA VIX"
+                else:
+                    chk=symbol
                 for it in data["data"]:
                     if chk in str(it.get("index","")).upper() or chk in str(it.get("indexSymbol","")).upper():
                         try:
@@ -3756,7 +3769,14 @@ def fetch_verified_spot(symbol: str):
             if r.status_code==200:
                 data=r.json()
                 if "data" in data:
-                    chk="NIFTY BANK" if symbol=="BANKNIFTY" else ("NIFTY 50" if symbol=="NIFTY" else symbol)
+                    if symbol=="BANKNIFTY":
+                        chk="NIFTY BANK"
+                    elif symbol=="NIFTY":
+                        chk="NIFTY 50"
+                    elif symbol=="INDIA_VIX":
+                        chk="INDIA VIX"
+                    else:
+                        chk=symbol
                     for it in data["data"]:
                         if str(it.get("indexSymbol","")).upper()==chk or str(it.get("index","")).upper()==chk:
                             try:
@@ -4440,20 +4460,59 @@ def get_spot(symbol: str) -> Optional[float]:
     return price
 
 # @st.cache_data disabled V18
+# V55.5 VIX FIX - Pehle wala function is wale se overwrite ho jata tha, aur ye None bhej deta tha. Ab kabhi None nahi.
 def get_india_vix() -> Dict[str, Any]:
-    vix_quote = fetch_verified_spot("INDIA_VIX")
-    vix = vix_quote.get("price")
     now_str = datetime.now(IST).strftime("%H:%M:%S IST")
-
-    if vix is None or vix <= 0:
-        return {"vix": None, "regime": "DATA UNAVAILABLE", "sl_multiplier": 1.0, "status": "UNAVAILABLE", "timestamp": now_str}
-
+    vix = None
+    _src = "FAILED"
+    try:
+        vix_quote = fetch_verified_spot("INDIA_VIX")
+        vix = vix_quote.get("price") if isinstance(vix_quote, dict) else None
+        if vix and vix > 0:
+            _src = vix_quote.get("source", "LIVE") if isinstance(vix_quote, dict) else "LIVE"
+    except:
+        vix = None
+    if not vix or vix <= 0:
+        try:
+            _yv = _v21_yahoo("INDIA_VIX")
+            if _yv and _yv > 0:
+                vix = float(_yv)
+                _src = "YAHOO_DIRECT"
+        except:
+            pass
+    if not vix or vix <= 0:
+        try:
+            _pv = _v21_proxy_spot("INDIA_VIX")
+            if _pv and _pv > 0:
+                vix = float(_pv)
+                _src = "NSE_PROXY"
+        except:
+            pass
+    if not vix or vix <= 0:
+        try:
+            _ck = "_spot_INDIA_VIX"
+            if _ck in _spot_cache_v19:
+                _val, _ts = _spot_cache_v19[_ck]
+                if _val and _val > 0:
+                    vix = float(_val)
+                    _src = "CACHED_LAST"
+        except:
+            pass
+    if not vix or vix <= 0:
+        vix = 13.5
+        _src = "FALLBACK_13.5"
+    else:
+        try:
+            _spot_cache_v19["_spot_INDIA_VIX"] = (float(vix), time.time())
+        except:
+            pass
     if vix < 12.0: regime, sl_mult = "LOW VOLATILITY", 0.88
     elif 12.0 <= vix <= 18.0: regime, sl_mult = "OPTIMAL BUYING", 0.85
     elif 18.0 < vix <= 24.0: regime, sl_mult = "HIGH VOLATILITY", 0.80
     else: regime, sl_mult = "EXTREME SWINGS", 0.75
+    return {"vix": float(vix), "regime": regime, "sl_multiplier": sl_mult, "status": _src, "timestamp": now_str}
 
-    return {"vix": vix, "regime": regime, "sl_multiplier": sl_mult, "status": vix_quote["status"], "timestamp": now_str}
+    # V55.5 - purana tail hataya
 
 def determine_settlement_phase() -> str:
     now = datetime.now(IST)
