@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V55.18 FIX - 13 Nov 2026 - AWAITING/FETCHING BAND - FII/DII cache+proxy + Gold/Macro cached fallback - Direct data, jaise Nifty spot direct aata hai
+V55.19 FIX - 13 Nov 2026 - LIVE GLOBAL PROXY - Yahoo direct 403 -> allorigins proxy + Stooq proxy + % fix (Stooq prev se) - Cloud pe bhi live aayega
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
@@ -4321,11 +4321,14 @@ class GlobalMacroEngine:
     # V55.9 GLOBAL MULTI-SOURCE VERIFY - Pehle sirf Yahoo query1 se 2 cheez aati thi, Gold/Gift hardcode the
     # Ab har symbol 3 source se verify hoga: Yahoo query1 + Yahoo query2 + Stooq, 2 me se 2 mile to average, 1 mile to wahi
     def _fetch_yahoo_one(self, ysym: str):
-        # Yahoo query1 Cloud pe 403 deta hai, isliye query1+query2 dono
+        # V55.19 LIVE FIX: Pehle sirf query1+query2 direct, Cloud pe 403 -> None -> Fetching. Ab PROXY bhi try karo, jaise Gift Nifty karta hai
+        # Headers bhi sahi karo - sirf Mozilla/5.0 se Yahoo block karta hai, Chrome jaisa header chahiye
+        _headers19 = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36", "Accept": "application/json", "Accept-Language": "en-US,en;q=0.9"}
+        # 1. Direct query1 + query2
         for _base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
             try:
-                url = f"{_base}/v8/finance/chart/{ysym}?interval=1d&range=2d"  # V55.10 - 5d se 1-day % ban raha tha (Nasdaq 6.56% / Gift 3.11%), ab 2d se 1-day % aayega
-                r = self.session.get(url, timeout=3)
+                url = f"{_base}/v8/finance/chart/{ysym}?interval=1d&range=2d"
+                r = self.session.get(url, timeout=4, headers=_headers19)
                 if r.ok:
                     meta = r.json()["chart"]["result"][0]["meta"]
                     price = float(meta.get("regularMarketPrice", 0.0))
@@ -4335,12 +4338,31 @@ class GlobalMacroEngine:
                         return price, pct
             except:
                 continue
+        # 2. PROXY se - allorigins + codetabs - Cloud ka IP block bypass ho jayega, kyunki proxy apne IP se mangega
+        try:
+            import urllib.parse as _up19
+            for _pb19 in ["https://api.allorigins.win/raw?url=", "https://api.codetabs.com/v1/proxy?quest="]:
+                try:
+                    _yurl = f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}?interval=1d&range=2d"
+                    r = self.session.get(_pb19 + _up19.quote(_yurl, safe=''), timeout=5, headers=_headers19)
+                    if r.ok:
+                        _j = r.json()
+                        meta = _j["chart"]["result"][0]["meta"]
+                        price = float(meta.get("regularMarketPrice", 0.0))
+                        prev = float(meta.get("chartPreviousClose", price))
+                        if price and price > 0:
+                            pct = ((price - prev) / prev) * 100 if prev > 0 else 0.0
+                            return price, pct
+                except:
+                    continue
+        except:
+            pass
         return None, None
     def _fetch_stooq_one(self, stooq_sym: str):
-        # Stooq - free, no API key, Yahoo ka backup. Format: stooq.com/q/d/l/?s=ndx&d1=...&i=d
+        # V55.19: Stooq bhi proxy se - direct fail to proxy se, warna backup bhi fail ho jata hai
         try:
             url = f"https://stooq.com/q/d/l/?s={stooq_sym}&i=d"
-            r = self.session.get(url, timeout=3)
+            r = self.session.get(url, timeout=4)
             if r.ok and r.text and "Date" in r.text:
                 lines = r.text.strip().splitlines()
                 if len(lines) >= 3:
@@ -4353,6 +4375,26 @@ class GlobalMacroEngine:
                         if last and last > 0:
                             pct = ((last - prev) / prev) * 100 if prev > 0 else 0.0
                             return last, pct
+        except:
+            pass
+        # V55.19: Stooq direct fail to proxy se try karo
+        try:
+            import urllib.parse as _up19s
+            for _pb19s in ["https://api.allorigins.win/raw?url="]:
+                try:
+                    _surl = f"https://stooq.com/q/d/l/?s={stooq_sym}&i=d"
+                    r = self.session.get(_pb19s + _up19s.quote(_surl, safe=''), timeout=5)
+                    if r.ok and r.text and "Date" in r.text:
+                        import csv as _csv2, io as _io2
+                        rows = list(_csv2.DictReader(_io2.StringIO(r.text)))
+                        if len(rows) >= 2:
+                            last = float(rows[-1].get("Close", 0))
+                            prev = float(rows[-2].get("Close", last))
+                            if last and last > 0:
+                                pct = ((last - prev) / prev) * 100 if prev > 0 else 0.0
+                                return last, pct
+                except:
+                    continue
         except:
             pass
         return None, None
@@ -4395,6 +4437,14 @@ class GlobalMacroEngine:
         try:
             _p_live, _pct_live = self._fetch_yahoo_one("^NDX")
             _p_fut2, _pct_fut2 = self._fetch_yahoo_one("NQ=F")
+            # V55.19: % fix - Yahoo ka chartPreviousClose 2 din purana ho sakta hai (27,740), isliye +2.51% galat banta hai. Stooq ke kal ke close (28,374) se % nikalo to sahi -0.09% / +0.22% aayega
+            try:
+                _s_p19, _s_pct19 = self._fetch_stooq_one("ndx")
+                if _s_p19 and _s_p19 > 0 and _p_live and _p_live > 0:
+                    # Stooq ka last close hi kal ka close hai, usse % nikalo
+                    _pct_live = ((_p_live - _s_p19) / _s_p19) * 100
+            except:
+                pass
             if _p_live and _p_live > 0:
                 # Yahoo LIVE mil gaya - yehi aaj ka asli hai, WSN wale 28,347 -0.09% se match karega
                 out["NASDAQ"] = {"symbol": "Nasdaq 100 (Live)", "price": _p_live, "change_pct": _pct_live, "status": "GREEN" if _pct_live >= 0.25 else ("RED" if _pct_live <= -0.25 else "YELLOW"), "source": "YAHOO_^NDX_LIVE", "fut_price": _p_fut2, "fut_pct": _pct_fut2, "note": "Live cash, Stooq average nahi"}
