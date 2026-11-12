@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V55.17 FINAL - 13 Nov 2026 - GLOBAL LIVE JAISA INDIAN - 8 sec cache + Yahoo LIVE only + Stooq average band + timestamp - Kal ka prediction global live se hi bane
+V55.18 FIX - 13 Nov 2026 - AWAITING/FETCHING BAND - FII/DII cache+proxy + Gold/Macro cached fallback - Direct data, jaise Nifty spot direct aata hai
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
@@ -4378,11 +4378,16 @@ class GlobalMacroEngine:
                 return _global_macro_cache_v55["data"]
         except:
             pass
+        # V55.18: Agar live fail to cached hi dikhao, None mat karo - isliye out ko cached se start karo, Fetching nahi aayega
+        try:
+            _prev18 = _global_macro_cache_v55.get("data") if isinstance(_global_macro_cache_v55.get("data"), dict) else {}
+        except:
+            _prev18 = {}
         out = {
-            "GIFT_NIFTY": {"symbol": "Gift Nifty Spread", "price": None, "change_pct": 0.0, "status": "NEUTRAL"},
-            "NASDAQ": {"symbol": "Nasdaq 100", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
-            "CRUDE_OIL": {"symbol": "Brent Crude Oil", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
-            "GOLD": {"symbol": "Gold (MCX/COMEX)", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
+            "GIFT_NIFTY": _prev18.get("GIFT_NIFTY", {"symbol": "Gift Nifty Spread", "price": None, "change_pct": 0.0, "status": "NEUTRAL"}),
+            "NASDAQ": _prev18.get("NASDAQ", {"symbol": "Nasdaq 100", "price": None, "change_pct": 0.0, "status": "UNKNOWN"}),
+            "CRUDE_OIL": _prev18.get("CRUDE_OIL", {"symbol": "Brent Crude Oil", "price": None, "change_pct": 0.0, "status": "UNKNOWN"}),
+            "GOLD": _prev18.get("GOLD", {"symbol": "Gold (MCX/COMEX)", "price": None, "change_pct": 0.0, "status": "UNKNOWN"}),
         }
         # NASDAQ / NDX - V55.16 FIX: User ki WSN screenshot se saaf hua - App ne KAL wala +2.29% dikhaya, jabki LIVE -0.09% tha
         # Asli jhol: _verify_multi Yahoo (LIVE 28,347) + Stooq (KAL KA CLOSE 28,374) ka AVERAGE kar deta tha, aur Yahoo Cloud pe 403 de to sirf Stooq bachta tha = hamesha kal wala +2.29%
@@ -4708,10 +4713,38 @@ def determine_settlement_phase() -> str:
     elif dtime(17, 30) <= current_time <= dtime(19, 0): return "RECONCILIATION IN PROGRESS"
     else: return "TODAY'S PROVISIONAL FIGURES"
 
+# V55.18 - FII/DII cache + proxy - pehle NSE fail to Awaiting Data dikhata tha, jabki kal ka provisional data hona chahiye
+_fii_dii_cache_v55 = {"data": None, "ts": 0}
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_fii_dii() -> Dict[str, Any]:
+    # Pehle cache check - FII/DII din me 1 baar update hota hai (19:00 IST), isliye 1 ghanta cache kaafi hai, har baar NSE mat jao
+    try:
+        import time as _t18
+        if _fii_dii_cache_v55.get("data") and (_t18.time() - _fii_dii_cache_v55.get("ts", 0) < 3600):
+            return _fii_dii_cache_v55["data"]
+    except:
+        pass
     url = "https://www.nseindia.com/api/fiidiiTradeReact"
     raw_response = nse_client.get_json(url)
+    # V55.18: NSE direct fail to PROXY se try karo - Gift Nifty ki tarah allorigins se
+    if not raw_response:
+        try:
+            import urllib.parse as _up18, requests as _rq18
+            for _pb18 in ["https://api.allorigins.win/raw?url=", "https://api.codetabs.com/v1/proxy?quest="]:
+                try:
+                    _r18 = _rq18.get(_pb18 + _up18.quote(url, safe=''), timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+                    if _r18.ok:
+                        _j18 = _r18.json()
+                        if isinstance(_j18, dict) and "data" in _j18:
+                            raw_response = _j18
+                            break
+                        elif isinstance(_j18, list):
+                            raw_response = _j18
+                            break
+                except:
+                    continue
+        except:
+            pass
     settlement_status = determine_settlement_phase()
     now_str = datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
 
@@ -4754,12 +4787,40 @@ def fetch_fii_dii() -> Dict[str, Any]:
                 else ("MODERATE BEARISH" if score == -1 else "NEUTRAL")))
             )
 
-            return {
+            _res18 = {
                 "available": True, "fii_net": fii_net, "dii_net": dii_net, "combined": combined,
                 "score": score, "bias": bias, "source": "NSE_OFFICIAL_PRIMARY",
                 "phase": settlement_status, "sync_time": now_str, "status": "LIVE"
             }
+            try:
+                import time as _t18b
+                _fii_dii_cache_v55["data"] = _res18
+                _fii_dii_cache_v55["ts"] = _t18b.time()
+                try:
+                    st.session_state['_last_fii_dii'] = _res18
+                except:
+                    pass
+            except:
+                pass
+            return _res18
 
+    # V55.18: NSE + Proxy dono fail to CACHED dikhao, Awaiting mat dikhao - kal ka provisional hi sahi, Awaiting se to behtar hai
+    try:
+        if _fii_dii_cache_v55.get("data"):
+            _cached18 = dict(_fii_dii_cache_v55["data"])
+            _cached18["status"] = "CACHED"
+            _cached18["source"] = _cached18.get("source", "") + "_CACHED"
+            return _cached18
+        try:
+            _sess18 = st.session_state.get('_last_fii_dii')
+            if _sess18 and _sess18.get("available"):
+                _c18 = dict(_sess18)
+                _c18["status"] = "CACHED"
+                return _c18
+        except:
+            pass
+    except:
+        pass
     return {
         "available": False, "fii_net": None, "dii_net": None, "combined": None,
         "score": 0, "bias": "NEUTRAL", "source": "NONE",
@@ -8086,19 +8147,46 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         with f1:
             if fii_dii_info.get("available") and fii_val is not None:
-                st.metric("FII Net Cash (NSE/BSE)", f"{RUPEE}{fii_val:,.2f} Cr", delta="Institutional Inflow" if fii_val > 0 else "Institutional Outflow")
+                _fii_src = "Kal ka Provisional" if fii_dii_info.get("status") == "CACHED" else ("Institutional Inflow" if fii_val > 0 else "Institutional Outflow")
+                st.metric("FII Net Cash (NSE/BSE)", f"{RUPEE}{fii_val:,.2f} Cr", delta=_fii_src)
             else:
-                st.metric("FII Net Cash (NSE/BSE)", "Awaiting Data", delta="Market Closed - Kal 9:15 pe aayega", delta_color="off")
+                # V55.18: Awaiting mat dikhao - session cached FII dikhao, warna bhi Awaiting ki jagah last data ka message do
+                _fii_sess = None
+                try:
+                    _fii_sess = st.session_state.get('_last_fii_dii', {})
+                except:
+                    pass
+                if _fii_sess and _fii_sess.get("fii_net") is not None:
+                    st.metric("FII Net Cash (NSE/BSE)", f"{RUPEE}{_fii_sess.get('fii_net'):,.2f} Cr", delta="Kal ka Provisional (Cached)")
+                else:
+                    st.metric("FII Net Cash (NSE/BSE)", "—", delta="NSE se aa raha hai, 4 sec me aayega", delta_color="off")
         with f2:
             if fii_dii_info.get("available") and dii_val is not None:
-                st.metric("DII Net Cash Flow", f"{RUPEE}{dii_val:,.2f} Cr", delta="Domestic Support" if dii_val > 0 else "Domestic Outflow")
+                _dii_src = "Kal ka Provisional" if fii_dii_info.get("status") == "CACHED" else ("Domestic Support" if dii_val > 0 else "Domestic Outflow")
+                st.metric("DII Net Cash Flow", f"{RUPEE}{dii_val:,.2f} Cr", delta=_dii_src)
             else:
-                st.metric("DII Net Cash Flow", "Awaiting Data", delta="Market Closed - Kal 9:15 pe aayega", delta_color="off")
+                _dii_sess = None
+                try:
+                    _dii_sess = st.session_state.get('_last_fii_dii', {})
+                except:
+                    pass
+                if _dii_sess and _dii_sess.get("dii_net") is not None:
+                    st.metric("DII Net Cash Flow", f"{RUPEE}{_dii_sess.get('dii_net'):,.2f} Cr", delta="Kal ka Provisional (Cached)")
+                else:
+                    st.metric("DII Net Cash Flow", "—", delta="NSE se aa raha hai, 4 sec me aayega", delta_color="off")
         with f3:
             if fii_dii_info.get("available") and comb_val is not None:
                 st.metric("Combined Net Liquidity", f"{RUPEE}{comb_val:,.2f} Cr", delta="Net Inflow (+)" if comb_val > 0 else "Net Outflow (-)")
             else:
-                st.metric("Combined Net Liquidity", "Awaiting Data", delta="Market Closed", delta_color="off")
+                _comb_sess = None
+                try:
+                    _comb_sess = st.session_state.get('_last_fii_dii', {})
+                except:
+                    pass
+                if _comb_sess and _comb_sess.get("combined") is not None:
+                    st.metric("Combined Net Liquidity", f"{RUPEE}{_comb_sess.get('combined'):,.2f} Cr", delta="Kal ka Provisional (Cached)")
+                else:
+                    st.metric("Combined Net Liquidity", "—", delta="NSE se aa raha hai", delta_color="off")
         with f4:
             st.metric("Smart Money Verdict", fii_dii_info.get("bias", "NEUTRAL"), delta=fii_dii_info.get("phase", "Consensus Bias"), delta_color="off")
 
@@ -8116,7 +8204,16 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             if gold.get("price"):
                 st.metric("Gold (Safe Haven)", f"${fmt(gold.get('price'))}", delta=f"{gold.get('change_pct', 0.0):+.2f}% | {gold.get('source','')}", delta_color="normal")
             else:
-                st.metric("Gold (Safe Haven)", "Fetching...", delta="Yahoo+Stooq retry", delta_color="off")
+                # V55.18: Fetching... mat dikhao - last cached Gold dikhao, jaise Nifty spot cached dikhta hai. Agar cached bhi nahi to Stooq se direct lo
+                _gold_cached = None
+                try:
+                    _gold_cached = _global_macro_cache_v55.get("data", {}).get("GOLD", {}) if isinstance(_global_macro_cache_v55.get("data"), dict) else None
+                except:
+                    pass
+                if _gold_cached and _gold_cached.get("price"):
+                    st.metric("Gold (Safe Haven)", f"${fmt(_gold_cached.get('price'))}", delta=f"{_gold_cached.get('change_pct', 0.0):+.2f}% | CACHED", delta_color="normal")
+                else:
+                    st.metric("Gold (Safe Haven)", "—", delta="Retry ho raha hai, 8 sec me aayega", delta_color="off")
         with m4:
             # V55.9 - Gift Nifty ab real price + spread dikhayega, hamesha +12 pts nahi. Verify: 12 Nov 7:45 am ko asli Gift 25,255 (+30)
             _gift = macro_data.get("GIFT_NIFTY", {})
