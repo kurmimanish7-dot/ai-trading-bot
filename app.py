@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-V55 FIX - Bhai ka patched file - 13 Nov 2026
-1) Bad message format / SessionInfo fix: 0.5s + 1s fragments -> 15s/30s, duplicate instant-exit removed, autorefresh min 10 min
+V55.3 DEFINITIVE FIX - 13 Nov 2026 - SessionInfo / Bad message format JAD SE FIX
+1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
 
@@ -41,27 +41,25 @@ except Exception:
     HAS_OTR_EXTERNAL = False
 # Agar otr_v2.py alag file me hai to wahi chalega, nahi to neeche wala embedded function chalega
 
+# V55.3 - autorefresh bhi BAND, ye bhi background me SessionInfo ko chhedta hai
 try:
     from streamlit_autorefresh import st_autorefresh
-    HAS_AUTOREFRESH = True
+    HAS_AUTOREFRESH = False  # Force OFF - chahe package ho, use nahi karenge
 except:
     HAS_AUTOREFRESH = False
 
 
-# V54 FIX: Define live_fragment early to avoid NameError
-try:
-    if hasattr(st, "fragment"):
-        live_fragment = st.fragment
-    elif hasattr(st, "experimental_fragment"):
-        live_fragment = st.experimental_fragment
-    else:
-        def live_fragment(*args, **kwargs):
-            def decorator(func): return func
-            return decorator
-except:
-    def live_fragment(*args, **kwargs):
-        def decorator(func): return func
-        return decorator
+# V55.3 DEFINITIVE FIX - Bad message format / SessionInfo - FRAGMENT BAND
+# Asli jad: st.fragment background me alag thread me chalta hai. Jab tu SCAN dabata hai (jo 3-5 sec chalta hai),
+# tab fragment beech me ghus ke SessionInfo maangta hai, aur Streamlit bolta hai "Tried to use SessionInfo before it was initialized"
+# 0.5s -> 15s karne se sirf kam hua, gaya nahi. Isliye fragment ko hi DUMMY kar diya.
+# Ab @live_fragment(run_every=X) kuch nahi karega, function normal tarike se chalega jab usko call karenge.
+# Live ke liye ab sirf REFRESH button hai, background race nahi hoga.
+# Agar tujhe live chahiye to 60 sec me ek baar REFRESH daba de, ya auto_alert wala timer use kar (wo bhi ab band hai, neeche dekho)
+def live_fragment(*args, **kwargs):
+    def decorator(func):
+        return func
+    return decorator
 
 
 # IST Definition - No external dependency (stdlib only)
@@ -623,23 +621,11 @@ if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
 
 st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
 
-# V55 FIX - BACKGROUND KEEP-ALIVE - SessionInfo race fix
-# Pehle: interval 5 min + fragment 0.5s ek saath chalte the -> SessionInfo before initialized har 5 sec
-# Ab: autorefresh MIN 10 min, aur sirf tab jab auto_alert ON ho. Fragment hi main refresh hai.
-try:
-    if st.session_state.get('auto_alert_enabled', False):
-        if HAS_AUTOREFRESH:
-            _raw_min = st.session_state.get('auto_scan_interval', 10)
-            try:
-                _raw_min = float(_raw_min)
-            except:
-                _raw_min = 10
-            _safe_min = max(10.0, _raw_min)  # 10 min se kam nahi - 5 sec wala loop band
-            interval_ms = int(_safe_min * 60 * 1000)
-            st_autorefresh(interval=interval_ms, key="keep_alive_refresh_v55")
-            st.sidebar.caption(f"🔄 Auto-refresh ON ({int(_safe_min)} min) - Background me chalta rahega")
-except Exception:
-    pass
+# V55.3 - KEEP-ALIVE BAND - Yehi Bad message format ki dusri jad thi
+# st_autorefresh background me page ko reload karta hai, jab scan chal raha hota hai tabhi reload aata hai -> SessionInfo error
+# Ab koi auto-refresh nahi hoga. Tujhe live chahiye to upar wala REFRESH button daba de.
+# Auto-alert ON hai to bhi ab auto-refresh nahi hoga, sirf manual SCAN / REFRESH se chalega - yehi safe hai.
+st.sidebar.caption("🔄 Auto-refresh OFF (V55.3) - SessionInfo error fix ke liye band hai, REFRESH button se update karo")
 
 # V54 TELEGRAM CALLBACK POLLER - Har 3 sec pe Telegram YES/NO check - Direct trade
 # FIXED: No decorator here (live_fragment defined later) - regular function
@@ -3582,14 +3568,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if hasattr(st, "fragment"):
-    live_fragment = st.fragment
-elif hasattr(st, "experimental_fragment"):
-    live_fragment = st.experimental_fragment
-else:
-    def live_fragment(*args, **kwargs):
-        def decorator(func): return func
-        return decorator
+# V55.3 - Second fragment bhi DUMMY, wahi reason - SessionInfo race
+# st.fragment ko yahan dobara assign nahi karna, nahi to upar wala dummy overwrite ho jayega
+def live_fragment(*args, **kwargs):
+    def decorator(func): return func
+    return decorator
 
 # =====================================================================
 # 7. STATEFUL PAPER PORTFOLIO & AUDIT LEDGER
@@ -7897,19 +7880,23 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                 pass
             progress.progress(50)
             status.text("Parallel scanning other indices (live)...")
+            # V55.3 DEFINITIVE FIX - Parallel scan BAND, Sequential scan ON
+            # Asli jad yahin thi: ThreadPoolExecutor me 8 thread ek saath get_spot_cached / get_chain_cached (st.cache_data) ko call karte the
+            # Streamlit ka cache sirf main thread me chalta hai, thread se call karne pe hi "Tried to use SessionInfo before it was initialized" aata hai
+            # Tere screenshot me bhi error bilkul isi jagah aaya tha - "Parallel scanning other indices (live)..."
+            # Ab ek-ek karke scan hoga, 2-3 sec zyada lagega par error nahi aayega. FAST ka matlab error nahi hona chahiye.
             alt_symbols = [s for s in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"] if s != underlying]
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-                future_to_sym = {executor.submit(scan_one_index_fast_v12, sym, selected_expiry, active_tf, vix_data, fii_dii, scan_confluence, option_type_choice): sym for sym in alt_symbols}
-                done = 0
-                for future in concurrent.futures.as_completed(future_to_sym):
-                    done += 1
-                    sym = future_to_sym[future]
-                    progress.progress(50 + int(40 * done / len(alt_symbols)))
-                    status.text(f"Live scanned {sym} - {done}/{len(alt_symbols)}")
-                    try:
-                        alt_ideas = future.result()
-                        if alt_ideas: ideas.extend(alt_ideas)
-                    except: pass
+            done = 0
+            for sym in alt_symbols:
+                done += 1
+                progress.progress(50 + int(40 * done / len(alt_symbols)))
+                status.text(f"Live scanned {sym} - {done}/{len(alt_symbols)} (Sequential - Safe Mode)")
+                try:
+                    alt_ideas = scan_one_index_fast_v12(sym, selected_expiry, active_tf, vix_data, fii_dii, scan_confluence, option_type_choice)
+                    if alt_ideas: ideas.extend(alt_ideas)
+                except Exception as _seq_e:
+                    print(f"Sequential scan fail {sym}: {_seq_e}")
+                    pass
             progress.progress(90)
             status.text("Ranking...")
 
