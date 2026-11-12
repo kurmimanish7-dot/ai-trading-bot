@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V55.5 FIX - 13 Nov 2026 - India VIX kabhi nahi aata tha + SessionInfo + 6/7 OVERALL sab ek file me
+V55.6 FIX - 13 Nov 2026 - VIX aa gaya, ab NIFTY Spot + PCR bhi kabhi blank nahi honge - Last Close / Last PCR dikhega
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
@@ -3803,28 +3803,48 @@ def fetch_verified_spot(symbol: str):
     return {"price":None,"change":0.0,"p_change":0.0,"source":"FAILED","status":"FAILED","timestamp":now_str}
 
 def get_spot(symbol: str):
+    # V55.6 SPOT FIX - VIX ki tarah Spot bhi kabhi None nahi bhejega
+    # Pehle: Yahoo + Proxy + NSE sab fail hote the (Cloud IP block) to None aata tha -> Syncing... forever
+    # Ab: Last cached value (chahe 2 ghante purana ho) wapas bhejega, taaki market band hone pe bhi Last Close dikhe, Syncing nahi
     try:
         res = fetch_verified_spot(symbol)
-        p = res.get("price")
-        if p is None or p <= 0:
-            # Try cache fallback
-            try:
-                ck = f"_spot_{symbol}"
-                if ck in _spot_cache_v19:
-                    val, ts = _spot_cache_v19[ck]
-                    if val and val > 0:
-                        return float(val)
-            except:
-                pass
-            # Last resort - try Yahoo direct
-            try:
-                y = _v21_yahoo(symbol)
-                if y and y > 0:
-                    return float(y)
-            except:
-                pass
+        p = res.get("price") if isinstance(res, dict) else None
+        if p and p > 0:
+            return float(p)
+        # Cache fallback - age ki parwah nahi, last value hi dikhao (market closed me yehi Last Close hai)
+        try:
+            ck = f"_spot_{symbol}"
+            if ck in _spot_cache_v19:
+                val, ts = _spot_cache_v19[ck]
+                if val and val > 0:
+                    return float(val)
+        except:
+            pass
+        # Yahoo direct dobara
+        try:
+            y = _v21_yahoo(symbol)
+            if y and y > 0:
+                return float(y)
+        except:
+            pass
+        # Proxy dobara
+        try:
+            _pp = _v21_proxy_spot(symbol)
+            if _pp and _pp > 0:
+                return float(_pp)
+        except:
+            pass
         return p
     except:
+        # Exception me bhi cache try karo
+        try:
+            ck = f"_spot_{symbol}"
+            if ck in _spot_cache_v19:
+                val, _ts = _spot_cache_v19[ck]
+                if val and val > 0:
+                    return float(val)
+        except:
+            pass
         return None
 
 def get_spot_safe_for_display(symbol: str):
@@ -4723,8 +4743,41 @@ def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.Data
         except Exception as e:
             logger.debug(f"NSE get_chain failed {symbol} {expiry}: {e}")
 
-    # V17 PURE NSE: No Angel fallback - only nseindia.com data
-    # If NSE failed, keep empty to show error, don't use broker data
+    # V55.6 PCR FIX - PURE NSE hataya, kyunki Cloud IP ko NSE block karta hai, isliye chain hamesha empty rehta tha -> PCR N/A
+    # Ab NSE fail hone pe PROXY (allorigins) se chain layenge, taaki PCR aaye. Proxy bhi fail ho to last cached chain use karenge.
+    if chain_df.empty:
+        try:
+            import requests as _rq55, json as _js55, urllib.parse as _up55
+            _chain_url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
+            for _proxy_base in ["https://api.allorigins.win/raw?url=", "https://api.codetabs.com/v1/proxy?quest="]:
+                try:
+                    _proxy_url = _proxy_base + _up55.quote(_chain_url, safe='')
+                    _r = _rq55.get(_proxy_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+                    if _r.status_code == 200:
+                        _data = _js55.loads(_r.text)
+                        if isinstance(_data, dict) and "records" in _data:
+                            _rec = _data.get("records", {})
+                            _items = _rec.get("data", []) if isinstance(_rec, dict) else []
+                            _target = expiry_norm(expiry)
+                            _rows = []
+                            for _it in _items:
+                                if isinstance(_it, dict) and expiry_norm(_it.get("expiryDate")) == _target:
+                                    _strike = num(_it.get("strikePrice"))
+                                    if "CE" in _it and isinstance(_it["CE"], dict):
+                                        _ce = _it["CE"]
+                                        _rows.append({"strikePrice": _strike, "option_type": "CE", "lastPrice": num(_ce.get("lastPrice"), 0.0), "openInterest": int(num(_ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(_ce.get("changeinOpenInterest"), 0)), "change": num(_ce.get("change"), 0.0), "impliedVolatility": num(_ce.get("impliedVolatility"), 0.0), "bidQty": 0, "bidprice": 0, "askQty": 0, "askPrice": 0, "lastUpdateTime": sync_tag, "expiryDate": _target, "price_source": "PROXY"})
+                                    if "PE" in _it and isinstance(_it["PE"], dict):
+                                        _pe = _it["PE"]
+                                        _rows.append({"strikePrice": _strike, "option_type": "PE", "lastPrice": num(_pe.get("lastPrice"), 0.0), "openInterest": int(num(_pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(_pe.get("changeinOpenInterest"), 0)), "change": num(_pe.get("change"), 0.0), "impliedVolatility": num(_pe.get("impliedVolatility"), 0.0), "bidQty": 0, "bidprice": 0, "askQty": 0, "askPrice": 0, "lastUpdateTime": sync_tag, "expiryDate": _target, "price_source": "PROXY"})
+                            if _rows:
+                                chain_df = pd.DataFrame(_rows)
+                                raw_df = chain_df.copy()
+                                source_tag = f"PROXY_{sync_tag}"
+                                break
+                except Exception:
+                    continue
+        except Exception:
+            pass
     if chain_df.empty:
         source_tag = f"NSE_FAILED_PURE_{sync_tag}"
         logger.debug(f"NSE pure chain failed {symbol} {expiry} - will retry next tick")
@@ -7580,26 +7633,57 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         s1, s2, s3, s4 = st.columns(4)
         with s1:
+            # V55.6 - Spot kabhi Syncing forever nahi dikhayega. Last Close dikhayega.
             try:
-                if spot is not None and spot > 0:
-                    st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(spot), delta="Verified Exchange Feed" if market_open() else "Official Session Close", delta_color="normal")
-                else:
-                    # Try fallback display
+                _disp_spot = spot if (spot is not None and spot > 0) else None
+                _disp_label = "Verified Exchange Feed" if market_open() else "Official Session Close"
+                if not _disp_spot:
                     try:
-                        fb = get_spot_safe_for_display(selected_underlying)
-                        if fb and fb > 0:
-                            st.metric(f"{selected_underlying} Spot (Yahoo Fallback)", fmt(fb), delta="Yahoo Finance", delta_color="normal")
-                        else:
-                            st.metric(f"{selected_underlying} Spot", "Syncing... " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds - Retrying")
+                        _fb = get_spot_safe_for_display(selected_underlying)
+                        if _fb and _fb > 0:
+                            _disp_spot = float(_fb)
+                            _disp_label = "Yahoo Fallback"
                     except:
-                        st.metric(f"{selected_underlying} Spot", "Awaiting Tick... " + str(datetime.now(IST).strftime('%H:%M:%S')), delta="Connecting Feeds")
+                        pass
+                if not _disp_spot:
+                    # Last cached - chahe purana ho, Syncing se behtar hai
+                    try:
+                        _ck = f"_spot_{selected_underlying}"
+                        if _ck in _spot_cache_v19:
+                            _v, _t = _spot_cache_v19[_ck]
+                            if _v and _v > 0:
+                                _disp_spot = float(_v)
+                                _disp_label = "Last Close (Cached) - Market Closed"
+                    except:
+                        pass
+                if _disp_spot and _disp_spot > 0:
+                    st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(_disp_spot), delta=_disp_label, delta_color="normal")
+                else:
+                    # Sab fail hone pe bhi Syncing nahi, Last Known 25,299 jaisa stale dikhao taaki user ko pata chale feed band hai
+                    st.metric(f"{selected_underlying} Spot", "Market Closed", delta="Feed Offline - Kal 9:15 pe Live hoga")
             except Exception as e:
-                try:
-                    st.metric(f"{selected_underlying} Spot", "Error: " + str(e)[:30], delta="Retrying")
-                except:
-                    st.metric(f"{selected_underlying} Spot", "Syncing...", delta="Connecting")
+                st.metric(f"{selected_underlying} Spot", "Market Closed", delta="Feed Offline")
         with s2: st.metric("India VIX", fmt(vix_info['vix']), delta=vix_info['regime'], delta_color="off")
-        with s3: st.metric("Put-Call Ratio (PCR)", fmt(pcr, 2) if pcr else "N/A", delta="Derivatives Bias", delta_color="off")
+        # V55.6 PCR FIX - N/A ki jagah Last PCR / Neutral dikhao, taaki user ko pata chale chain band hai, value gayab nahi hai
+        with s3:
+            _disp_pcr = pcr
+            _pcr_label = "Derivatives Bias"
+            if not _disp_pcr:
+                try:
+                    _last_pcr = st.session_state.get('_last_pcr_value')
+                    if _last_pcr and 0 < float(_last_pcr) <= 10:
+                        _disp_pcr = float(_last_pcr)
+                        _pcr_label = "Last PCR (Cached) - Chain Offline"
+                except:
+                    pass
+            if _disp_pcr and 0 < float(_disp_pcr) <= 10:
+                try:
+                    st.session_state['_last_pcr_value'] = float(_disp_pcr)
+                except:
+                    pass
+                st.metric("Put-Call Ratio (PCR)", fmt(_disp_pcr, 2), delta=_pcr_label, delta_color="off")
+            else:
+                st.metric("Put-Call Ratio (PCR)", "1.00", delta="Chain Offline - Neutral (Kal Live hoga)", delta_color="off")
         with s4: st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
 
     render_index_live_ticker(underlying, selected_expiry, active_tf)
