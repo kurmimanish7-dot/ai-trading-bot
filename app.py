@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V55.9 FIX - 13 Nov 2026 - Global Macro multi-source verify - Nasdaq ^NDX + Gold + Gift Nifty ab real, pehle Gold/Gift hardcode the
+V55.10 FIX - 13 Nov 2026 - % 5-day se 1-day kiya - Nasdaq 6.56% -> 0.21% aur Gift 3.11% -> -0.01% ka reason range=5d tha, ab range=2d
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
@@ -4279,7 +4279,7 @@ class GlobalMacroEngine:
         # Yahoo query1 Cloud pe 403 deta hai, isliye query1+query2 dono
         for _base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
             try:
-                url = f"{_base}/v8/finance/chart/{ysym}?interval=1d&range=5d"
+                url = f"{_base}/v8/finance/chart/{ysym}?interval=1d&range=2d"  # V55.10 - 5d se 1-day % ban raha tha (Nasdaq 6.56% / Gift 3.11%), ab 2d se 1-day % aayega
                 r = self.session.get(url, timeout=3)
                 if r.ok:
                     meta = r.json()["chart"]["result"][0]["meta"]
@@ -4354,11 +4354,12 @@ class GlobalMacroEngine:
                 out["GOLD"] = {"symbol": "Gold (COMEX)", "price": _p, "change_pct": _pct, "status": "GREEN" if _pct >= 0.25 else ("RED" if _pct <= -0.25 else "YELLOW"), "source": _src}
         except:
             pass
-        # GIFT NIFTY - V55.9 NEW: Pehle hamesha +12 pts hardcode tha. Ab NSE IX proxy se + NIFTY futures se spread nikalenge
+        # GIFT NIFTY - V55.10 FIX: Pehle NIFTY ke 5-day % ko Gift ka % bana diya tha, isliye +3.11% dikha jabki asli -0.01% tha
+        # Ab Gift ka apna Prev Close (NSE IX se) se 1-day % nikalenge. User ke screenshot me Prev Close 25,301 tha, price 25,298.50 = -0.01%
         try:
             _gift_price = None
             _gift_pct = 0.0
-            # Try NSE IX via proxy
+            _gift_prev = None
             try:
                 import urllib.parse as _up55
                 _gift_url = "https://www.nseindia.com/api/quote-derivative?symbol=GIFTNIFTY"
@@ -4367,21 +4368,29 @@ class GlobalMacroEngine:
                         _r = self.session.get(_pb + _up55.quote(_gift_url, safe=''), timeout=4)
                         if _r.ok:
                             _j = _r.json()
-                            _lp = float(_j.get("data", [{}])[0].get("lastPrice", 0)) if isinstance(_j.get("data"), list) and _j.get("data") else 0
+                            _d0 = _j.get("data", [{}])[0] if isinstance(_j.get("data"), list) and _j.get("data") else {}
+                            _lp = float(_d0.get("lastPrice", 0) or 0)
+                            # NSE IX previousClose / prevClose / closePrice - jo mile usse 1-day % nikalo
+                            for _k in ["previousClose", "prevClose", "closePrice", "prev_close"]:
+                                if _d0.get(_k):
+                                    _gift_prev = float(_d0.get(_k))
+                                    break
                             if _lp and _lp > 0:
                                 _gift_price = _lp
+                                if _gift_prev and _gift_prev > 0:
+                                    _gift_pct = ((_gift_price - _gift_prev) / _gift_prev) * 100
                                 break
                     except:
                         continue
             except:
                 pass
             if not _gift_price:
-                # Fallback - Yahoo NIFTY futures ^NSEI se approx Gift = NIFTY + spread (NIFTY spot se)
+                # Fallback - Yahoo NIFTY ^NSEI se approx, par ab 2d range se 1-day % aayega, 5-day nahi
                 try:
                     _np, _npct, _nsrc = self._verify_multi("^NSEI", "^nsei")
                     if _np and _np > 0:
-                        _gift_price = float(_np) + 25.0  # Typical overnight premium, kal se live NSE IX se aayega
-                        _gift_pct = _npct
+                        _gift_price = float(_np) + 25.0
+                        _gift_pct = _npct  # Ab ye 1-day % hai (range=2d fix ki wajah se)
                 except:
                     pass
             if _gift_price and _gift_price > 0:
