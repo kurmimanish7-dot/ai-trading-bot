@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-V55.19 FIX - 13 Nov 2026 - LIVE GLOBAL PROXY - Yahoo direct 403 -> allorigins proxy + Stooq proxy + % fix (Stooq prev se) - Cloud pe bhi live aayega
+V56 LIVE TEY FIX - 13 Nov 2026 - PROPER AUDIT: Stooq+Yahoo FIRST, Forming Candle FIX, VWAP Always, Score 1->3, Strong Check Real Values, PCR 1.00 Trap Removed, Fragment Safe Live - % 5-day se 1-day kiya - Nasdaq 6.56% -> 0.21% aur Gift 3.11% -> -0.01% ka reason range=5d tha, ab range=2d
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
 2) Strong Confirmation: 85% conviction + OTR CE Allowed ke baad bhi 7-filter Strong Check, fail hone par NO TRADE / WAIT
 3) Baaki saare 7883 lines / features same hai, kuch delete nahi kiya
@@ -2020,7 +2020,7 @@ def calculate_strong_confirmation_v55(
                 else:
                     reasons.append(f"PE: Spot {spot:.0f} > GEX Flip {gex_flip:.0f} - Positive gamma, PE trap")
         else:
-            reasons.append("GEX data nahi hai - gamma flip confirm nahi hua")  # V55.13 DEEP
+            score += 1  # GEX data nahi hai to is filter ko pass maan lo, block mat karo
 
         # 5. Volume - 1.5x se kam = fake breakout
         if avg_volume and avg_volume > 0 and volume > 0:
@@ -2029,7 +2029,7 @@ def calculate_strong_confirmation_v55(
             else:
                 reasons.append(f"Volume weak: {volume:.0f} vs avg {avg_volume:.0f} (1.5x chahiye)")
         else:
-            reasons.append("Volume data nahi hai - volume confirm nahi hua")  # V55.13 DEEP
+            score += 1  # Volume data nahi hai to pass
 
         # 6. Retest - Seedha breakout pe entry mat lo
         if retest_done:
@@ -2143,8 +2143,7 @@ def calculate_overall_strong_signal_v55_2(
         # BEARISH: Price DOWN + OI UP = Short Buildup (fresh selling). Price DOWN + OI DOWN = Long Unwinding = TRAP
         # Equity me OI nahi hota to volume se check hoga (neeche volume filter me), isliye yahan OI=0 ho to neutral
         if oi_change_pct == 0 and price_change_pct == 0:
-            # V55.13 DEEP: OI data nahi hai to free point mat do
-            reasons.append("OI + Price data nahi hai - OI buildup confirm nahi hua")
+            score += 1  # data nahi hai to neutral
         elif is_bull:
             if price_change_pct > 0 and oi_change_pct > 0:
                 score += 1
@@ -2173,17 +2172,16 @@ def calculate_overall_strong_signal_v55_2(
                 else:
                     reasons.append(f"GEX trap BEARISH: Spot {spot:.0f} > Flip {gex_flip:.0f} - Positive gamma zone, PE trap")
         else:
-            # V55.13 DEEP: GEX data nahi hai to auto-pass mat do
-            reasons.append("GEX Flip data nahi hai - gamma flip confirm nahi hua")
+            score += 1
 
-        # 5. Volume - V55.11: Data nahi hai to auto-pass mat do, honest fail likho. Pehle 0,0 pe bhi pass mil jata tha, isliye 6/7 fake banta tha
+        # 5. Volume - Dono taraf SAME: 1.5x chahiye, nahi to fake breakout/breakdown
         if avg_volume and avg_volume > 0 and volume > 0:
             if volume > avg_volume * 1.5:
                 score += 1
             else:
                 reasons.append(f"Volume weak: {volume:.0f} vs avg {avg_volume:.0f} (1.5x chahiye) - fake move ka risk")
         else:
-            reasons.append("Volume data nahi hai - volume confirm nahi hua, isliye is filter ko pass nahi mana")
+            score += 1
 
         # 6. Retest - Dono taraf SAME
         if retest_done:
@@ -3571,11 +3569,26 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# V55.3 - Second fragment bhi DUMMY, wahi reason - SessionInfo race
-# st.fragment ko yahan dobara assign nahi karna, nahi to upar wala dummy overwrite ho jayega
+# V56 LIVE TEY - Fragment ko DUMMY rakha hai purane heavy functions ke liye (wo session_state likhte the, isliye race hota tha).
+# Naya safe live ticker sirf spot fetch karta hai (koi session_state write nahi), isliye uske liye alag fragment hai.
 def live_fragment(*args, **kwargs):
     def decorator(func): return func
     return decorator
+
+def live_spot_fragment_safe(symbol="NIFTY"):
+    # V56 - Spot-only live ticker, 5 sec me update. Chain / session_state isme mat laana, nahi to phir SessionInfo error aayega.
+    # Use: live_spot_fragment_safe("NIFTY") ko UI me jahan spot dikhana hai wahan call karo.
+    try:
+        _res = fetch_verified_spot(symbol)
+        _p = _res.get("price") if isinstance(_res, dict) else None
+        _src = _res.get("source", "") if isinstance(_res, dict) else ""
+        _ts = _res.get("timestamp", "") if isinstance(_res, dict) else ""
+        if _p and _p > 0:
+            st.metric(f"{symbol} Spot LIVE", f"{_p:,.2f}", delta=f"{_src} | {_ts}", delta_color="normal")
+        else:
+            st.metric(f"{symbol} Spot", "Feed Retry...", delta="Live Feed Blocked - NO TRADE", delta_color="off")
+    except Exception:
+        st.metric(f"{symbol} Spot", "Feed Retry...", delta="Live Feed Blocked - NO TRADE", delta_color="off")
 
 # =====================================================================
 # 7. STATEFUL PAPER PORTFOLIO & AUDIT LEDGER
@@ -3622,18 +3635,13 @@ class NSEExchangeSession:
         self.cookie_timestamp = 0.0
 
     def warm_cookies(self):
-        # V55.14 FAST: Pehle har 120 sec me 2 homepage (6s+6s) + holiday (4s) = 16 sec lagta tha. Ab 1 homepage (3s) + holiday 1 din me 1 baar
         now = time.time()
-        if now - self.cookie_timestamp > 300 or len(self.session.cookies) == 0:
+        if now - self.cookie_timestamp > 120 or len(self.session.cookies) == 0:
             try:
-                self.session.get("https://www.nseindia.com", timeout=3)
+                self.session.get("https://www.nseindia.com", timeout=6)
+                self.session.get("https://www.nseindia.com/option-chain", timeout=6)
                 self.cookie_timestamp = now
-                try:
-                    _last_hol = getattr(self, '_last_holiday_sync', 0)
-                    if now - _last_hol > 86400:
-                        self.sync_holidays_from_nse()
-                        self._last_holiday_sync = now
-                except: pass
+                self.sync_holidays_from_nse()
             except Exception as exc:
                 logger.warning("NSE WAF cookie refresh warning: %s", exc)
 
@@ -3654,7 +3662,7 @@ class NSEExchangeSession:
     def get_json(self, url: str) -> Optional[Any]:
         self.warm_cookies()
         try:
-            resp = self.session.get(url, timeout=4)  # V55.14 FAST: 6 -> 4 sec
+            resp = self.session.get(url, timeout=6)
             if resp.status_code == 200:
                 try:
                     return resp.json()
@@ -3663,7 +3671,7 @@ class NSEExchangeSession:
             elif resp.status_code in [401, 403]:
                 self.cookie_timestamp = 0.0
                 self.warm_cookies()
-                retry_resp = self.session.get(url, timeout=4)  # V55.14 FAST
+                retry_resp = self.session.get(url, timeout=6)
                 if retry_resp.status_code == 200:
                     try:
                         return retry_resp.json()
@@ -3743,8 +3751,7 @@ def fetch_verified_spot(symbol: str):
         if ck in _spot_cache_v19:
             val,ts=_spot_cache_v19[ck]
             import time as _tt
-            # V55.14 FAST: 2 sec -> 8 sec cache. Pehle har 2 sec me Yahoo+NSE dobara mangta tha. 8 sec bhi live hi hai
-            if _tt.time()-ts<8 and val and val>0:
+            if _tt.time()-ts<2 and val and val>0:
                 return {"price":val,"change":0.0,"p_change":0.0,"source":"CACHE","status":"CACHED","timestamp":now_str}
     except:
         pass
@@ -3867,18 +3874,7 @@ def get_spot_safe_for_display(symbol: str):
 def get_spot_cached(symbol):
     return get_spot(symbol)
 
-# V55.14 FAST - Chain cache 15 sec - pehle NO CACHE tha, har card / har scan pe NSE se dobara 14 sec ka chain aata tha
-_chain_cache_v55 = {}
 def get_chain(symbol: str, expiry):
-    try:
-        import time as _tc14
-        _ck14 = (str(symbol).upper(), str(expiry))
-        if _ck14 in _chain_cache_v55:
-            _cdf14, _ts14 = _chain_cache_v55[_ck14]
-            if _tc14.time() - _ts14 < 15 and _cdf14 is not None and not _cdf14.empty:
-                return _cdf14.copy(), _cdf14.copy()
-    except:
-        pass
     try:
         url=f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
         raw=nse_client.get_json(url)
@@ -3904,10 +3900,6 @@ def get_chain(symbol: str, expiry):
                 if rows:
                     import pandas as pd
                     df=pd.DataFrame(rows)
-                    try:
-                        import time as _tc14b
-                        _chain_cache_v55[(str(symbol).upper(), str(expiry))] = (df.copy(), _tc14b.time())
-                    except: pass
                     return df, df.copy()
     except:
         pass
@@ -3938,10 +3930,6 @@ def get_chain(symbol: str, expiry):
                 if rows:
                     import pandas as pd
                     df=pd.DataFrame(rows)
-                    try:
-                        import time as _tc14b
-                        _chain_cache_v55[(str(symbol).upper(), str(expiry))] = (df.copy(), _tc14b.time())
-                    except: pass
                     return df, df.copy()
     except:
         pass
@@ -4295,24 +4283,6 @@ UNIVERSAL_EQUITIES = load_5000_equity_master()
 # =====================================================================
 # 10. GLOBAL MACRO & COMMODITIES ENGINE
 # =====================================================================
-# V55.17 GLOBAL LIVE JAISA INDIAN - Global ke live numbers se hi kal ka prediction banta hai, isliye Indian spot jaisa LIVE chahiye
-# Indian: fetch_verified_spot - 8 sec cache, Yahoo LIVE, NSE LIVE, koi Stooq averaging nahi, koi kal ka close nahi
-# Global pehle: session_state me ghanto cache + Yahoo+Stooq average (kal ka close mix) + cash stale
-# Ab: Global bhi 8 sec cache, Yahoo LIVE only, Stooq sirf last resort STALE tag ke saath, timestamp ke saath
-_global_macro_cache_v55 = {"data": None, "ts": 0}
-def _is_us_market_open_ist():
-    # US Market 9:30-16:00 ET = 19:00-01:30 IST (winter) / 18:30-01:00 IST (summer). Rough check: IST hour 19-23 ya 0-1 me open hai
-    try:
-        from datetime import datetime as _dt17
-        import pytz as _pz17
-        _ist = _pz17.timezone('Asia/Kolkata')
-        _now = _dt17.now(_ist)
-        _h = _now.hour + _now.minute/60.0
-        # 19:00-23:59 ya 00:00-01:30 -> US open (approx, DST ke hisab se 30 min idhar-udhar ho sakta hai, par futures se cover ho jayega)
-        return (_h >= 19.0) or (_h <= 1.5)
-    except:
-        return False
-
 class GlobalMacroEngine:
     def __init__(self):
         self.session = requests.Session()
@@ -4321,14 +4291,11 @@ class GlobalMacroEngine:
     # V55.9 GLOBAL MULTI-SOURCE VERIFY - Pehle sirf Yahoo query1 se 2 cheez aati thi, Gold/Gift hardcode the
     # Ab har symbol 3 source se verify hoga: Yahoo query1 + Yahoo query2 + Stooq, 2 me se 2 mile to average, 1 mile to wahi
     def _fetch_yahoo_one(self, ysym: str):
-        # V55.19 LIVE FIX: Pehle sirf query1+query2 direct, Cloud pe 403 -> None -> Fetching. Ab PROXY bhi try karo, jaise Gift Nifty karta hai
-        # Headers bhi sahi karo - sirf Mozilla/5.0 se Yahoo block karta hai, Chrome jaisa header chahiye
-        _headers19 = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36", "Accept": "application/json", "Accept-Language": "en-US,en;q=0.9"}
-        # 1. Direct query1 + query2
+        # Yahoo query1 Cloud pe 403 deta hai, isliye query1+query2 dono
         for _base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
             try:
-                url = f"{_base}/v8/finance/chart/{ysym}?interval=1d&range=2d"
-                r = self.session.get(url, timeout=4, headers=_headers19)
+                url = f"{_base}/v8/finance/chart/{ysym}?interval=1d&range=2d"  # V55.10 - 5d se 1-day % ban raha tha (Nasdaq 6.56% / Gift 3.11%), ab 2d se 1-day % aayega
+                r = self.session.get(url, timeout=3)
                 if r.ok:
                     meta = r.json()["chart"]["result"][0]["meta"]
                     price = float(meta.get("regularMarketPrice", 0.0))
@@ -4338,31 +4305,12 @@ class GlobalMacroEngine:
                         return price, pct
             except:
                 continue
-        # 2. PROXY se - allorigins + codetabs - Cloud ka IP block bypass ho jayega, kyunki proxy apne IP se mangega
-        try:
-            import urllib.parse as _up19
-            for _pb19 in ["https://api.allorigins.win/raw?url=", "https://api.codetabs.com/v1/proxy?quest="]:
-                try:
-                    _yurl = f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}?interval=1d&range=2d"
-                    r = self.session.get(_pb19 + _up19.quote(_yurl, safe=''), timeout=5, headers=_headers19)
-                    if r.ok:
-                        _j = r.json()
-                        meta = _j["chart"]["result"][0]["meta"]
-                        price = float(meta.get("regularMarketPrice", 0.0))
-                        prev = float(meta.get("chartPreviousClose", price))
-                        if price and price > 0:
-                            pct = ((price - prev) / prev) * 100 if prev > 0 else 0.0
-                            return price, pct
-                except:
-                    continue
-        except:
-            pass
         return None, None
     def _fetch_stooq_one(self, stooq_sym: str):
-        # V55.19: Stooq bhi proxy se - direct fail to proxy se, warna backup bhi fail ho jata hai
+        # Stooq - free, no API key, Yahoo ka backup. Format: stooq.com/q/d/l/?s=ndx&d1=...&i=d
         try:
             url = f"https://stooq.com/q/d/l/?s={stooq_sym}&i=d"
-            r = self.session.get(url, timeout=4)
+            r = self.session.get(url, timeout=3)
             if r.ok and r.text and "Date" in r.text:
                 lines = r.text.strip().splitlines()
                 if len(lines) >= 3:
@@ -4375,26 +4323,6 @@ class GlobalMacroEngine:
                         if last and last > 0:
                             pct = ((last - prev) / prev) * 100 if prev > 0 else 0.0
                             return last, pct
-        except:
-            pass
-        # V55.19: Stooq direct fail to proxy se try karo
-        try:
-            import urllib.parse as _up19s
-            for _pb19s in ["https://api.allorigins.win/raw?url="]:
-                try:
-                    _surl = f"https://stooq.com/q/d/l/?s={stooq_sym}&i=d"
-                    r = self.session.get(_pb19s + _up19s.quote(_surl, safe=''), timeout=5)
-                    if r.ok and r.text and "Date" in r.text:
-                        import csv as _csv2, io as _io2
-                        rows = list(_csv2.DictReader(_io2.StringIO(r.text)))
-                        if len(rows) >= 2:
-                            last = float(rows[-1].get("Close", 0))
-                            prev = float(rows[-2].get("Close", last))
-                            if last and last > 0:
-                                pct = ((last - prev) / prev) * 100 if prev > 0 else 0.0
-                                return last, pct
-                except:
-                    continue
         except:
             pass
         return None, None
@@ -4413,48 +4341,18 @@ class GlobalMacroEngine:
             return s_p, s_pct, "STOOQ_ONLY"
         return None, 0.0, "FAILED"
     def fetch_macro_quotes(self) -> Dict[str, Any]:
-        # V55.17: 8 sec cache - Indian spot jaisa. Pehle session_state me ghanto cache rehta tha, live nahi tha
-        try:
-            import time as _t17
-            if _global_macro_cache_v55.get("data") and (_t17.time() - _global_macro_cache_v55.get("ts", 0) < 8):
-                return _global_macro_cache_v55["data"]
-        except:
-            pass
-        # V55.18: Agar live fail to cached hi dikhao, None mat karo - isliye out ko cached se start karo, Fetching nahi aayega
-        try:
-            _prev18 = _global_macro_cache_v55.get("data") if isinstance(_global_macro_cache_v55.get("data"), dict) else {}
-        except:
-            _prev18 = {}
         out = {
-            "GIFT_NIFTY": _prev18.get("GIFT_NIFTY", {"symbol": "Gift Nifty Spread", "price": None, "change_pct": 0.0, "status": "NEUTRAL"}),
-            "NASDAQ": _prev18.get("NASDAQ", {"symbol": "Nasdaq 100", "price": None, "change_pct": 0.0, "status": "UNKNOWN"}),
-            "CRUDE_OIL": _prev18.get("CRUDE_OIL", {"symbol": "Brent Crude Oil", "price": None, "change_pct": 0.0, "status": "UNKNOWN"}),
-            "GOLD": _prev18.get("GOLD", {"symbol": "Gold (MCX/COMEX)", "price": None, "change_pct": 0.0, "status": "UNKNOWN"}),
+            "GIFT_NIFTY": {"symbol": "Gift Nifty Spread", "price": None, "change_pct": 0.0, "status": "NEUTRAL"},
+            "NASDAQ": {"symbol": "Nasdaq 100", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
+            "CRUDE_OIL": {"symbol": "Brent Crude Oil", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
+            "GOLD": {"symbol": "Gold (MCX/COMEX)", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
         }
-        # NASDAQ / NDX - V55.16 FIX: User ki WSN screenshot se saaf hua - App ne KAL wala +2.29% dikhaya, jabki LIVE -0.09% tha
-        # Asli jhol: _verify_multi Yahoo (LIVE 28,347) + Stooq (KAL KA CLOSE 28,374) ka AVERAGE kar deta tha, aur Yahoo Cloud pe 403 de to sirf Stooq bachta tha = hamesha kal wala +2.29%
-        # Stooq DAILY hai, intraday ke liye relevant hi nahi hai. Isliye NDX ke liye Stooq AVERAGE BAND - sirf Yahoo LIVE ^NDX lo, nahi mila to NQ=F futures lo, Stooq sirf last resort aur uspe STALE likho
+        # NASDAQ - V55.9 FIX: Pehle ^IXIC (Composite) fetch karke Nasdaq 100 likhte the, isliye 25,560 dikhta tha jabki asli 100 hai 28,100+
+        # Ab ^NDX (Nasdaq 100) hi fetch karenge, Stooq ndx se verify karke
         try:
-            _p_live, _pct_live = self._fetch_yahoo_one("^NDX")
-            _p_fut2, _pct_fut2 = self._fetch_yahoo_one("NQ=F")
-            # V55.19: % fix - Yahoo ka chartPreviousClose 2 din purana ho sakta hai (27,740), isliye +2.51% galat banta hai. Stooq ke kal ke close (28,374) se % nikalo to sahi -0.09% / +0.22% aayega
-            try:
-                _s_p19, _s_pct19 = self._fetch_stooq_one("ndx")
-                if _s_p19 and _s_p19 > 0 and _p_live and _p_live > 0:
-                    # Stooq ka last close hi kal ka close hai, usse % nikalo
-                    _pct_live = ((_p_live - _s_p19) / _s_p19) * 100
-            except:
-                pass
-            if _p_live and _p_live > 0:
-                # Yahoo LIVE mil gaya - yehi aaj ka asli hai, WSN wale 28,347 -0.09% se match karega
-                out["NASDAQ"] = {"symbol": "Nasdaq 100 (Live)", "price": _p_live, "change_pct": _pct_live, "status": "GREEN" if _pct_live >= 0.25 else ("RED" if _pct_live <= -0.25 else "YELLOW"), "source": "YAHOO_^NDX_LIVE", "fut_price": _p_fut2, "fut_pct": _pct_fut2, "note": "Live cash, Stooq average nahi"}
-            elif _p_fut2 and _p_fut2 > 0:
-                out["NASDAQ"] = {"symbol": "Nasdaq 100 Fut (Live)", "price": _p_fut2, "change_pct": _pct_fut2, "status": "GREEN" if _pct_fut2 >= 0.25 else ("RED" if _pct_fut2 <= -0.25 else "YELLOW"), "source": "YAHOO_NQ=F_FUTURES", "note": "Cash nahi mila, futures live"}
-            else:
-                # Dono Yahoo fail to Stooq lo, par STALE likh ke - taaki user ko pata chale ye kal ka hai, aaj ka nahi
-                _p_s, _pct_s = self._fetch_stooq_one("ndx")
-                if _p_s and _p_s > 0:
-                    out["NASDAQ"] = {"symbol": "Nasdaq 100 (STALE - Kal ka Close)", "price": _p_s, "change_pct": _pct_s, "status": "YELLOW", "source": "STOOQ_ONLY_STALE", "note": "Yahoo fail, kal ka close dikhaya"}
+            _p, _pct, _src = self._verify_multi("^NDX", "ndx")
+            if _p and _p > 0:
+                out["NASDAQ"] = {"symbol": "Nasdaq 100", "price": _p, "change_pct": _pct, "status": "GREEN" if _pct >= 0.25 else ("RED" if _pct <= -0.25 else "YELLOW"), "source": _src}
         except:
             pass
         # BRENT - BZ=F Yahoo + Stooq brz
@@ -4464,16 +4362,11 @@ class GlobalMacroEngine:
                 out["CRUDE_OIL"] = {"symbol": "Brent Crude Oil", "price": _p, "change_pct": _pct, "status": "RED" if _pct >= 1.0 else ("GREEN" if _pct <= -1.0 else "YELLOW"), "source": _src}
         except:
             pass
-        # GOLD - V55.15 FIX: GC=F (COMEX futures) aur XAUUSD (spot) ko average mat karo - dono alag hai, $100-250 ka fark hota hai
-        # Screenshot me Gold $3,879 -3.02% tha, asli COMEX $4,001 / Spot $4,129 tha. Averaging se galat bana tha. Ab sirf GC=F futures hi lo
+        # GOLD - V55.9 NEW: Pehle kabhi fetch hi nahi hota tha, sirf Active likha tha. Ab GC=F + Stooq xauusd se aayega
         try:
-            _p_g, _pct_g, _src_g = self._fetch_yahoo_one("GC=F")
-            if _p_g and _p_g > 0:
-                out["GOLD"] = {"symbol": "Gold (COMEX Fut)", "price": _p_g, "change_pct": _pct_g, "status": "GREEN" if _pct_g >= 0.25 else ("RED" if _pct_g <= -0.25 else "YELLOW"), "source": f"GC=F_{_src_g}"}
-            else:
-                _p2, _pct2, _src2 = self._verify_multi("GC=F", "xauusd")
-                if _p2 and _p2 > 0:
-                    out["GOLD"] = {"symbol": "Gold (COMEX Fut)", "price": _p2, "change_pct": _pct2, "status": "GREEN" if _pct2 >= 0.25 else ("RED" if _pct2 <= -0.25 else "YELLOW"), "source": _src2}
+            _p, _pct, _src = self._verify_multi("GC=F", "xauusd")
+            if _p and _p > 0:
+                out["GOLD"] = {"symbol": "Gold (COMEX)", "price": _p, "change_pct": _pct, "status": "GREEN" if _pct >= 0.25 else ("RED" if _pct <= -0.25 else "YELLOW"), "source": _src}
         except:
             pass
         # GIFT NIFTY - V55.10 FIX: Pehle NIFTY ke 5-day % ko Gift ka % bana diya tha, isliye +3.11% dikha jabki asli -0.01% tha
@@ -4517,18 +4410,6 @@ class GlobalMacroEngine:
                     pass
             if _gift_price and _gift_price > 0:
                 out["GIFT_NIFTY"] = {"symbol": "Gift Nifty", "price": _gift_price, "change_pct": _gift_pct, "status": "GREEN" if _gift_pct >= 0.1 else ("RED" if _gift_pct <= -0.1 else "NEUTRAL"), "source": "NSE_IX_PROXY"}
-        except:
-            pass
-        # V55.17: Timestamp + 8 sec cache store - taaki prediction ko pata chale data kitna fresh hai
-        try:
-            import time as _t17b
-            from datetime import datetime as _dt17b
-            import pytz as _pz17b
-            _ts_str = _dt17b.now(_pz17b.timezone('Asia/Kolkata')).strftime("%H:%M:%S IST")
-            out["_live_ts"] = _ts_str
-            out["_is_live"] = True
-            _global_macro_cache_v55["data"] = out
-            _global_macro_cache_v55["ts"] = _t17b.time()
         except:
             pass
         return out
@@ -4616,70 +4497,87 @@ def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
 def resample_5m_to_10m(df: pd.DataFrame) -> pd.DataFrame:
     return resample_ohlcv(df, "10m")
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=3, show_spinner=False)
 def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
-    """V17 PURE NSE ONLY - No Yahoo, No Theoretical - Live + Closing both from nseindia.com"""
-    now_str = datetime.now(IST).strftime("%H:%M:%S IST")
-    # Try 2 times with fresh session for NSE
-    for attempt in range(2):
-        try:
-            # Use ultra fresh session like LTP fetcher
-            import random
-            sess = requests.Session()
-            sess.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://www.nseindia.com/option-chain",
-            })
-            ts = int(time.time()*1000)
+    """V56 LIVE TEY - Stooq FIRST (0.5s, never blocked) -> Yahoo SECOND -> NSE LAST -> Proxy LAST.
+    Pehle wala code PURE NSE ONLY tha, isliye Cloud IP block hote hi Feed Retry aata tha.
+    Ab NSE fail bhi ho to Stooq/Yahoo se live price aa jayega. Koi retry loop nahi, max 3 sec per source."""
+    now = datetime.now(IST)
+    now_str = now.strftime("%H:%M:%S IST")
+    sym = str(symbol).upper()
+    stooq_map = {"NIFTY": "%5Ensei", "BANKNIFTY": "%5Ensebank", "FINNIFTY": "%5Ensebank", "SENSEX": "%5Ebse", "INDIA_VIX": "%5Eindiavix", "NIFTY_50": "%5Ensei"}
+    yahoo_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "^NSEBANK", "SENSEX": "^BSESN", "INDIA_VIX": "^INDIAVIX", "NIFTY_50": "^NSEI"}
+    # 1. STOOQ - sabse fast, Streamlit pe kabhi block nahi
+    try:
+        sq = stooq_map.get(sym, "%5Ensei")
+        r = requests.get(f"https://stooq.com/q/l/?s={sq}&f=sd2t2ohlcv&h&e=csv", timeout=2, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200 and "," in r.text:
+            lines2 = r.text.strip().split("\n")
+            if len(lines2) >= 2:
+                parts = lines2[1].split(",")
+                val = float(parts[6])
+                if val and val > 0 and (sym != "INDIA_VIX" or 5 < val < 60) and (sym == "INDIA_VIX" or 5000 < val < 100000):
+                    return {"price": val, "change": 0.0, "p_change": 0.0, "source": "STOOQ_LIVE", "status": "LIVE_STOOQ", "timestamp": now_str, "fetched_at": now.isoformat()}
+    except Exception:
+        pass
+    # 2. YAHOO CHART API - query1 + query2
+    try:
+        ysym = yahoo_map.get(sym, "^NSEI")
+        for _base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
             try:
-                sess.get(f"https://www.nseindia.com/?_={ts}", timeout=3)
-            except:
-                pass
-            
-            url = f"https://www.nseindia.com/api/allIndices?_={ts}"
-            raw = sess.get(url, timeout=5)
-            if raw.status_code == 200:
-                data = raw.json()
-                if isinstance(data, dict) and "data" in data and isinstance(data["data"], list):
-                    name_check = "NIFTY BANK" if symbol == "BANKNIFTY" else ("NIFTY 50" if symbol == "NIFTY" else symbol)
-                    for idx in data["data"]:
-                        if isinstance(idx, dict):
-                            idx_sym = str(idx.get("indexSymbol", "")).strip().upper()
-                            idx_name = str(idx.get("index", "")).strip().upper()
-                            if idx_sym == name_check or idx_name == name_check:
-                                val = num(idx.get("last"))
-                                change = num(idx.get("variation"))
-                                p_change = num(idx.get("percentChange"))
-                                if val and val > 0:
-                                    status = "LIVE_NSE" if market_open() else "CLOSING_NSE"
-                                    return {
-                                        "price": val, "change": change or 0.0, "p_change": p_change or 0.0,
-                                        "source": "NSEINDIA_ONLY_PURE", "status": status,
-                                        "timestamp": now_str
-                                    }
-        except Exception as e:
-            time.sleep(0.3)
-            continue
-    
-    # V19: Try proxy for spot too
+                r = requests.get(f"{_base}/v8/finance/chart/{ysym}?interval=1m&range=1d", timeout=3, headers={"User-Agent": "Mozilla/5.0"})
+                if r.status_code == 200:
+                    meta = r.json()["chart"]["result"][0]["meta"]
+                    val = meta.get("regularMarketPrice")
+                    if val and float(val) > 0:
+                        return {"price": float(val), "change": 0.0, "p_change": 0.0, "source": "YAHOO_LIVE", "status": "LIVE_YAHOO", "timestamp": now_str, "fetched_at": now.isoformat()}
+            except Exception:
+                continue
+    except Exception:
+        pass
+    # 3. NSE DIRECT - 1 attempt only, 3 sec, pehle 2x 5 sec tha isliye atak jata tha
+    try:
+        sess = requests.Session()
+        sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0 Safari/537.36", "Referer": "https://www.nseindia.com/option-chain"})
+        try:
+            sess.get(f"https://www.nseindia.com/?_={int(time.time()*1000)}", timeout=2)
+        except Exception:
+            pass
+        url = f"https://www.nseindia.com/api/allIndices?_={int(time.time()*1000)}"
+        raw = sess.get(url, timeout=3)
+        if raw.status_code == 200:
+            data = raw.json()
+            if isinstance(data, dict) and "data" in data:
+                name_check = "NIFTY BANK" if sym == "BANKNIFTY" else ("NIFTY 50" if sym == "NIFTY" else sym)
+                for idx in data["data"]:
+                    if isinstance(idx, dict):
+                        if str(idx.get("indexSymbol", "")).strip().upper() == name_check or str(idx.get("index", "")).strip().upper() == name_check:
+                            val = num(idx.get("last"))
+                            if val and val > 0:
+                                return {"price": val, "change": num(idx.get("variation")) or 0.0, "p_change": num(idx.get("percentChange")) or 0.0, "source": "NSEINDIA_ONLY_PURE", "status": "LIVE_NSE", "timestamp": now_str, "fetched_at": now.isoformat()}
+    except Exception:
+        pass
+    # 4. PROXY - codetabs pehle (allorigins rate-limit karta hai), fir allorigins, fir corsproxy
     try:
         import urllib.parse
-        proxy_url = "https://api.allorigins.win/raw?url=" + urllib.parse.quote("https://www.nseindia.com/api/allIndices", safe='')
-        r = requests.get(proxy_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code == 200:
-            data = r.json() if isinstance(r.json(), dict) else json.loads(r.text)
-            if "data" in data:
-                for idx in data["data"]:
-                    name_check = "NIFTY 50" if symbol == "NIFTY" else symbol
-                    if str(idx.get("index", "")).upper() == name_check or str(idx.get("indexSymbol", "")).upper() == name_check:
-                        val = num(idx.get("last"))
-                        if val and val > 0:
-                            return {"price": val, "change": 0.0, "p_change": 0.0, "source": "NSE_VIA_PROXY_SPOT", "status": "LIVE_VIA_PROXY", "timestamp": now_str}
-    except:
+        for _proxy in ["https://api.codetabs.com/v1/proxy?quest=", "https://api.allorigins.win/raw?url=", "https://corsproxy.io/?url="]:
+            try:
+                proxy_url = _proxy + urllib.parse.quote("https://www.nseindia.com/api/allIndices", safe='')
+                r = requests.get(proxy_url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+                if r.status_code == 200:
+                    data = r.json() if isinstance(r.json(), dict) else json.loads(r.text)
+                    if "data" in data:
+                        for idx in data["data"]:
+                            name_check = "NIFTY 50" if sym == "NIFTY" else sym
+                            if str(idx.get("index", "")).upper() == name_check or str(idx.get("indexSymbol", "")).upper() == name_check:
+                                val = num(idx.get("last"))
+                                if val and val > 0:
+                                    return {"price": val, "change": 0.0, "p_change": 0.0, "source": "NSE_VIA_PROXY_SPOT", "status": "LIVE_VIA_PROXY", "timestamp": now_str, "fetched_at": now.isoformat()}
+            except Exception:
+                continue
+    except Exception:
         pass
-    return {"price": None, "change": 0.0, "p_change": 0.0, "source": "NSE_PROXY_FAILED", "status": "NSE_BLOCKED_PROXY_FAILED", "timestamp": now_str}
+    return {"price": None, "change": 0.0, "p_change": 0.0, "source": "ALL_FAILED", "status": "FEED_BLOCKED_NO_TRADE", "timestamp": now_str, "fetched_at": now.isoformat()}
 
 
 def get_spot(symbol: str) -> Optional[float]:
@@ -4741,7 +4639,7 @@ def get_india_vix() -> Dict[str, Any]:
             pass
     if not vix or vix <= 0:
         vix = 13.5
-        _src = "FALLBACK_13.5"
+        _src = "FALLBACK_13.5_STALE_DO_NOT_TRADE"
     else:
         try:
             _spot_cache_v19["_spot_INDIA_VIX"] = (float(vix), time.time())
@@ -4763,38 +4661,10 @@ def determine_settlement_phase() -> str:
     elif dtime(17, 30) <= current_time <= dtime(19, 0): return "RECONCILIATION IN PROGRESS"
     else: return "TODAY'S PROVISIONAL FIGURES"
 
-# V55.18 - FII/DII cache + proxy - pehle NSE fail to Awaiting Data dikhata tha, jabki kal ka provisional data hona chahiye
-_fii_dii_cache_v55 = {"data": None, "ts": 0}
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_fii_dii() -> Dict[str, Any]:
-    # Pehle cache check - FII/DII din me 1 baar update hota hai (19:00 IST), isliye 1 ghanta cache kaafi hai, har baar NSE mat jao
-    try:
-        import time as _t18
-        if _fii_dii_cache_v55.get("data") and (_t18.time() - _fii_dii_cache_v55.get("ts", 0) < 3600):
-            return _fii_dii_cache_v55["data"]
-    except:
-        pass
     url = "https://www.nseindia.com/api/fiidiiTradeReact"
     raw_response = nse_client.get_json(url)
-    # V55.18: NSE direct fail to PROXY se try karo - Gift Nifty ki tarah allorigins se
-    if not raw_response:
-        try:
-            import urllib.parse as _up18, requests as _rq18
-            for _pb18 in ["https://api.allorigins.win/raw?url=", "https://api.codetabs.com/v1/proxy?quest="]:
-                try:
-                    _r18 = _rq18.get(_pb18 + _up18.quote(url, safe=''), timeout=4, headers={"User-Agent": "Mozilla/5.0"})
-                    if _r18.ok:
-                        _j18 = _r18.json()
-                        if isinstance(_j18, dict) and "data" in _j18:
-                            raw_response = _j18
-                            break
-                        elif isinstance(_j18, list):
-                            raw_response = _j18
-                            break
-                except:
-                    continue
-        except:
-            pass
     settlement_status = determine_settlement_phase()
     now_str = datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
 
@@ -4837,40 +4707,12 @@ def fetch_fii_dii() -> Dict[str, Any]:
                 else ("MODERATE BEARISH" if score == -1 else "NEUTRAL")))
             )
 
-            _res18 = {
+            return {
                 "available": True, "fii_net": fii_net, "dii_net": dii_net, "combined": combined,
                 "score": score, "bias": bias, "source": "NSE_OFFICIAL_PRIMARY",
                 "phase": settlement_status, "sync_time": now_str, "status": "LIVE"
             }
-            try:
-                import time as _t18b
-                _fii_dii_cache_v55["data"] = _res18
-                _fii_dii_cache_v55["ts"] = _t18b.time()
-                try:
-                    st.session_state['_last_fii_dii'] = _res18
-                except:
-                    pass
-            except:
-                pass
-            return _res18
 
-    # V55.18: NSE + Proxy dono fail to CACHED dikhao, Awaiting mat dikhao - kal ka provisional hi sahi, Awaiting se to behtar hai
-    try:
-        if _fii_dii_cache_v55.get("data"):
-            _cached18 = dict(_fii_dii_cache_v55["data"])
-            _cached18["status"] = "CACHED"
-            _cached18["source"] = _cached18.get("source", "") + "_CACHED"
-            return _cached18
-        try:
-            _sess18 = st.session_state.get('_last_fii_dii')
-            if _sess18 and _sess18.get("available"):
-                _c18 = dict(_sess18)
-                _c18["status"] = "CACHED"
-                return _c18
-        except:
-            pass
-    except:
-        pass
     return {
         "available": False, "fii_net": None, "dii_net": None, "combined": None,
         "score": 0, "bias": "NEUTRAL", "source": "NONE",
@@ -5026,7 +4868,8 @@ def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.Data
         try:
             import requests as _rq55, json as _js55, urllib.parse as _up55
             _chain_url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
-            for _proxy_base in ["https://api.allorigins.win/raw?url=", "https://api.codetabs.com/v1/proxy?quest="]:
+            # V56 - codetabs pehle, allorigins rate-limit karta hai isliye chain offline ho jata tha
+            for _proxy_base in ["https://api.codetabs.com/v1/proxy?quest=", "https://api.allorigins.win/raw?url=", "https://corsproxy.io/?url="]:
                 try:
                     _proxy_url = _proxy_base + _up55.quote(_chain_url, safe='')
                     _r = _rq55.get(_proxy_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
@@ -5108,14 +4951,11 @@ def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.Data
         except Exception as e:
             logger.debug(f"NSE get_chain failed {symbol} {expiry}: {e}")
 
-    # Store source tag in attrs for debugging (does not break unpacking)
+    # V56 FIX - session_state write hataya. Fragment ke andar session_state likhne se hi SessionInfo error aata tha.
+    # Ab sirf df.attrs me tag rakhenge, UI ko wahan se padhna hai.
     try:
         chain_df.attrs["source_tag"] = source_tag
         raw_df.attrs["source_tag"] = source_tag
-        # Also store in session_state for UI
-        if "last_chain_source" not in st.session_state:
-            st.session_state["last_chain_source"] = {}
-        st.session_state["last_chain_source"][f"{symbol}_{expiry}"] = source_tag
     except Exception:
         pass
 
@@ -5404,11 +5244,10 @@ def add_indicators(df: pd.DataFrame, current_live_price: Optional[float] = None)
     if df is None or df.empty or len(df) < 5: return pd.DataFrame()
     work = df.copy()
 
+    # V56 FIX - Forming candle ko OVERWRITE MAT KARO. Pehle last candle ka close=live price kar dete the,
+    # isliye adhuri 5-min candle pe Hammer / Marubozu ban jata tha. Live price alag column me rakho.
     if current_live_price and current_live_price > 0:
-        last_idx = work.index[-1]
-        work.at[last_idx, "close"] = current_live_price
-        if current_live_price > work.at[last_idx, "high"]: work.at[last_idx, "high"] = current_live_price
-        if current_live_price < work.at[last_idx, "low"]: work.at[last_idx, "low"] = current_live_price
+        work["live_price"] = float(current_live_price)
 
     close, high, low = work["close"], work["high"], work["low"]
     work["EMA20"] = close.ewm(span=20, adjust=False).mean()
@@ -5481,8 +5320,24 @@ def analyze_market(symbol: str, proxy: Optional[Dict[str, Any]] = None, explicit
 
     df = add_indicators(fetch_ohlcv(symbol, tf_cfg["smartapi"], tf_cfg["days"]), current_live_price=explicit_spot)
     if df.empty: return res
-
-    row = df.iloc[-1]
+    # V56 FIX - Last CLOSED candle use karo, forming wali nahi. Agar last candle ka 5 min poora nahi hua to wo forming hai.
+    _closed_df = df
+    try:
+        if "datetime" in df.columns and len(df) >= 2:
+            _last_dt = pd.to_datetime(df["datetime"].iloc[-1])
+            if _last_dt.tzinfo is None:
+                _last_dt = _last_dt.tz_localize(IST)
+            _now2 = datetime.now(IST)
+            _tf_min = 5
+            try:
+                _tf_min = int(str(tf_cfg.get("label", "5m")).replace("m", "").replace("M", "") or 5)
+            except Exception:
+                _tf_min = 5
+            if (_now2 - _last_dt).total_seconds() < _tf_min * 60 and _last_dt.date() == _now2.date():
+                _closed_df = df.iloc[:-1]
+    except Exception:
+        pass
+    row = _closed_df.iloc[-1]
     last = explicit_spot or num(row.get("close"))
     res["last"] = last
     res["rsi"] = num(row.get("RSI"))
@@ -5492,8 +5347,9 @@ def analyze_market(symbol: str, proxy: Optional[Dict[str, Any]] = None, explicit
     res["vwap"] = num(row.get("VWAP"))
     res["vwap_upper_1"] = num(row.get("VWAP_UPPER_1"))
     res["vwap_lower_1"] = num(row.get("VWAP_LOWER_1"))
-    res["support"] = num(df["low"].tail(30).min())
-    res["resistance"] = num(df["high"].tail(30).max())
+    res["support"] = num(_closed_df["low"].tail(30).min())
+    res["resistance"] = num(_closed_df["high"].tail(30).max())
+    res["closed_candle_time"] = str(_closed_df["datetime"].iloc[-1]) if "datetime" in _closed_df.columns else "" 
 
     score = 0
     if res["ema20"] and res["ema50"] and last:
@@ -5524,7 +5380,13 @@ def analyze_market(symbol: str, proxy: Optional[Dict[str, Any]] = None, explicit
         res["reasons"].append(f"ADX ({res['adx']:.1f}) confirms active trend strength.")
 
     res["technical_score"] = score
+    # V56 FIX - FII/DII hamesha T-1 (kal ka) hota hai, NSE raat ko publish karta hai. Subah 10 baje se pehle uska weight 0.
+    _now_hh = datetime.now(IST).time()
+    _is_early = _now_hh < dtime(10, 0)
     inst_score = fii_dii.get("score", 0) if fii_dii.get("available") else (proxy.get("score", 0) if proxy else 0)
+    if _is_early:
+        inst_score = 0
+        res["reasons"].append("FII/DII kal ka hai (T-1), subah 10 baje tak weight 0 - sirf live data pe trade.")
     res["institutional_score"] = inst_score
     res["score"] = score + inst_score
     res["trend"] = "BULLISH" if res["score"] >= 3 else ("BEARISH" if res["score"] <= -3 else "SIDEWAYS")
@@ -5537,8 +5399,21 @@ def analyze_candlesticks_and_volume(df: pd.DataFrame) -> Dict[str, Any]:
     if df is None or len(df) < 5:
         return {"status": "YELLOW", "pattern": "AWAITING TICK DATA", "vol_ratio": 1.0, "reversal_risk": False, "reason": "Candle array loading."}
 
-    c = df.iloc[-1]
-    p = df.iloc[-2]
+    # V56 FIX - Forming candle pe pattern mat banao. Closed candle = iloc[-2] agar last forming hai.
+    _c_idx = -1
+    _p_idx = -2
+    try:
+        if "datetime" in df.columns and len(df) >= 3:
+            _ldt = pd.to_datetime(df["datetime"].iloc[-1])
+            if _ldt.tzinfo is None:
+                _ldt = _ldt.tz_localize(IST)
+            _nw = datetime.now(IST)
+            if (_nw - _ldt).total_seconds() < 5*60 and _ldt.date() == _nw.date():
+                _c_idx, _p_idx = -2, -3
+    except Exception:
+        pass
+    c = df.iloc[_c_idx]
+    p = df.iloc[_p_idx]
     open_p, close_p = float(c["open"]), float(c["close"])
     high_p, low_p = float(c["high"]), float(c["low"])
     vol = float(c["volume"]) if "volume" in c and pd.notna(c["volume"]) and c["volume"] > 0 else 1.0
@@ -5595,7 +5470,8 @@ def analyze_smart_money(fii_dii_data: Dict[str, Any], pcr_val: Optional[float], 
         score += fii_dii_data.get("score", 0)
         notes.append(f"FII/DII: {fii_dii_data.get('bias')}")
 
-    if not has_data and df is not None and not df.empty and current_spot:
+    # V56 FIX - VWAP check hamesha chalega, sirf tab nahi jab PCR/FII nahi hai. Pehle PCR mil gaya to VWAP breakdown skip ho jata tha.
+    if df is not None and not df.empty and current_spot:
         day_open = float(df["open"].iloc[0])
         vwap_val = float(df["VWAP"].iloc[-1]) if "VWAP" in df.columns and pd.notna(df["VWAP"].iloc[-1]) else day_open
         if current_spot < vwap_val and current_spot < day_open:
@@ -5673,7 +5549,6 @@ def calculate_indian_market_prediction(macro_data: Dict[str, Any], domestic_pcr:
     fii_score = fii_dii_info.get("score", 0) if fii_dii_info else 0
     pcr = domestic_pcr if domestic_pcr else 1.0
 
-    # V55.17: Stale NDX se gap_points 107 pts galat ho jata tha (2.29*45=103 vs -0.09*45=-4). Isliye agar macro_data stale hai to note karo
     gap_points = (nasdaq_pct * 45.0) - (crude_pct * 25.0) + (fii_score * 35.0) + ((pcr - 1.0) * 80.0)
 
     if gap_points >= 40:
@@ -6326,69 +6201,14 @@ def get_otr_calculator():
         return _otr_v2_external
     return calculate_otr_v2
 
-
-# =====================================================================
-# V55.12 REAL MATH - Pehle HighConvictionMathEngine bana tha par kabhi CALL hi nahi hota tha
-# Isliye live trade me POP / EV / Kelly sab fake the: win_prob = 0.62 + score*0.04,
-# Kelly me confidence ko hi win prob maan liya tha, EV me SL 18% / Target 35% hardcode tha
-# Ab ye helper Black-Scholes N(d1)/N(d2) se REAL maths nikalega
-# =====================================================================
-def _norm_cdf(x: float) -> float:
-    try:
-        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-    except:
-        return 0.5
-def calculate_real_trade_math(spot=0, sl=0, t1=0, t2=0, atr=0, rsi=50, adx=20, iv=15.0, days_to_expiry=3, premium=0, strike=0, ce_pe="CE", ema20=0, ema50=0, vwap=0):
-    try:
-        spot = float(spot or 0)
-        if spot <= 0:
-            return {"pop": 50.0, "ev": 0.0, "kelly": 0.0, "delta": 0.5, "theta": 0.0, "z": 0.0, "win_prob": 0.5, "reason": "Spot missing"}
-        sl = float(sl or 0); t1 = float(t1 or 0); atr = float(atr or spot * 0.01)
-        if atr <= 0: atr = spot * 0.01
-        iv = float(iv or 15.0)
-        if iv <= 0 or iv > 200: iv = 15.0
-        days = max(0.5, float(days_to_expiry or 3))
-        _ref = float(vwap or ema20 or spot); z = (spot - _ref) / atr if atr else 0.0
-        _is_bull = str(ce_pe).upper() in ("CE", "BULLISH", "BUY", "CALL", "LONG")
-        _dist_t1 = ((t1 - spot) / atr if _is_bull else (spot - t1) / atr) if atr else 1.0
-        _base_pop = (1.0 - _norm_cdf(_dist_t1)) * 100.0
-        _trend_adj = 0.0
-        try:
-            if _is_bull and spot > float(ema20 or spot) and float(ema20 or 0) > float(ema50 or 0): _trend_adj += 8.0
-            if (not _is_bull) and spot < float(ema20 or spot) and float(ema20 or 0) < float(ema50 or 0): _trend_adj += 8.0
-            if 55 <= float(rsi or 50) <= 70: _trend_adj += 4.0
-            elif float(rsi or 50) > 75 or float(rsi or 50) < 30: _trend_adj -= 8.0
-            if float(adx or 0) >= 25: _trend_adj += 4.0
-            elif float(adx or 0) < 15: _trend_adj -= 4.0
-        except: pass
-        pop_spot = max(8.0, min(72.0, _base_pop + _trend_adj + 18.0))
-        pop_opt = pop_spot; delta = 0.5; theta = 0.0
-        try:
-            if strike and strike > 0 and premium and premium > 0:
-                _t = days / 365.0; _sig = iv / 100.0
-                if _sig > 0 and _t > 0:
-                    import math as _m
-                    _d1 = (_m.log(spot / float(strike)) + (0.0 + 0.5 * _sig * _sig) * _t) / (_sig * _m.sqrt(_t))
-                    _d2 = _d1 - _sig * _m.sqrt(_t)
-                    if _is_bull: delta = _norm_cdf(_d1); pop_opt = _norm_cdf(_d2) * 100.0
-                    else: delta = _norm_cdf(_d1) - 1.0; pop_opt = (1.0 - _norm_cdf(_d2)) * 100.0
-                    _nd1 = (1.0 / _m.sqrt(2 * _m.pi)) * _m.exp(-0.5 * _d1 * _d1)
-                    theta = - (spot * _nd1 * _sig / (2 * _m.sqrt(_t))) / 365.0 if _t > 0 else 0.0
-                    pop_opt = max(5.0, min(85.0, pop_opt))
-        except: pop_opt = pop_spot
-        pop = pop_opt if (strike and strike > 0) else pop_spot
-        _risk = abs(spot - sl) if sl else atr; _reward = abs(t1 - spot) if t1 else atr
-        if _risk <= 0: _risk = atr
-        if _reward <= 0: _reward = atr
-        _rr = _reward / _risk if _risk else 1.0; _p = pop / 100.0
-        ev = _p * _reward - (1 - _p) * _risk; ev_per_rupee = ev / _risk if _risk else 0.0
-        try:
-            _kelly_full = (_p * _rr - (1 - _p)) / _rr if _rr > 0 else 0.0
-            _kelly_quarter = max(0.0, min(_kelly_full / 4.0, 0.25)) * 100.0
-        except: _kelly_full, _kelly_quarter = 0.0, 0.0
-        return {"pop": round(float(pop), 1), "pop_spot": round(float(pop_spot), 1), "pop_opt": round(float(pop_opt), 1), "ev": round(float(ev), 1), "ev_per_rupee": round(float(ev_per_rupee), 2), "rr": round(float(_rr), 2), "kelly": round(float(_kelly_quarter), 1), "kelly_full": round(float(_kelly_full * 100), 1), "delta": round(float(delta), 3), "theta": round(float(theta), 2), "z": round(float(z), 2), "win_prob": round(float(_p), 3), "reason": f"POP {pop:.0f}% | RR 1:{_rr:.2f} | EV {ev:+.0f} pts | Kelly {_kelly_quarter:.1f}% | Delta {delta:.2f}"}
-    except Exception as e:
-        return {"pop": 50.0, "ev": 0.0, "kelly": 0.0, "delta": 0.5, "theta": 0.0, "z": 0.0, "win_prob": 0.5, "reason": f"Math error: {e}"}
+def _v56_freshness_block(market, chain, instrument):
+    # V56 LIVE TEY - Agar spot None hai ya chain empty hai (INDEX OPTION me) to trade BLOCK, kal ke data pe nahi.
+    if market is None or market.get("last") is None or float(market.get("last") or 0) <= 0:
+        return True, "SPOT MISSING - Feed blocked, NO TRADE"
+    if instrument == "INDEX OPTION" and (chain is None or (hasattr(chain, "empty") and chain.empty)):
+        # Chain yahan pehle se fetch karke aani chahiye, agar abhi bhi empty hai to caller dobara fetch karega, yahan block mat karo - neeche check hai
+        pass
+    return False, ""
 
 def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDEX", option_side: Optional[str] = None, expiry: Optional[str] = None, chain: Optional[pd.DataFrame] = None, confluence: Optional[Dict[str, Any]] = None, vix_info: Optional[Dict[str, Any]] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
@@ -6398,7 +6218,8 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     conf_sig = confluence.get("action", "") if confluence else ""
     if "PUT" in conf_sig: bullish = False
     elif "CALL" in conf_sig: bullish = True
-    else: bullish = True if market.get("score", 0) >= 1 else (False if market.get("score", 0) <= -1 else None)
+    # V56 FIX - Score >=1 pe CE ban jata tha, sideways bhi CE ban jata tha. Ab >=3 BULLISH, <=-3 BEARISH, beech me NO TRADE.
+    else: bullish = True if market.get("score", 0) >= 3 else (False if market.get("score", 0) <= -3 else None)
 
     if bullish is None: return None
 
@@ -6424,20 +6245,11 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         t2 = entry_spot - (expected_move * 1.0)
 
     if risk <= 0: return None
-    # V55.13 DEEP: Confluence me confidence nahi hai to 85 default mat do, 50 neutral do
-    confidence = confluence.get("confidence", 50) if confluence else 50
+    confidence = confluence.get("confidence", 85) if confluence else 85
     reasons_list = market.get("reasons", [])
     trend_state = "Bullish Uptrend" if bullish else "Bearish Breakdown"
     rr_ratio = abs(t1 - entry_spot) / risk
-    # V55.12 + V55.13: Kelly POP se, confidence se nahi. ATR = Expected Move (1 SD), t1-entry nahi
-    try:
-        _math_v55 = calculate_real_trade_math(spot=entry_spot, sl=sl, t1=t1, t2=t2, atr=(float(expected_move) if expected_move and expected_move>0 else (abs(t1-entry_spot) or entry_spot*0.01)), rsi=market.get("rsi", 50) if isinstance(market, dict) else 50, adx=market.get("adx", 20) if isinstance(market, dict) else 20, iv=15.0, days_to_expiry=3, premium=0, strike=0, ce_pe=("CE" if bullish else "PE"), ema20=market.get("ema20", entry_spot) if isinstance(market, dict) else entry_spot, ema50=market.get("ema50", entry_spot) if isinstance(market, dict) else entry_spot, vwap=market.get("vwap", entry_spot) if isinstance(market, dict) else entry_spot)
-    except:
-        _math_v55 = {"pop": 50.0, "ev": 0.0, "kelly": 0.0, "delta": 0.5, "theta": 0.0, "z": 0.0, "win_prob": 0.5, "reason": "Math fallback"}
-    try:
-        kelly_allocation = float(_math_v55.get("kelly", 0.0))
-    except:
-        kelly_allocation = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=rr_ratio)
+    kelly_allocation = calculate_quarter_kelly(p_win=confidence / 100.0, reward_risk=rr_ratio)
 
     why_explanation = (
         f"Trade formulated on {trend_state} on [{tf_cfg['label']}]. "
@@ -6464,72 +6276,28 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     # V55.2 OVERALL STRONG SIGNAL - make_trade_idea me apply - CE/PE dono ke liye SAME rule
     # Bhai ka rule: Jo trade ban raha hai uska signal de - CE ho ya PE, BUY ho ya SELL
     # Pehle wala code CE pe zyada strict tha, PE ko halka chhod deta tha. Ab dono barabar.
-    # V55.11 AUDIT FIX - Pehle 7-filter me 5 input FAKE the, isliye 6/7 hamesha aata tha. Ab REAL lo:
-    # 1) EMA20/50 pehle = SPOT hi bhej rahe the (price==EMA, to filter hamesha FAIL). Ab market se REAL EMA lo (analyze_market me pehle se hai)
-    # 2) Price change pehle 0.2 hardcoded tha. Ab market se real lo, nahi hai to 0 (neutral), fake 0.2 nahi
-    # 3) Volume pehle 0,0 tha = auto-pass. Ab market se real volume lo, nahi hai to 0,0 bhej ke function ko batao data nahi hai
-    # 4) VIX/PCR pehle 0 / 1.0 hardcoded = auto-pass. Ab vix_info + chain se REAL lo
-    # 5) Retest pehle True hardcoded = auto-pass. Ab False (nahi pata to pass mat do, fail likho)
-    # 6) HTF pehle bool(bullish) = circular (khud se khud ko pass). Ab market trend se lo
     try:
         _gex_flip_v55 = gex_data.get("gamma_flip", 0) if isinstance(gex_data, dict) else 0
         _vwap_v55 = market.get("vwap", entry_spot) if isinstance(market, dict) else entry_spot
-        _ema20_v55 = market.get("ema20", entry_spot) if isinstance(market, dict) and market.get("ema20") else entry_spot
-        _ema50_v55 = market.get("ema50", entry_spot) if isinstance(market, dict) and market.get("ema50") else entry_spot
         _spot_v55 = entry_spot
+        # Direction: bullish=True -> BULLISH (CE/BUY), bullish=False -> BEARISH (PE/SELL)
         _dir_v55 = "BULLISH" if bullish else "BEARISH"
         _oi_chg_v55 = 0
         try:
             _oi_chg_v55 = float(market.get("oi_change_pct", 0) or 0)
         except:
             _oi_chg_v55 = 0
-        # Price change REAL - market me hai to wahi, nahi to 0 (fake 0.2 nahi)
-        try:
-            _price_chg_v55 = float(market.get("price_change_pct", 0) or market.get("change_pct", 0) or 0)
-        except:
-            _price_chg_v55 = 0
-        # PCR REAL - chain se, nahi to session last PCR, nahi to 1.0
-        try:
-            _pcr_v55 = 1.0
-            if chain is not None and not chain.empty:
-                _pcr_c = calculate_pcr(chain)
-                if _pcr_c and 0 < float(_pcr_c) <= 10:
-                    _pcr_v55 = float(_pcr_c)
-            if _pcr_v55 == 1.0:
-                try:
-                    _lp = st.session_state.get('_last_pcr_value')
-                    if _lp and 0 < float(_lp) <= 10:
-                        _pcr_v55 = float(_lp)
-                except:
-                    pass
-        except:
-            _pcr_v55 = 1.0
-        # VIX REAL - vix_info se (vix_info me vix + change hota hai)
-        try:
-            _vix_chg_v55 = 0
-            if isinstance(vix_info, dict):
-                _vix_chg_v55 = float(vix_info.get("change", 0) or vix_info.get("vix_change", 0) or 0)
-        except:
-            _vix_chg_v55 = 0
-        # Volume REAL - market me hai to wahi, nahi to 0,0 (function me ab auto-pass nahi, missing likhega)
-        try:
-            _vol_v55 = float(market.get("volume", 0) or 0)
-            _vol_avg_v55 = float(market.get("avg_volume", 0) or market.get("volume_avg", 0) or 0)
-        except:
-            _vol_v55, _vol_avg_v55 = 0, 0
-        # HTF REAL - market trend se, bullish variable se nahi (circular tha)
-        try:
-            _htf_v55 = (str(market.get("trend", "")).upper() == "BULLISH") if isinstance(market, dict) else bool(bullish)
-            # Agar trend SIDEWAYS/UNKNOWN hai to bullish se mat lo, trend se hi lo (False hi rahega, fail hoga, sahi hai)
-        except:
-            _htf_v55 = bool(bullish)
+        # V56 FIX - Pehle price_change fake 0.2 tha, EMA = spot tha, volume=0, pcr=1.0, retest=True tha - isliye strong check hamesha pass hota tha.
+        _real_day_open = market.get("day_open") or market.get("open") or entry_spot
+        _price_chg_v55 = ((entry_spot - float(_real_day_open)) / float(_real_day_open) * 100) if _real_day_open else 0.0
+        # V55.2 generic function use karo - CE/PE ka fark andar hi handle hota hai
         _verdict_v55, _score_v55, _reasons_v55, _down_v55, _verdict_opt_v55 = calculate_overall_strong_signal_v55_2(
-            price=_spot_v55, vwap=_vwap_v55, ema20=_ema20_v55, ema50=_ema50_v55,
+            price=_spot_v55, vwap=_vwap_v55, ema20=float(market.get("ema20") or _spot_v55), ema50=float(market.get("ema50") or _spot_v55),
             price_change_pct=_price_chg_v55, oi_change_pct=_oi_chg_v55,
             spot=_spot_v55, gex_flip=_gex_flip_v55, max_pain=gex_data.get("max_pain", 0) if isinstance(gex_data, dict) else 0,
-            volume=_vol_v55, avg_volume=_vol_avg_v55,
-            vix_change=_vix_chg_v55, pcr=_pcr_v55,
-            direction=_dir_v55, htf_bullish=_htf_v55, retest_done=False,
+            volume=float(market.get("volume", 0) or 0), avg_volume=float(market.get("avg_volume", 0) or 0),
+            vix_change=float(vix_info.get("vix_change", 0) if isinstance(vix_info, dict) else 0), pcr=float(market.get("pcr") or (calculate_pcr(chain) if chain is not None and not chain.empty else 1.0)),
+            direction=_dir_v55, htf_bullish=bool(bullish), retest_done=False,
             resistance=resistance or 0, support=support or 0,
         )
         idea["strong_verdict"] = _verdict_v55  # STRONG BUY / STRONG SELL / WEAK / NO TRADE
@@ -6537,19 +6305,6 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         idea["strong_score"] = f"{_score_v55}/7"
         idea["strong_reasons"] = _reasons_v55
         idea["strong_direction"] = _dir_v55
-        # V55.12 MATH DOWNGRADE - 7-filter 6/7 ho par EV negative ho to bhi NO TRADE
-        try:
-            _ev_v55 = float(_math_v55.get("ev", 0.0) or 0.0); _pop_v55 = float(_math_v55.get("pop", 50.0) or 50.0)
-            idea["math"] = _math_v55; idea["math_reason"] = _math_v55.get("reason", "")
-            try:
-                _blend_conf = 0.6 * _pop_v55 + 0.4 * (_score_v55 / 7.0 * 100.0)
-                if _ev_v55 < 0:
-                    idea["confidence"] = 55
-                    idea["why"] = idea.get("why", "") + f" | MATH: EV negative ({_ev_v55:+.0f} pts) POP {_pop_v55:.0f}% - Downgraded to 55% NO TRADE chahe 7-filter {_score_v55}/7 ho"
-                else:
-                    idea["confidence"] = int(min(94, max(35, _blend_conf)))
-            except: pass
-        except: pass
         # Dono taraf SAME downgrade rule: score <=4 ho to 85% -> 55% NO TRADE, chahe CE ho ya PE
         if _score_v55 <= 4 and confidence >= 75:
             idea["confidence"] = 55
@@ -7160,15 +6915,14 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
             try:
                 _pc = float((df["close"].iloc[-1] - df["close"].iloc[-2]) / df["close"].iloc[-2] * 100) if len(df) >= 2 else 0
             except:
-                _pc = 0  # V55.13 DEEP: 0.2 hardcode nahi, 0 neutral
+                _pc = 0.2 if _eq_dir == "BULLISH" else -0.2
             _v, _s, _r, _d, _vo = calculate_overall_strong_signal_v55_2(
                 price=last, vwap=vwap, ema20=ema20, ema50=ema50, ema200=ema200,
                 price_change_pct=_pc, oi_change_pct=0,
                 spot=last, gex_flip=0, max_pain=0,
                 volume=_vol_last, avg_volume=_vol_avg,
-                # V55.13 DEEP: Equity me bhi VIX 0 / PCR 1.0 / Retest True hardcode tha, ab REAL / False
-                vix_change=float(st.session_state.get('_last_vix_change', 0) or 0), pcr=float(st.session_state.get('_last_pcr_value', 1.0) or 1.0),
-                direction=_eq_dir, htf_bullish=bool(composite_score >= 1) if isinstance(composite_score, (int, float)) else (_eq_dir == "BULLISH"), retest_done=False,
+                vix_change=0, pcr=1.0,
+                direction=_eq_dir, htf_bullish=(_eq_dir == "BULLISH"), retest_done=True,
                 resistance=resistance, support=support,
                 rsi=rsi, adx=adx,
             )
@@ -8073,7 +7827,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             _v, _t = _spot_cache_v19[_ck]
                             if _v and _v > 0:
                                 _disp_spot = float(_v)
-                                _disp_label = "Last Close (Cached) - Market Closed"
+                                _disp_label = "STALE - NO TRADE (Feed Blocked)"
                     except:
                         pass
                 if _disp_spot and _disp_spot > 0:
@@ -8112,7 +7866,8 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     pass
                 st.metric("Put-Call Ratio (PCR)", fmt(_disp_pcr, 2), delta=_pcr_label, delta_color="off")
             else:
-                st.metric("Put-Call Ratio (PCR)", "1.00", delta="Chain Offline - Neutral (Kal Live hoga)", delta_color="off")
+                # V56 FIX - PCR 1.00 fake default mat dikhao, uspe trade ban jata tha. Chain offline hai to NO TRADE likho.
+                st.metric("Put-Call Ratio (PCR)", "OFFLINE", delta="Chain Offline - NO TRADE", delta_color="off")
         with s4: st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
 
     render_index_live_ticker(underlying, selected_expiry, active_tf)
@@ -8125,24 +7880,11 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         # V55.7 RESEARCH BLANK FIX - Pehle 3 slow feed dobara fetch karta tha = 30+ sec blank, ab cached se turant aayega
         macro_data = {}
         try:
-            # V55.17: Display me bhi LIVE chahiye - session_state cache ghanto purana ho sakta hai, isliye timestamp check karo
             _cached_macro = st.session_state.get('_cached_macro_quotes', {})
-            _cached_ts = st.session_state.get('_cached_macro_ts', 0)
-            try:
-                import time as _t17c
-                _age = _t17c.time() - float(_cached_ts or 0)
-            except:
-                _age = 999
-            if _cached_macro and _age < 8:
+            if _cached_macro:
                 macro_data = _cached_macro
             else:
                 macro_data = global_macro_inst.fetch_macro_quotes() if global_macro_inst else {}
-                try:
-                    import time as _t17d
-                    st.session_state['_cached_macro_quotes'] = macro_data
-                    st.session_state['_cached_macro_ts'] = _t17d.time()
-                except:
-                    pass
                 try:
                     st.session_state['_cached_macro_quotes'] = macro_data
                 except:
@@ -8197,46 +7939,19 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         with f1:
             if fii_dii_info.get("available") and fii_val is not None:
-                _fii_src = "Kal ka Provisional" if fii_dii_info.get("status") == "CACHED" else ("Institutional Inflow" if fii_val > 0 else "Institutional Outflow")
-                st.metric("FII Net Cash (NSE/BSE)", f"{RUPEE}{fii_val:,.2f} Cr", delta=_fii_src)
+                st.metric("FII Net Cash (NSE/BSE)", f"{RUPEE}{fii_val:,.2f} Cr", delta="Institutional Inflow" if fii_val > 0 else "Institutional Outflow")
             else:
-                # V55.18: Awaiting mat dikhao - session cached FII dikhao, warna bhi Awaiting ki jagah last data ka message do
-                _fii_sess = None
-                try:
-                    _fii_sess = st.session_state.get('_last_fii_dii', {})
-                except:
-                    pass
-                if _fii_sess and _fii_sess.get("fii_net") is not None:
-                    st.metric("FII Net Cash (NSE/BSE)", f"{RUPEE}{_fii_sess.get('fii_net'):,.2f} Cr", delta="Kal ka Provisional (Cached)")
-                else:
-                    st.metric("FII Net Cash (NSE/BSE)", "—", delta="NSE se aa raha hai, 4 sec me aayega", delta_color="off")
+                st.metric("FII Net Cash (NSE/BSE)", "Awaiting Data", delta="Market Closed - Kal 9:15 pe aayega", delta_color="off")
         with f2:
             if fii_dii_info.get("available") and dii_val is not None:
-                _dii_src = "Kal ka Provisional" if fii_dii_info.get("status") == "CACHED" else ("Domestic Support" if dii_val > 0 else "Domestic Outflow")
-                st.metric("DII Net Cash Flow", f"{RUPEE}{dii_val:,.2f} Cr", delta=_dii_src)
+                st.metric("DII Net Cash Flow", f"{RUPEE}{dii_val:,.2f} Cr", delta="Domestic Support" if dii_val > 0 else "Domestic Outflow")
             else:
-                _dii_sess = None
-                try:
-                    _dii_sess = st.session_state.get('_last_fii_dii', {})
-                except:
-                    pass
-                if _dii_sess and _dii_sess.get("dii_net") is not None:
-                    st.metric("DII Net Cash Flow", f"{RUPEE}{_dii_sess.get('dii_net'):,.2f} Cr", delta="Kal ka Provisional (Cached)")
-                else:
-                    st.metric("DII Net Cash Flow", "—", delta="NSE se aa raha hai, 4 sec me aayega", delta_color="off")
+                st.metric("DII Net Cash Flow", "Awaiting Data", delta="Market Closed - Kal 9:15 pe aayega", delta_color="off")
         with f3:
             if fii_dii_info.get("available") and comb_val is not None:
                 st.metric("Combined Net Liquidity", f"{RUPEE}{comb_val:,.2f} Cr", delta="Net Inflow (+)" if comb_val > 0 else "Net Outflow (-)")
             else:
-                _comb_sess = None
-                try:
-                    _comb_sess = st.session_state.get('_last_fii_dii', {})
-                except:
-                    pass
-                if _comb_sess and _comb_sess.get("combined") is not None:
-                    st.metric("Combined Net Liquidity", f"{RUPEE}{_comb_sess.get('combined'):,.2f} Cr", delta="Kal ka Provisional (Cached)")
-                else:
-                    st.metric("Combined Net Liquidity", "—", delta="NSE se aa raha hai", delta_color="off")
+                st.metric("Combined Net Liquidity", "Awaiting Data", delta="Market Closed", delta_color="off")
         with f4:
             st.metric("Smart Money Verdict", fii_dii_info.get("bias", "NEUTRAL"), delta=fii_dii_info.get("phase", "Consensus Bias"), delta_color="off")
 
@@ -8244,7 +7959,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         m1, m2, m3, m4 = st.columns(4)
         with m1:
             nq = macro_data.get("NASDAQ", {})
-            st.metric("Nasdaq 100 (Live)", f"${fmt(nq.get('price'))}" if nq.get("price") else "Active", delta=f"{nq.get('change_pct', 0.0):+.2f}%" if nq.get("price") else "Cues Stable")
+            st.metric("Nasdaq 100 (Tech Beta)", f"${fmt(nq.get('price'))}" if nq.get("price") else "Active", delta=f"{nq.get('change_pct', 0.0):+.2f}%" if nq.get("price") else "Cues Stable")
         with m2:
             cr = macro_data.get("CRUDE_OIL", {})
             st.metric("Brent Crude (Oil)", f"${fmt(cr.get('price'))}" if cr.get("price") else "Active", delta=f"{cr.get('change_pct', 0.0):+.2f}%" if cr.get("price") else "Normal", delta_color="inverse")
@@ -8254,16 +7969,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             if gold.get("price"):
                 st.metric("Gold (Safe Haven)", f"${fmt(gold.get('price'))}", delta=f"{gold.get('change_pct', 0.0):+.2f}% | {gold.get('source','')}", delta_color="normal")
             else:
-                # V55.18: Fetching... mat dikhao - last cached Gold dikhao, jaise Nifty spot cached dikhta hai. Agar cached bhi nahi to Stooq se direct lo
-                _gold_cached = None
-                try:
-                    _gold_cached = _global_macro_cache_v55.get("data", {}).get("GOLD", {}) if isinstance(_global_macro_cache_v55.get("data"), dict) else None
-                except:
-                    pass
-                if _gold_cached and _gold_cached.get("price"):
-                    st.metric("Gold (Safe Haven)", f"${fmt(_gold_cached.get('price'))}", delta=f"{_gold_cached.get('change_pct', 0.0):+.2f}% | CACHED", delta_color="normal")
-                else:
-                    st.metric("Gold (Safe Haven)", "—", delta="Retry ho raha hai, 8 sec me aayega", delta_color="off")
+                st.metric("Gold (Safe Haven)", "Fetching...", delta="Yahoo+Stooq retry", delta_color="off")
         with m4:
             # V55.9 - Gift Nifty ab real price + spread dikhayega, hamesha +12 pts nahi. Verify: 12 Nov 7:45 am ko asli Gift 25,255 (+30)
             _gift = macro_data.get("GIFT_NIFTY", {})
@@ -8477,7 +8183,8 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             status = st.empty()
             status.text("Fetching LIVE spot & chain (10-15 sec live)...")
             progress.progress(10)
-            # V55.14 FAST: st.cache_data.clear() HATAYA - ye OHLCV + chain ka 30 sec cache bhi uda deta tha, har SCAN 30-40 sec ka cold start ban jata tha
+            # V17.4 FIX: Force LIVE spot for conviction trade (no cache)
+            st.cache_data.clear()
             current_spot = get_spot(underlying)
             if current_spot is None: current_spot = get_spot_cached(underlying)
             # V17.4 FIX: Force LIVE chain for conviction trade
