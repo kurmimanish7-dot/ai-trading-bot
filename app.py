@@ -3697,7 +3697,7 @@ def _v21_yahoo(symbol):
     # V55.5 VIX FIX - Yahoo query1 Cloud pe 403 deta hai, isliye query2 bhi try karo
     try:
         import requests as _rq
-        mp = {"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK","FINNIFTY":"^NSEBANK","SENSEX":"^BSESN","INDIA_VIX":"^INDIAVIX"}
+        mp = {"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK","FINNIFTY":"NIFTY_FIN_SERVICE.NS","SENSEX":"^BSESN","INDIA_VIX":"^INDIAVIX"}  # FIX: FINNIFTY was ^NSEBANK (BANKNIFTY ~61004) -> ab sahi NIFTY_FIN_SERVICE.NS
         ysym = mp.get(symbol,"^NSEI")
         for _base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
             try:
@@ -3727,6 +3727,10 @@ def _v21_proxy_spot(symbol):
                     chk="NIFTY 50"
                 elif symbol=="BANKNIFTY":
                     chk="NIFTY BANK"
+                elif symbol=="FINNIFTY":
+                    chk="NIFTY FIN SERVICE"
+                elif symbol=="MIDCPNIFTY":
+                    chk="NIFTY MID SELECT"
                 elif symbol=="INDIA_VIX":
                     chk="INDIA VIX"
                 else:
@@ -3788,6 +3792,10 @@ def fetch_verified_spot(symbol: str):
                         chk="NIFTY BANK"
                     elif symbol=="NIFTY":
                         chk="NIFTY 50"
+                    elif symbol=="FINNIFTY":
+                        chk="NIFTY FIN SERVICE"
+                    elif symbol=="MIDCPNIFTY":
+                        chk="NIFTY MID SELECT"
                     elif symbol=="INDIA_VIX":
                         chk="INDIA VIX"
                     else:
@@ -4505,11 +4513,13 @@ def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
     now = datetime.now(IST)
     now_str = now.strftime("%H:%M:%S IST")
     sym = str(symbol).upper()
-    stooq_map = {"NIFTY": "%5Ensei", "BANKNIFTY": "%5Ensebank", "FINNIFTY": "%5Ensebank", "SENSEX": "%5Ebse", "INDIA_VIX": "%5Eindiavix", "NIFTY_50": "%5Ensei"}
-    yahoo_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "^NSEBANK", "SENSEX": "^BSESN", "INDIA_VIX": "^INDIAVIX", "NIFTY_50": "^NSEI"}
+    stooq_map = {"NIFTY": "%5Ensei", "BANKNIFTY": "%5Ensebank", "FINNIFTY": None, "SENSEX": "%5Ebse", "INDIA_VIX": "%5Eindiavix", "NIFTY_50": "%5Ensei"}  # FIX: FINNIFTY ka Stooq ticker nahi hai, BANKNIFTY copy karna band - None = Stooq skip, Yahoo se lega
+    yahoo_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "NIFTY_FIN_SERVICE.NS", "SENSEX": "^BSESN", "INDIA_VIX": "^INDIAVIX", "NIFTY_50": "^NSEI"}  # FIX: FINNIFTY ^NSEBANK -> NIFTY_FIN_SERVICE.NS (INDEX_METADATA yfinance se match)
     # 1. STOOQ - sabse fast, Streamlit pe kabhi block nahi
     try:
-        sq = stooq_map.get(sym, "%5Ensei")
+        sq = stooq_map.get(sym)  # FIX: unknown symbol ka default ^NSEI nahi - None ho to Stooq skip
+        if not sq:
+            raise ValueError(f"No Stooq ticker for {sym}, Yahoo pe jao")
         r = requests.get(f"https://stooq.com/q/l/?s={sq}&f=sd2t2ohlcv&h&e=csv", timeout=2, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200 and "," in r.text:
             lines2 = r.text.strip().split("\n")
@@ -4548,7 +4558,7 @@ def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
         if raw.status_code == 200:
             data = raw.json()
             if isinstance(data, dict) and "data" in data:
-                name_check = "NIFTY BANK" if sym == "BANKNIFTY" else ("NIFTY 50" if sym == "NIFTY" else sym)
+                name_check = "NIFTY BANK" if sym == "BANKNIFTY" else ("NIFTY 50" if sym == "NIFTY" else ("NIFTY FIN SERVICE" if sym == "FINNIFTY" else ("NIFTY MID SELECT" if sym == "MIDCPNIFTY" else sym)))  # FIX: FINNIFTY ka NSE naam NIFTY FIN SERVICE hai, FINNIFTY nahi
                 for idx in data["data"]:
                     if isinstance(idx, dict):
                         if str(idx.get("indexSymbol", "")).strip().upper() == name_check or str(idx.get("index", "")).strip().upper() == name_check:
@@ -4568,7 +4578,7 @@ def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
                     data = r.json() if isinstance(r.json(), dict) else json.loads(r.text)
                     if "data" in data:
                         for idx in data["data"]:
-                            name_check = "NIFTY 50" if sym == "NIFTY" else sym
+                            name_check = "NIFTY 50" if sym == "NIFTY" else ("NIFTY BANK" if sym == "BANKNIFTY" else ("NIFTY FIN SERVICE" if sym == "FINNIFTY" else ("NIFTY MID SELECT" if sym == "MIDCPNIFTY" else sym)))  # FIX: proxy me bhi FINNIFTY -> NIFTY FIN SERVICE
                             if str(idx.get("index", "")).upper() == name_check or str(idx.get("indexSymbol", "")).upper() == name_check:
                                 val = num(idx.get("last"))
                                 if val and val > 0:
@@ -4592,6 +4602,14 @@ def get_spot(symbol: str) -> Optional[float]:
         pass
     res = fetch_verified_spot(symbol)
     price = res.get("price")
+    # FIX: cross-index sanity - FINNIFTY ~15k-40k range se bahar ho to wo BANKNIFTY ka price hai, use mat lo
+    try:
+        _ranges = {"FINNIFTY": (15000, 40000), "NIFTY": (15000, 35000), "BANKNIFTY": (40000, 80000), "MIDCPNIFTY": (8000, 20000), "SENSEX": (60000, 110000)}
+        _lo, _hi = _ranges.get(str(symbol).upper(), (0, 1000000))
+        if price and not (_lo <= float(price) <= _hi):
+            return None  # galat index ka price - caller dobara try karega / NO TRADE
+    except Exception:
+        pass
     try:
         _spot_cache_v19[ck] = (price, _tt.time())
     except:
@@ -6231,15 +6249,19 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     expected_move = gex_data["expected_move"]
     atr_mult = tf_cfg.get("atr_mult", 1.0)
 
+    # FIX: SL sanity - support entry se 3% se zyada door ho to wo galat index / stale candle ka support hai, use mat lo.
+    # FINNIFTY case: entry 61004 (BANKNIFTY) + support 27683 (FINNIFTY candle) = 33,320 risk, RR 0.00. Ab aisa support ignore hoga.
+    _support_ok = bool(support and support < entry_spot and abs(entry_spot - support) / entry_spot <= 0.03)
+    _resist_ok = bool(resistance and resistance > entry_spot and abs(resistance - entry_spot) / entry_spot <= 0.03)
     if bullish:
         action = "BUY"
-        sl = support if (support and support < entry_spot) else (entry_spot - (expected_move * 0.5 * atr_mult))
+        sl = support if _support_ok else (entry_spot - (expected_move * 0.5 * atr_mult))
         risk = max(entry_spot - sl, 1.0)
         t1 = min(entry_spot + (expected_move * 0.618), gex_data["call_wall"])
         t2 = entry_spot + (expected_move * 1.0)
     else:
         action = "SELL"
-        sl = resistance if (resistance and resistance > entry_spot) else (entry_spot + (expected_move * 0.5 * atr_mult))
+        sl = resistance if _resist_ok else (entry_spot + (expected_move * 0.5 * atr_mult))
         risk = max(sl - entry_spot, 1.0)
         t1 = max(entry_spot - (expected_move * 0.618), gex_data["put_wall"])
         t2 = entry_spot - (expected_move * 1.0)
@@ -6259,7 +6281,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     )
 
     idea = {
-        "segment": instrument, "symbol": symbol, "action": action, "entry": entry_spot,
+        "segment": instrument, "symbol": symbol, "action": action, "spot": entry_spot, "entry": entry_spot,
         "sl": sl, "target1": t1, "target2": t2, "risk_reward": rr_ratio, "target2_rr": abs(t2 - entry_spot) / risk,
         "confidence": confidence, "holding": tf_cfg["holding"] if market_open() else "NEXT SESSION",
         "timeframe": tf_cfg["label"], "expiry": expiry_label(expiry) if expiry else "Current Weekly",
@@ -8341,7 +8363,8 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     sub_badge = f"INDEX OPTION ({idea['option']} BUYING)" if is_option else "INDEX SPOT / CASH"
 
                     try:
-                        spot_display = f"{(current_spot or 0):.2f}" if current_spot and current_spot > 0 else "Syncing..."
+                        _card_spot = float(idea.get("spot") or 0) or float(current_spot or 0)  # FIX: har card apne index ka spot dikhayega, main underlying (NIFTY 25123) sab pe nahi
+                        spot_display = f"{_card_spot:.2f}" if _card_spot and _card_spot > 0 else "Syncing..."
                         card_title_safe = card_title if card_title else "Trade"
                         sub_badge_safe = sub_badge if sub_badge else "OPTION"
                         tf_safe = idea.get('timeframe','15 Min')
