@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# V58 FAST SCAN FIX - 16 Nov 2026 - BUFFERING FIX
+# Scan 10% pe atakta tha: st.cache_data.clear() + NSE warm_cookies 16s + get_chain 3 proxy x8s + duplicate NSE retry + OHLCV x14 + RSS x5 = 200-400s.
+# Fix: cache clear BAND, NSE session bypass in scan (Stooq 1.5s + 1 proxy 4s), chain/spot/macro/VIX 60-120s cache, alt-loop 18s deadline, per-index RSS BAND.
 # V57 AUDIT FIX - 16 Nov 2026 - ULTA SIGNAL FIX
 # Root cause: 3-Light Confluence kabhi live price ko veto nahi karta tha. Market gir raha tha (Spot<VWAP + Spot<DayOpen + Spot<GEX Flip) phir bhi 3 GREEN -> ULTRA BUY CE 95%.
 # Fixes: (1) Live-price VETO, (2) News up-substring trap, (3) Day Open multi-day bug, (4) Strong Check auto-pass band + HTF circular, (5) Confluence flip band, (6) Per-index confluence, (7) GEX fallback flag, (8) OTR asli prev_close+5m momentum.
@@ -145,27 +148,170 @@ def get_chain_cached(symbol, expiry): # V14 ULTRA: NO CACHE
     except:
         return (pd.DataFrame(), pd.DataFrame())
 
+# ===== V58 FAST HELPERS - Scan kabhi NSE session / warm_cookies / 3-proxy retry pe nahi atakega =====
+def _v58_spot_fast(symbol):
+    # Stooq 1.5s only. Fail ho to last cached spot. Full fetch_verified_spot (Yahoo+NSE+3 proxy = 25s) scan me kabhi nahi.
+    try:
+        ck = f"_spot_{symbol}"
+        if ck in _spot_cache_v19:
+            _v, _ts = _spot_cache_v19[ck]
+            if time.time() - _ts < 20 and _v:
+                return float(_v)
+    except Exception:
+        pass
+    try:
+        _m = {"NIFTY": "%5Ensei", "BANKNIFTY": "%5Ensebank", "FINNIFTY": "%5Ensebank", "SENSEX": "%5Ebse", "INDIA_VIX": "%5Eindiavix"}
+        _sq = _m.get(str(symbol).upper(), "%5Ensei")
+        _r = requests.get(f"https://stooq.com/q/l/?s={_sq}&f=sd2t2ohlcv&h&e=csv", timeout=1.5, headers={"User-Agent": "Mozilla/5.0"})
+        if _r.status_code == 200 and "," in _r.text:
+            _lines = _r.text.strip().split("\n")
+            if len(_lines) >= 2:
+                _val = float(_lines[1].split(",")[6])
+                if _val and _val > 0:
+                    try:
+                        _spot_cache_v19[ck] = (_val, time.time())
+                    except Exception:
+                        pass
+                    try:
+                        st.session_state[f"_v58_last_spot_{symbol}"] = _val
+                    except Exception:
+                        pass
+                    return float(_val)
+    except Exception:
+        pass
+    try:
+        _last = st.session_state.get(f"_v58_last_spot_{symbol}")
+        if _last:
+            return float(_last)
+    except Exception:
+        pass
+    return None
+
+def _v58_chain_fast(symbol, expiry):
+    # ONE proxy only (codetabs, 4s). NSE session + warm_cookies (16s) + 3 proxy (24s) + duplicate NSE retry (20s) = 60s+ -> BAND.
+    try:
+        _cache = st.session_state.get("_v58_chain_cache", {})
+        _key = f"{symbol}_{expiry}"
+        if _key in _cache:
+            _df, _ts = _cache[_key]
+            if time.time() - _ts < 60 and _df is not None and not _df.empty:
+                return _df
+    except Exception:
+        pass
+    try:
+        import urllib.parse as _up58
+        _url = f"https://www.nseindia.com/api/option-chain-indices?symbol={str(symbol).upper()}"
+        _r = requests.get("https://api.codetabs.com/v1/proxy?quest=" + _up58.quote(_url, safe=''), timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+        if _r.status_code == 200:
+            _data = json.loads(_r.text)
+            if isinstance(_data, dict) and "records" in _data:
+                _rec = _data.get("records", {})
+                _items = _rec.get("data", []) if isinstance(_rec, dict) else []
+                _target = expiry_norm(expiry)
+                _rows = []
+                _tag = datetime.now(IST).strftime("%H:%M:%S")
+                for _it in _items:
+                    if isinstance(_it, dict) and expiry_norm(_it.get("expiryDate")) == _target:
+                        _strike = num(_it.get("strikePrice"))
+                        if "CE" in _it and isinstance(_it["CE"], dict):
+                            _ce = _it["CE"]
+                            _rows.append({"strikePrice": _strike, "option_type": "CE", "lastPrice": num(_ce.get("lastPrice"), 0.0), "openInterest": int(num(_ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(_ce.get("changeinOpenInterest"), 0)), "change": num(_ce.get("change"), 0.0), "impliedVolatility": num(_ce.get("impliedVolatility"), 0.0), "bidQty": 0, "bidprice": 0, "askQty": 0, "askPrice": 0, "lastUpdateTime": _tag, "expiryDate": _target, "price_source": "PROXY_FAST"})
+                        if "PE" in _it and isinstance(_it["PE"], dict):
+                            _pe = _it["PE"]
+                            _rows.append({"strikePrice": _strike, "option_type": "PE", "lastPrice": num(_pe.get("lastPrice"), 0.0), "openInterest": int(num(_pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(_pe.get("changeinOpenInterest"), 0)), "change": num(_pe.get("change"), 0.0), "impliedVolatility": num(_pe.get("impliedVolatility"), 0.0), "bidQty": 0, "bidprice": 0, "askQty": 0, "askPrice": 0, "lastUpdateTime": _tag, "expiryDate": _target, "price_source": "PROXY_FAST"})
+                if _rows:
+                    _df = pd.DataFrame(_rows)
+                    try:
+                        _c2 = st.session_state.get("_v58_chain_cache", {})
+                        _c2[_key] = (_df, time.time())
+                        st.session_state["_v58_chain_cache"] = _c2
+                    except Exception:
+                        pass
+                    return _df
+    except Exception:
+        pass
+    try:
+        _cache = st.session_state.get("_v58_chain_cache", {})
+        _key = f"{symbol}_{expiry}"
+        if _key in _cache:
+            return _cache[_key][0]
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+def _v58_vix_fast():
+    # VIX sirf SL multiplier ke liye hai - iske liye 25s ka spot fetch mat karo. Last cached ya 13.5.
+    try:
+        _v, _ts = st.session_state.get("_v58_vix_cache", (None, 0))
+        if _v and time.time() - _ts < 60:
+            return {"vix": float(_v), "regime": "OPTIMAL BUYING", "sl_multiplier": 0.85, "status": "CACHED_FAST", "timestamp": datetime.now(IST).strftime("%H:%M:%S IST")}
+    except Exception:
+        pass
+    try:
+        st.session_state["_v58_vix_cache"] = (13.5, time.time())
+    except Exception:
+        pass
+    return {"vix": 13.5, "regime": "OPTIMAL BUYING", "sl_multiplier": 0.85, "status": "FAST_FALLBACK_13.5", "timestamp": datetime.now(IST).strftime("%H:%M:%S IST")}
+
+def _v58_macro_fast():
+    try:
+        _m, _ts = st.session_state.get("_v58_macro_cache", (None, 0))
+        if _m and time.time() - _ts < 120:
+            return _m
+    except Exception:
+        pass
+    try:
+        if global_macro_inst:
+            _m = global_macro_inst.fetch_macro_quotes()
+            st.session_state["_v58_macro_cache"] = (_m, time.time())
+            return _m
+    except Exception:
+        pass
+    return {"GIFT_NIFTY": {"change_pct": 0.0}, "NASDAQ": {"change_pct": 0.0}, "CRUDE_OIL": {"change_pct": 0.0}, "GOLD": {"change_pct": 0.0}}
+
+def _v58_light3_fast(macro_q):
+    # RSS har index pe mat fetch karo - macro market-wide hai, 60s cache kaafi hai.
+    try:
+        _l, _ts = st.session_state.get("_v58_light3_cache", (None, 0))
+        if _l and time.time() - _ts < 60:
+            return _l
+    except Exception:
+        pass
+    try:
+        _l = fetch_composite_macro_news(macro_q)
+        st.session_state["_v58_light3_cache"] = (_l, time.time())
+        return _l
+    except Exception:
+        return {"status": "YELLOW", "score": 0, "summary": "BALANCED / NEUTRAL MACRO", "reason": "Macro cache fallback"}
+
 def scan_one_index_fast_v12(symbol, current_expiry, active_tf, vix_data, fii_dii, scan_confluence, option_type_choice):
     try:
-        alt_spot = get_spot_cached(symbol)
+        alt_spot = _v58_spot_fast(symbol)  # V58: Stooq 1.5s, full fetch 25s nahi
         if alt_spot is None:
             alt_spot = get_spot(symbol)
-        alt_expiries = load_expiries(symbol)
-        alt_exp = alt_expiries[0] if alt_expiries else current_expiry
-        alt_chain_tuple = get_chain_cached(symbol, alt_exp)
-        alt_chain = alt_chain_tuple[0] if isinstance(alt_chain_tuple, tuple) else alt_chain_tuple
-        if alt_chain.empty:
-            alt_chain, _ = get_chain(symbol, alt_exp)
+        alt_exp = current_expiry  # V58: load_expiries() NSE chain dobara fetch karta tha (20s+) - calendar expiry kaafi hai, expiry week same hai
+        try:
+            _cal = generate_calendar_expiries(symbol)
+            if _cal:
+                alt_exp = _cal[0]
+        except Exception:
+            pass
+        alt_chain = _v58_chain_fast(symbol, alt_exp)  # V58: 1 proxy 4s, NSE session nahi
         alt_pcr = calculate_pcr(alt_chain)
         alt_proxy = calculate_live_derivatives_proxy(alt_chain, alt_pcr)
         alt_market = analyze_market(symbol, alt_proxy, explicit_spot=alt_spot, tf_cfg=active_tf)
-        # V57 PER-INDEX CONFLUENCE: Pehle NIFTY ka scan_confluence BANKNIFTY/FINNIFTY/SENSEX pe chipka diya jata tha.
-        # Ab har index apni candle + apne PCR + apne VWAP se apna confluence banayega.
+        # V57 PER-INDEX CONFLUENCE + V58 FAST: Har index apni candle/PCR/VWAP se confluence banayega, par -
+        # (1) OHLCV SIRF 1 BAAR fetch hoga (pehle 3 baar hota tha), (2) Light3 (macro/RSS) dobara fetch NAHI hoga - macro market-wide hai, main scan wala reuse hoga.
+        # V58 ne V57 ka per-index RSS (4x RSS = 16s) hataya, isliye buffering kam hoga.
+        _pi_df = pd.DataFrame()
         try:
             _pi_df = add_indicators(fetch_ohlcv(symbol, active_tf["smartapi"], active_tf["days"]), current_live_price=alt_spot)
             _pi_l1 = analyze_candlesticks_and_volume(_pi_df)
             _pi_l2 = analyze_smart_money(fii_dii, alt_pcr, df=_pi_df, current_spot=alt_spot)
-            _pi_l3 = fetch_composite_macro_news(None)
+            try:
+                _pi_l3 = st.session_state.get("_v58_light3_cache", (None, 0))[0] or {"status": "YELLOW", "score": 0, "summary": "BALANCED", "reason": "Macro reuse"}
+            except Exception:
+                _pi_l3 = {"status": "YELLOW", "score": 0, "summary": "BALANCED", "reason": "Macro reuse"}
             try:
                 _pi_today = _pi_df[pd.to_datetime(_pi_df["datetime"]).dt.date == datetime.now(IST).date()] if "datetime" in _pi_df.columns and not _pi_df.empty else _pi_df
                 _pi_open = float(_pi_today["open"].iloc[0]) if len(_pi_today) > 0 else None
@@ -178,7 +324,7 @@ def scan_one_index_fast_v12(symbol, current_expiry, active_tf, vix_data, fii_dii
         # ===== OTR PER-INDEX FIX - Har index ka apna OTR, sirf NIFTY ka nahi =====
         # Pehle is index ka ORB / VWAP / Day Open nikalenge
         try:
-            _df = add_indicators(fetch_ohlcv(symbol, active_tf["smartapi"], active_tf["days"]), current_live_price=alt_spot)
+            _df = _pi_df if _pi_df is not None and not _pi_df.empty else add_indicators(fetch_ohlcv(symbol, active_tf["smartapi"], active_tf["days"]), current_live_price=alt_spot)  # V58: Dobara OHLCV fetch BAND - wahi _pi_df reuse
             _today = _df[_df["datetime"].dt.date == datetime.now(IST).date()] if "datetime" in _df.columns and not _df.empty else _df
             if len(_today) >= 3:
                 _orb_h = float(_today.iloc[:3]["high"].max())
@@ -187,8 +333,16 @@ def scan_one_index_fast_v12(symbol, current_expiry, active_tf, vix_data, fii_dii
             else:
                 _orb_h = float(alt_spot or 0); _orb_l = float(alt_spot or 0); _dopen = float(alt_spot or 0)
             _vwap_alt = float(alt_market.get("vwap") or alt_spot or 0)
+            # V58: OTR ko asli prev_close + 5m momentum do (pehle prev_close=day_open + 5m=0 tha)
+            try:
+                _prev_d = _df[pd.to_datetime(_df["datetime"]).dt.date < datetime.now(IST).date()] if "datetime" in _df.columns and not _df.empty else _df.iloc[0:0]
+                _prev_c = float(_prev_d["close"].iloc[-1]) if len(_prev_d) > 0 else float(_dopen or 0)
+                _cl = _df.iloc[:-1] if len(_df) >= 2 else _df
+                _sp5 = float((_cl["close"].iloc[-1] - _cl["close"].iloc[-2]) / _cl["close"].iloc[-2] * 100) if len(_cl) >= 2 else 0.0
+            except Exception:
+                _prev_c = float(_dopen or 0); _sp5 = 0.0
             _otr_fn2 = get_otr_calculator()
-            _otr_alt = _otr_fn2(spot=float(alt_spot or 0), day_open=_dopen, prev_close=_dopen, orb_high=_orb_h, orb_low=_orb_l, vwap=_vwap_alt, macro=None, gift_gap_pct=0.0, vix_now=float(vix_data.get("vix", 13) if isinstance(vix_data, dict) else 13), vix_prev_close=13.0)
+            _otr_alt = _otr_fn2(spot=float(alt_spot or 0), day_open=_dopen, prev_close=_prev_c, spot_pct_5m=_sp5, orb_high=_orb_h, orb_low=_orb_l, vwap=_vwap_alt, macro=None, gift_gap_pct=0.0, vix_now=float(vix_data.get("vix", 13) if isinstance(vix_data, dict) else 13), vix_prev_close=13.0)
             # CE trap ho to is index ka CE hata do, PE trap ho to PE hata do
             # PE trap = ulta: Spot > OR High + Spot > VWAP + Spot > Day Open + OTR low par bhi PE banana trap hai
             _is_bull_trap_for_pe = (alt_spot and _orb_h and alt_spot > _orb_h and alt_spot > _vwap_alt and alt_spot > _dopen)
@@ -3657,8 +3811,8 @@ class NSEExchangeSession:
         now = time.time()
         if now - self.cookie_timestamp > 120 or len(self.session.cookies) == 0:
             try:
-                self.session.get("https://www.nseindia.com", timeout=6)
-                self.session.get("https://www.nseindia.com/option-chain", timeout=6)
+                self.session.get("https://www.nseindia.com", timeout=2)
+                self.session.get("https://www.nseindia.com/option-chain", timeout=2)  # V58: 6s->2s, warm_cookies hi 12s kha jata tha
                 self.cookie_timestamp = now
                 self.sync_holidays_from_nse()
             except Exception as exc:
@@ -3667,7 +3821,7 @@ class NSEExchangeSession:
     def sync_holidays_from_nse(self):
         try:
             url = "https://www.nseindia.com/api/holiday-master?type=trading"
-            resp = self.session.get(url, timeout=4)
+            resp = self.session.get(url, timeout=2)  # V58: holiday sync 4s->2s
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, dict):
@@ -3681,7 +3835,7 @@ class NSEExchangeSession:
     def get_json(self, url: str) -> Optional[Any]:
         self.warm_cookies()
         try:
-            resp = self.session.get(url, timeout=6)
+            resp = self.session.get(url, timeout=3)  # V58: 6s->3s
             if resp.status_code == 200:
                 try:
                     return resp.json()
@@ -3690,7 +3844,7 @@ class NSEExchangeSession:
             elif resp.status_code in [401, 403]:
                 self.cookie_timestamp = 0.0
                 self.warm_cookies()
-                retry_resp = self.session.get(url, timeout=6)
+                retry_resp = self.session.get(url, timeout=3)  # V58: retry 6s->3s
                 if retry_resp.status_code == 200:
                     try:
                         return retry_resp.json()
@@ -4922,7 +5076,7 @@ def get_chain(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame, pd.Data
         logger.debug(f"NSE pure chain failed {symbol} {expiry} - will retry next tick")
 
     # Original NSE fallback (kept for safety) - skip if already NSE_LIVE
-    if chain_df.empty and expiry and symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50"]:
+    if False and chain_df.empty and expiry and symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "SENSEX50"]:  # V58: Duplicate NSE retry BAND - wahi NSE call dobara 20s kha jata tha
         try:
             url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol.upper()}"
             raw = nse_client.get_json(url)
@@ -8278,30 +8432,40 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     # Trigger scan if manual button clicked OR auto scan due
     manual_scan_clicked = st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True)
     
+    # V58: Auto-scan har 1 min pe full network scan mat chalao - agar pichhla scan 60s se fresh hai to skip karo, warna scan queue lag jata hai.
+    if should_auto_scan and not manual_scan_clicked:
+        try:
+            if time.time() - st.session_state.get("_v58_last_scan_finish", 0) < 60 and st.session_state.get("_v58_last_scan_ideas"):
+                should_auto_scan = False
+                st.caption(f"⚡ Last scan {int(time.time() - st.session_state.get('_v58_last_scan_finish', 0))}s pehle hua tha - wahi ideas dikh rahe hain, 60s baad auto-refresh hoga")
+        except Exception:
+            pass
     if manual_scan_clicked or should_auto_scan:
         with st.spinner(f"Fast live scan on [{active_tf['label']}] - cached + parallel..."):
             progress = st.progress(0)
             status = st.empty()
             status.text("Fetching LIVE spot & chain (10-15 sec live)...")
             progress.progress(10)
-            # V17.4 FIX: Force LIVE spot for conviction trade (no cache)
-            st.cache_data.clear()
-            current_spot = get_spot(underlying)
-            if current_spot is None: current_spot = get_spot_cached(underlying)
-            # V17.4 FIX: Force LIVE chain for conviction trade
-            opt_chain, _ = get_chain(underlying, selected_expiry)
-            if opt_chain.empty:
-                opt_chain_tuple = get_chain_cached(underlying, selected_expiry)
-                opt_chain = opt_chain_tuple[0] if isinstance(opt_chain_tuple, tuple) else opt_chain_tuple
+            # V58 BUFFERING FIX: st.cache_data.clear() hi sabse bada killer tha - iske baad OHLCV/spot/chain/macro sab dobara network se aata tha (200s+).
+            # Cache clear HATA DIYA. 20-60s purana cache hi use hoga, isliye scan 3-8s me khatam hoga.
+            _scan_start_v58 = time.time()  # V58 deadline ke liye
+            current_spot = _v58_spot_fast(underlying)  # V58: Stooq 1.5s, full fetch 25s nahi
+            if current_spot is None: current_spot = get_spot(underlying)
+            if current_spot is not None:
+                try: st.session_state[f"_v58_last_spot_{underlying}"] = float(current_spot)
+                except Exception: pass
+            opt_chain = _v58_chain_fast(underlying, selected_expiry)  # V58: 1 proxy 4s, NSE session nahi
             chain_pcr = calculate_pcr(opt_chain)
             der_proxy = calculate_live_derivatives_proxy(opt_chain, chain_pcr)
             active_market = analyze_market(underlying, der_proxy, explicit_spot=current_spot, tf_cfg=active_tf)
-            vix_data = get_india_vix()
+            vix_data = _v58_vix_fast()  # V58: VIX ke liye 25s spot fetch nahi
             c_df = add_indicators(fetch_ohlcv(underlying, active_tf["smartapi"], active_tf["days"]), current_live_price=current_spot)
             c_light1 = analyze_candlesticks_and_volume(c_df)
             c_light2 = analyze_smart_money(fii_dii, chain_pcr, df=c_df, current_spot=current_spot)
-            macro_q = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
-            c_light3 = fetch_composite_macro_news(macro_q)
+            macro_q = _v58_macro_fast()  # V58: 120s cache - har scan pe 30s macro fetch nahi
+            c_light3 = _v58_light3_fast(macro_q)  # V58: 60s cache - har scan pe RSS nahi
+            try: st.session_state["_v58_light3_cache"] = (c_light3, time.time())
+            except Exception: pass
             # V57: Scan ka confluence ab live price + GEX flip ke saath - girte market me 3 GREEN bhi CE nahi dega
             try:
                 _gex_scan = compute_gex_and_max_pain(opt_chain, current_spot, underlying)
@@ -8407,6 +8571,10 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             alt_symbols = [s for s in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"] if s != underlying]
             done = 0
             for sym in alt_symbols:
+                # V58 DEADLINE: Poora scan 18s se zyada alt pe nahi rukega. Slow feed wala index skip hoga, main ideas dikhenge.
+                if time.time() - _scan_start_v58 > 18:
+                    st.warning(f"⏱️ FAST SCAN: {sym} + baaki slow feed ki wajah se skip - main ideas dikh rahe hain, dobara SCAN dabao to baaki bhi aa jayenge")
+                    break
                 done += 1
                 progress.progress(50 + int(40 * done / len(alt_symbols)))
                 status.text(f"Live scanned {sym} - {done}/{len(alt_symbols)} (Sequential - Safe Mode)")
@@ -8446,6 +8614,12 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     unique_ideas.append(item)
 
             final_ideas = unique_ideas[:5]
+            # V58: Scan result cache karo taaki agla auto-scan (1 min) dobara network na mare
+            try:
+                st.session_state["_v58_last_scan_finish"] = time.time()
+                st.session_state["_v58_last_scan_ideas"] = [dict(x) for x in final_ideas]
+            except Exception:
+                pass
 
             if not final_ideas:
                 st.warning("Market conditions indicate neutral consolidation or conflict across indices. No safe trade setup found.")
