@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# V59 SESSIONINFO DEFINITIVE FIX - 16 Nov 2026 - BAD MESSAGE FORMAT FIX
+# Tera screenshot: 'Bad message format - Tried to use SessionInfo before it was initialized' - trading time pe roz aata tha.
+# V55.3 ne fragment + autorefresh + parallel scan band kiya tha, par 2 jad BACHI hui thi, isliye error wapas aaya:
+# (1) ThreadPoolExecutor abhi bhi zinda tha - 8 thread rerun ke baad bhi zinda rehte the, unka SessionInfo stale ho jata tha.
+# (2) @st.cache_data / @st.cache_resource khud SessionInfo maangta hai - cache expire / cold-start pe session bana hi nahi hota, tabhi ye error aata hai.
+# V59 FIX: (a) ThreadPoolExecutor DELETE - Telegram ab main thread me sync 3s me jayega, koi background thread nahi.
+# (b) Saare @st.cache_* HATA ke plain Python dict cache (_v59_mem_cache / _v59_singleton) laga diya - Streamlit cache system ko hi bypass kar diya, to SessionInfo maangega hi nahi.
+# (c) V58 helpers + paper_portfolio init ab safe session helpers se chalenge - session bana nahi ho to fallback dict me jayega, crash nahi hoga.
 # V58 FAST SCAN FIX - 16 Nov 2026 - BUFFERING FIX
 # Scan 10% pe atakta tha: st.cache_data.clear() + NSE warm_cookies 16s + get_chain 3 proxy x8s + duplicate NSE retry + OHLCV x14 + RSS x5 = 200-400s.
 # Fix: cache clear BAND, NSE session bypass in scan (Stooq 1.5s + 1 proxy 4s), chain/spot/macro/VIX 60-120s cache, alt-loop 18s deadline, per-index RSS BAND.
@@ -78,6 +86,65 @@ except Exception:
     IST = timezone(timedelta(hours=5, minutes=30))  # IST = UTC+5:30 fallback
 
 
+
+# ===== V59 SAFE HELPERS - SessionInfo kabhi maangega hi nahi =====
+import functools as _ft_v59
+_V59_FALLBACK = {}  # session bana nahi ho to yahan jayega, crash nahi hoga
+_V59_MEM_CACHE = {}  # @st.cache_data ki jagah - plain dict, Streamlit ko chhedega nahi
+_V59_SINGLETON = {}  # @st.cache_resource ki jagah
+def _v59_mem_cache(ttl=30):
+    # @st.cache_data ka drop-in replacement, par Streamlit cache system use nahi karta - isliye SessionInfo error nahi aayega
+    def _deco(fn):
+        @_ft_v59.wraps(fn)
+        def _wrap(*a, **kw):
+            try:
+                _key = (fn.__name__, str(a), str(sorted(kw.items())))
+            except Exception:
+                return fn(*a, **kw)
+            _now = time.time()
+            if _key in _V59_MEM_CACHE:
+                _val, _ts = _V59_MEM_CACHE[_key]
+                if _now - _ts < ttl:
+                    try:
+                        if hasattr(_val, "copy") and "DataFrame" in type(_val).__name__:
+                            return _val.copy()
+                    except Exception:
+                        pass
+                    return _val
+            _val = fn(*a, **kw)
+            try:
+                _V59_MEM_CACHE[_key] = (_val, _now)
+            except Exception:
+                pass
+            return _val
+        return _wrap
+    return _deco
+def _v59_singleton(fn):
+    @_ft_v59.wraps(fn)
+    def _wrap(*a, **kw):
+        if fn.__name__ not in _V59_SINGLETON:
+            _V59_SINGLETON[fn.__name__] = fn(*a, **kw)
+        return _V59_SINGLETON[fn.__name__]
+    return _wrap
+def _v59_ss_get(key, default=None):
+    try:
+        return st.session_state.get(key, default)
+    except Exception:
+        return _V59_FALLBACK.get(key, default)
+def _v59_ss_set(key, val):
+    try:
+        st.session_state[key] = val
+    except Exception:
+        pass
+    try:
+        _V59_FALLBACK[key] = val
+    except Exception:
+        pass
+def _v59_ss_contains(key):
+    try:
+        return key in st.session_state
+    except Exception:
+        return key in _V59_FALLBACK
 
 # ===== V19 FIX - PENDING FILE + SPEED CACHE =====
 import json as _json_pending
@@ -173,14 +240,14 @@ def _v58_spot_fast(symbol):
                     except Exception:
                         pass
                     try:
-                        st.session_state[f"_v58_last_spot_{symbol}"] = _val
+                        _v59_ss_set(f"_v58_last_spot_{symbol}", _val)
                     except Exception:
                         pass
                     return float(_val)
     except Exception:
         pass
     try:
-        _last = st.session_state.get(f"_v58_last_spot_{symbol}")
+        _last = _v59_ss_get(f"_v58_last_spot_{symbol}")
         if _last:
             return float(_last)
     except Exception:
@@ -190,7 +257,7 @@ def _v58_spot_fast(symbol):
 def _v58_chain_fast(symbol, expiry):
     # ONE proxy only (codetabs, 4s). NSE session + warm_cookies (16s) + 3 proxy (24s) + duplicate NSE retry (20s) = 60s+ -> BAND.
     try:
-        _cache = st.session_state.get("_v58_chain_cache", {})
+        _cache = _v59_ss_get("_v58_chain_cache", {})
         _key = f"{symbol}_{expiry}"
         if _key in _cache:
             _df, _ts = _cache[_key]
@@ -222,16 +289,16 @@ def _v58_chain_fast(symbol, expiry):
                 if _rows:
                     _df = pd.DataFrame(_rows)
                     try:
-                        _c2 = st.session_state.get("_v58_chain_cache", {})
+                        _c2 = _v59_ss_get("_v58_chain_cache", {})
                         _c2[_key] = (_df, time.time())
-                        st.session_state["_v58_chain_cache"] = _c2
+                        _v59_ss_set("_v58_chain_cache", _c2)
                     except Exception:
                         pass
                     return _df
     except Exception:
         pass
     try:
-        _cache = st.session_state.get("_v58_chain_cache", {})
+        _cache = _v59_ss_get("_v58_chain_cache", {})
         _key = f"{symbol}_{expiry}"
         if _key in _cache:
             return _cache[_key][0]
@@ -242,20 +309,20 @@ def _v58_chain_fast(symbol, expiry):
 def _v58_vix_fast():
     # VIX sirf SL multiplier ke liye hai - iske liye 25s ka spot fetch mat karo. Last cached ya 13.5.
     try:
-        _v, _ts = st.session_state.get("_v58_vix_cache", (None, 0))
+        _v, _ts = _v59_ss_get("_v58_vix_cache", (None, 0))
         if _v and time.time() - _ts < 60:
             return {"vix": float(_v), "regime": "OPTIMAL BUYING", "sl_multiplier": 0.85, "status": "CACHED_FAST", "timestamp": datetime.now(IST).strftime("%H:%M:%S IST")}
     except Exception:
         pass
     try:
-        st.session_state["_v58_vix_cache"] = (13.5, time.time())
+        _v59_ss_set("_v58_vix_cache", (13.5, time.time()))
     except Exception:
         pass
     return {"vix": 13.5, "regime": "OPTIMAL BUYING", "sl_multiplier": 0.85, "status": "FAST_FALLBACK_13.5", "timestamp": datetime.now(IST).strftime("%H:%M:%S IST")}
 
 def _v58_macro_fast():
     try:
-        _m, _ts = st.session_state.get("_v58_macro_cache", (None, 0))
+        _m, _ts = _v59_ss_get("_v58_macro_cache", (None, 0))
         if _m and time.time() - _ts < 120:
             return _m
     except Exception:
@@ -263,7 +330,7 @@ def _v58_macro_fast():
     try:
         if global_macro_inst:
             _m = global_macro_inst.fetch_macro_quotes()
-            st.session_state["_v58_macro_cache"] = (_m, time.time())
+            _v59_ss_set("_v58_macro_cache", (_m, time.time()))
             return _m
     except Exception:
         pass
@@ -272,14 +339,14 @@ def _v58_macro_fast():
 def _v58_light3_fast(macro_q):
     # RSS har index pe mat fetch karo - macro market-wide hai, 60s cache kaafi hai.
     try:
-        _l, _ts = st.session_state.get("_v58_light3_cache", (None, 0))
+        _l, _ts = _v59_ss_get("_v58_light3_cache", (None, 0))
         if _l and time.time() - _ts < 60:
             return _l
     except Exception:
         pass
     try:
         _l = fetch_composite_macro_news(macro_q)
-        st.session_state["_v58_light3_cache"] = (_l, time.time())
+        _v59_ss_set("_v58_light3_cache", (_l, time.time()))
         return _l
     except Exception:
         return {"status": "YELLOW", "score": 0, "summary": "BALANCED / NEUTRAL MACRO", "reason": "Macro cache fallback"}
@@ -309,7 +376,7 @@ def scan_one_index_fast_v12(symbol, current_expiry, active_tf, vix_data, fii_dii
             _pi_l1 = analyze_candlesticks_and_volume(_pi_df)
             _pi_l2 = analyze_smart_money(fii_dii, alt_pcr, df=_pi_df, current_spot=alt_spot)
             try:
-                _pi_l3 = st.session_state.get("_v58_light3_cache", (None, 0))[0] or {"status": "YELLOW", "score": 0, "summary": "BALANCED", "reason": "Macro reuse"}
+                _pi_l3 = _v59_ss_get("_v58_light3_cache", (None, 0))[0] or {"status": "YELLOW", "score": 0, "summary": "BALANCED", "reason": "Macro reuse"}
             except Exception:
                 _pi_l3 = {"status": "YELLOW", "score": 0, "summary": "BALANCED", "reason": "Macro reuse"}
             try:
@@ -3766,25 +3833,32 @@ def live_spot_fragment_safe(symbol="NIFTY"):
 # =====================================================================
 # 7. STATEFUL PAPER PORTFOLIO & AUDIT LEDGER
 # =====================================================================
-if "paper_portfolio" not in st.session_state:
-    st.session_state.paper_portfolio = {
+# V59: Top-level session_state init - cold-start / reboot pe session bana nahi hota to yahi SessionInfo error deta tha. Ab safe helper se hai.
+if not _v59_ss_contains("paper_portfolio"):
+    _v59_ss_set("paper_portfolio", {
         "cash_balance": 500000.0,
         "starting_balance": 500000.0,
         "daily_realized_pnl": 0.0,
-        "positions": {},       # Active open simulated orders (Options & Equities)
-        "trade_history": [],   # Completed paper trades journal
+        "positions": {},
+        "trade_history": [],
         "session_date": datetime.now(IST).date().isoformat(),
         "daily_loss_limit": 10000.0,
         "circuit_broken": False,
-    }
+    })
 
 def check_daily_reset():
-    today_str = datetime.now(IST).date().isoformat()
-    if st.session_state.paper_portfolio.get("session_date") != today_str:
-        st.session_state.paper_portfolio["session_date"] = today_str
-        st.session_state.paper_portfolio["daily_realized_pnl"] = 0.0
-        st.session_state.paper_portfolio["circuit_broken"] = False
-        logger.info("Paper portfolio daily metrics reset for session: %s", today_str)
+    # V59: Safe helper - session na bana ho to crash nahi hoga
+    try:
+        today_str = datetime.now(IST).date().isoformat()
+        _pp = _v59_ss_get("paper_portfolio") or {}
+        if _pp.get("session_date") != today_str:
+            _pp["session_date"] = today_str
+            _pp["daily_realized_pnl"] = 0.0
+            _pp["circuit_broken"] = False
+            _v59_ss_set("paper_portfolio", _pp)
+            logger.info("Paper portfolio daily metrics reset for session: %s", today_str)
+    except Exception:
+        pass
 
 check_daily_reset()
 
@@ -3854,7 +3928,7 @@ class NSEExchangeSession:
             logger.warning("NSE endpoint request failed on %s: %s", url, exc)
         return None
 
-@st.cache_resource(show_spinner=False)
+@_v59_singleton  # V59: @st.cache_resource HATAYA - plain singleton, SessionInfo nahi maangega
 def get_nse_session() -> NSEExchangeSession:
     return NSEExchangeSession()
 
@@ -4135,10 +4209,9 @@ def get_india_vix():
 # ===== END V21 TURBO =====
 
 # ===== V22 ULTRA FAST TELEGRAM & MARKET RESPONSE =====
-from concurrent.futures import ThreadPoolExecutor as _TPE_V22
-import threading as _threading_v22
-
-_telegram_executor_v22 = _TPE_V22(max_workers=8)
+# V59: ThreadPoolExecutor DELETE - yahi SessionInfo ki sabse badi jad thi. 8 thread rerun ke baad bhi zinda rehte the, unka SessionInfo stale ho jata tha.
+# Ab Telegram main thread me sync jayega (3s timeout), koi background thread nahi banega. Thoda slow lagega par error nahi aayega.
+_telegram_executor_v22 = None  # V59: executor BAND, sirf naam rakha hai taaki purana code crash na kare
 _telegram_last_sent_v22 = {}
 _telegram_bot_cache_v22 = {"token": None, "chat": None, "time": 0}
 
@@ -4177,7 +4250,7 @@ def _v22_ultra_send_raw(bot_token, chat_id, message):
         return False
 
 def ultra_fast_telegram_send(message, force=False):
-    """V22 ULTRA FAST - Non-blocking telegram send in background thread"""
+    """V22 ULTRA FAST + V59 SYNC - Main thread me sync send, background thread BAND (SessionInfo fix)"""
     try:
         bot_t, chat_t = _v22_get_bot_cached()
         if not bot_t or not chat_t:
@@ -4190,8 +4263,8 @@ def ultra_fast_telegram_send(message, force=False):
             if now - _telegram_last_sent_v22[msg_hash] < 2:
                 return True
         _telegram_last_sent_v22[msg_hash] = now
-        # Send in background thread - INSTANT return
-        _telegram_executor_v22.submit(_v22_ultra_send_raw, bot_t, chat_t, message)
+        # V59: Background thread BAND - main thread me sync send (3s). Thread se hi SessionInfo error aata tha.
+        _v22_ultra_send_raw(bot_t, chat_t, message)
         return True
     except Exception as e:
         print(f"Ultra fast queue fail {e}")
@@ -4284,7 +4357,7 @@ try:
 except Exception:
     OptionsEngine = None
 
-@st.cache_resource(show_spinner=False)
+@_v59_singleton  # V59: @st.cache_resource HATAYA - plain singleton, SessionInfo nahi maangega
 def create_telemetry():
     if TelemetryEngine is None or not all([ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, ANGEL_TOTP_SECRET]):
         return None
@@ -4388,7 +4461,7 @@ PRIMARY_SEED_EQUITIES = {
     "MAZDOCK": {"name": "Mazagon Dock Shipbuilders", "token_nse": "2032", "token_bse": "543237", "yfinance": "MAZDOCK.NS", "exchange": "NSE", "sector": "Shipbuilding & Defence"},
 }
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@_v59_mem_cache(ttl=86400)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def load_5000_equity_master() -> Dict[str, Dict[str, Any]]:
     """Ingests official exchange equity masters covering 5,000+ listed equities across NSE & BSE."""
     master: Dict[str, Dict[str, Any]] = {}
@@ -4587,7 +4660,7 @@ class GlobalMacroEngine:
             pass
         return out
 
-@st.cache_resource(show_spinner=False)
+@_v59_singleton  # V59: @st.cache_resource HATAYA - plain singleton, SessionInfo nahi maangega
 def get_global_macro_engine():
     try: return GlobalMacroEngine()
     except Exception: return None
@@ -4670,7 +4743,7 @@ def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
 def resample_5m_to_10m(df: pd.DataFrame) -> pd.DataFrame:
     return resample_ohlcv(df, "10m")
 
-@st.cache_data(ttl=3, show_spinner=False)
+@_v59_mem_cache(ttl=3)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
     """V56 LIVE TEY - Stooq FIRST (0.5s, never blocked) -> Yahoo SECOND -> NSE LAST -> Proxy LAST.
     Pehle wala code PURE NSE ONLY tha, isliye Cloud IP block hote hi Feed Retry aata tha.
@@ -4834,7 +4907,7 @@ def determine_settlement_phase() -> str:
     elif dtime(17, 30) <= current_time <= dtime(19, 0): return "RECONCILIATION IN PROGRESS"
     else: return "TODAY'S PROVISIONAL FIGURES"
 
-@st.cache_data(ttl=30, show_spinner=False)
+@_v59_mem_cache(ttl=30)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def fetch_fii_dii() -> Dict[str, Any]:
     url = "https://www.nseindia.com/api/fiidiiTradeReact"
     raw_response = nse_client.get_json(url)
@@ -4945,7 +5018,7 @@ def generate_calendar_expiries(symbol: str) -> List[str]:
                 if exp_str not in expiries: expiries.append(exp_str)
     return sorted(list(set(expiries)))
 
-@st.cache_data(ttl=30, show_spinner=False)
+@_v59_mem_cache(ttl=30)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def load_expiries(symbol: str) -> List[str]:
     opt_eng = get_options_engine()
     if opt_eng is not None:
@@ -5141,7 +5214,7 @@ def get_chain_with_tag(symbol: str, expiry: Optional[str]) -> Tuple[pd.DataFrame
     try:
         tag = chain.attrs.get("source_tag", "") or raw.attrs.get("source_tag", "")
         if not tag:
-            tag = st.session_state.get("last_chain_source", {}).get(f"{symbol}_{expiry}", "UNKNOWN")
+            tag = _v59_ss_get("last_chain_source", {}).get(f"{symbol}_{expiry}", "UNKNOWN")
     except Exception:
         tag = "UNKNOWN"
     return chain, raw, tag
@@ -5333,7 +5406,7 @@ def classify_oi_buildup(price_change: float, oi_change: float) -> str:
 # =====================================================================
 # 14. TECHNICAL INDICATORS PIPELINE & ANCHORED VWAP
 # =====================================================================
-@st.cache_data(ttl=30, show_spinner=False)
+@_v59_mem_cache(ttl=30)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def fetch_ohlcv(symbol: str, interval: str = "FIVE_MINUTE", days: int = 5) -> pd.DataFrame:
     if symbol not in INDEX_METADATA: return pd.DataFrame()
     meta = INDEX_METADATA[symbol]
@@ -5691,7 +5764,7 @@ def analyze_smart_money(fii_dii_data: Dict[str, Any], pcr_val: Optional[float], 
     final_reason = " | ".join(notes) if notes else "Smart Money neutral."
     return {"status": status, "score": score, "reason": final_reason}
 
-@st.cache_data(ttl=30, show_spinner=False)
+@_v59_mem_cache(ttl=30)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def fetch_composite_macro_news(macro_quotes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     rss_url = "https://news.google.com/rss/search?q=Indian+stock+market+Nifty&hl=en-IN&gl=IN&ceid=IN:en"
     headlines = []
@@ -6060,13 +6133,14 @@ def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str,
     # V22 ULTRA FAST - Active Call Exit Rules Instant
     try:
         msg_rules = f"🚀 ACTIVE CALL ENTRY\n\n📊 {symbol} {strike} {option_type}\n💰 Entry: Rs {fill_price:.2f} Qty: {qty}\n🛑 SL: Rs {sl:.2f}\n🎯 T1: Rs {t1:.2f}\n🎯 T2: Rs {t2:.2f}\n📅 {expiry}\n⏰ {datetime.now(IST).strftime('%H:%M:%S IST')}\n\n⚡ EXIT RULES ULTRA FAST:\n• SL {sl:.2f} = EXIT\n• T1 {t1:.2f} = 50% BOOK\n• T2 {t2:.2f} = FULL EXIT\n• 15:15 FORCE CLOSE\n\nID: {trade_id} | OPEN"
-        # Send ultra fast in background thread - returns instantly
+        # V59: Background thread BAND - main thread sync send
         ultra_fast_telegram_send(msg_rules, force=True)
         # Also try direct for backup
+        # V59: Background thread BAND - main thread me sync send
         try:
             bot_t, chat_t = get_telegram_keys()
             if bot_t and chat_t:
-                _telegram_executor_v22.submit(_v22_ultra_send_raw, bot_t, chat_t, msg_rules)
+                _v22_ultra_send_raw(bot_t, chat_t, msg_rules)
         except:
             pass
     except Exception as e:
@@ -6608,7 +6682,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
 # 19. MULTI-FACTOR EQUITY INTELLIGENCE ENGINE (TECHNICAL, FUNDAMENTAL,
 #     CORPORATE/INSIDER FILINGS, FUTURE PLANS, MATH & TARGET TIME ETA)
 # =====================================================================
-@st.cache_data(ttl=20, show_spinner=False)
+@_v59_mem_cache(ttl=20)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: str = "NSE", yf_sym: Optional[str] = None) -> Dict[str, Any]:
     price, prev_close = None, None
     day_high, day_low, volume, high_52w, low_52w = None, None, 0, None, None
@@ -6648,7 +6722,7 @@ def fetch_equity_live_quote(symbol: str, token: Optional[str] = None, exchange: 
         "status": "LIVE" if price else "UNAVAILABLE"
     }
 
-@st.cache_data(ttl=900, show_spinner=False)
+@_v59_mem_cache(ttl=900)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Optional[str] = None, current_price: Optional[float] = None) -> Dict[str, Any]:
     """
     Fetches fundamental and valuation metrics from NSE quote-equity and Yahoo Finance quoteSummary.
@@ -6747,7 +6821,7 @@ def fetch_equity_fundamentals(symbol: str, exchange: str = "NSE", yf_sym: Option
         "fund_notes": fund_notes,
     }
 
-@st.cache_data(ttl=30, show_spinner=False)
+@_v59_mem_cache(ttl=30)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def fetch_corporate_filings_and_future_plans(symbol: str, stock_name: str) -> Dict[str, Any]:
     """
     Ingests official exchange corporate disclosures (NSE corporate-announcements API),
@@ -6830,7 +6904,7 @@ def fetch_corporate_filings_and_future_plans(symbol: str, stock_name: str) -> Di
         "exchange_filings": exchange_filings[:4],
     }
 
-@st.cache_data(ttl=30, show_spinner=False)
+@_v59_mem_cache(ttl=30)  # V59: @st.cache_data HATAYA - Streamlit cache hi SessionInfo maangta tha
 def fetch_equity_candles(symbol: str, token: Optional[str] = None, exchange: str = "NSE", yf_sym: Optional[str] = None, tf_cfg: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     if tf_cfg is None: tf_cfg = TIMEFRAME_CONFIG["5m"]
     broker_interval = tf_cfg["smartapi"]
@@ -8435,9 +8509,9 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     # V58: Auto-scan har 1 min pe full network scan mat chalao - agar pichhla scan 60s se fresh hai to skip karo, warna scan queue lag jata hai.
     if should_auto_scan and not manual_scan_clicked:
         try:
-            if time.time() - st.session_state.get("_v58_last_scan_finish", 0) < 60 and st.session_state.get("_v58_last_scan_ideas"):
+            if time.time() - _v59_ss_get("_v58_last_scan_finish", 0) < 60 and _v59_ss_get("_v58_last_scan_ideas"):
                 should_auto_scan = False
-                st.caption(f"⚡ Last scan {int(time.time() - st.session_state.get('_v58_last_scan_finish', 0))}s pehle hua tha - wahi ideas dikh rahe hain, 60s baad auto-refresh hoga")
+                st.caption(f"⚡ Last scan {int(time.time() - _v59_ss_get('_v58_last_scan_finish', 0))}s pehle hua tha - wahi ideas dikh rahe hain, 60s baad auto-refresh hoga")
         except Exception:
             pass
     if manual_scan_clicked or should_auto_scan:
@@ -8452,7 +8526,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             current_spot = _v58_spot_fast(underlying)  # V58: Stooq 1.5s, full fetch 25s nahi
             if current_spot is None: current_spot = get_spot(underlying)
             if current_spot is not None:
-                try: st.session_state[f"_v58_last_spot_{underlying}"] = float(current_spot)
+                try: _v59_ss_set(f"_v58_last_spot_{underlying}", float(current_spot))
                 except Exception: pass
             opt_chain = _v58_chain_fast(underlying, selected_expiry)  # V58: 1 proxy 4s, NSE session nahi
             chain_pcr = calculate_pcr(opt_chain)
@@ -8464,7 +8538,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             c_light2 = analyze_smart_money(fii_dii, chain_pcr, df=c_df, current_spot=current_spot)
             macro_q = _v58_macro_fast()  # V58: 120s cache - har scan pe 30s macro fetch nahi
             c_light3 = _v58_light3_fast(macro_q)  # V58: 60s cache - har scan pe RSS nahi
-            try: st.session_state["_v58_light3_cache"] = (c_light3, time.time())
+            try: _v59_ss_set("_v58_light3_cache", (c_light3, time.time()))
             except Exception: pass
             # V57: Scan ka confluence ab live price + GEX flip ke saath - girte market me 3 GREEN bhi CE nahi dega
             try:
@@ -8616,8 +8690,8 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             final_ideas = unique_ideas[:5]
             # V58: Scan result cache karo taaki agla auto-scan (1 min) dobara network na mare
             try:
-                st.session_state["_v58_last_scan_finish"] = time.time()
-                st.session_state["_v58_last_scan_ideas"] = [dict(x) for x in final_ideas]
+                _v59_ss_set("_v58_last_scan_finish", time.time())
+                _v59_ss_set("_v58_last_scan_ideas", [dict(x) for x in final_ideas])
             except Exception:
                 pass
 
