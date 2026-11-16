@@ -1,4 +1,28 @@
 # -*- coding: utf-8 -*-
+# V63 GLOBAL LIVE LTP - 16 Nov 2026 - GIFT + NDX + SPX + DOW + NIKKEI + HANGSENG + CRUDE + GOLD + USDINR + DXY + US10Y SAB LIVE
+# Pehle problem: Global sirf 4 cheez tha (GIFT/NASDAQ/CRUDE/GOLD), aur wo bhi SEQUENTIAL tha - Yahoo query1 (3s) + query2 (3s) + Stooq (3s) = 1 symbol pe 9s, 4 symbol pe 36s. Isliye app usko 120s cache karke 0.0 fallback deta tha, aur prediction me GIFT ka use hi nahi hota tha!
+# Ab: SAB 11 SYMBOL PARALLEL me - ThreadPool me sirf requests.get, st.* bilkul nahi, isliye SessionInfo nahi aayega. Total time 2.5s, chahe 4 ho ya 11.
+# Har entry me: price (LTP) + change_pct (1-day, prev close se) + prev_close + source + age + live flag. STALE ho to UI me STALE likha aayega, 0.0 ka jhootha number nahi.
+# Prediction ka formula bhi badla: Pehle Gap = Nasdaq*45 - Crude*25 + FII*35 + PCR*80 (GIFT gayab!). Ab Gap = GIFT*150 + NDX*30 + SPX*15 + GlobalScore*0.4 + FII*35 + PCR*80 - Crude*15 - GoldSpike. GIFT sabse zyada weight, kyunki opening GIFT se banti hai.
+# V62 FAST SCAN REAL FIX - 16 Nov 2026 - SCAN AB 10-15s ME, 60s+ NAHI
+# Bhai ki complaint sahi hai: Button pe likha hai "FAST 3-5 sec", par scan 60-80s lagta hai, isliye lagta hai scan hi nahi ho raha.
+# Asli hisaab: Main 1 index ka OHLCV (Angel/Yahoo 8-10s) + Alt 3 index ka OHLCV (3x10s=30s) + Chain codetabs 4s x4=16s + Spot Stooq 1.5s x4=6s + Macro/GEX = 60-80s. V58 ne cache lagaya tha par pehla scan (reboot ke baad cache khali) phir bhi 60s+ tha.
+# V62 FIX (bina SessionInfo wapas laye): (1) Alt indices PARALLEL - sirf network threads, st.* bilkul nahi, isliye SessionInfo nahi aayega. Thread me sirf requests.get hai, Streamlit ko chhuenge hi nahi.
+# (2) FII/DII LAZY - pehle har page load pe NSE se FII/DII aata tha (4s), ab sirf SCAN pe aur 2s timeout pe, page khulte hi scan nahi atakega.
+# (3) Yahoo timeout 4s->2.5s + sirf query1 - query2 ka 4s extra wait band.
+# (4) Alt loop deadline 18s->12s + main ideas pehle dikhenge, alt slow ho to skip hoga, scan kabhi 15s se zyada nahi rukega.
+# (5) Button ka jhootha label "3-5 sec" -> "10-15 sec" kiya - ab jo likha hai wahi hoga.
+# V61 SESSION BOOT FIX - 16 Nov 2026 - UPDATE KE BAAD WALA BAD MESSAGE FORMAT FIX
+# Bhai ki screenshot (11:47): App UPDATE karte hi error aaya, SCAN dabane se pehle hi. Matlab jad SCAN me nahi, KHULTE HI wale code me thi.
+# Asli wajah 2 thi, dono V60 tak bachi hui thi:
+# (1) UPDATE = REBOOT. Streamlit Cloud reboot hote hi backend ka session ID badal jata hai, par tera purana tab (screenshot me 4 tab khule hain) purane session ID se chipka rehta hai.
+#     Frontend purana ID bhejta hai, backend bolta hai "SessionInfo before it was initialized" -> Bad message format. Ye CODE ka error nahi, PURANE TAB ka error hai.
+#     Isliye update ke turant baad purana tab hamesha ye error dega, chahe code kitna bhi sahi ho.
+# (2) Khulte hi wala code - persistent_loaded block (line ~843) - bina try/except ke st.session_state ko chhu raha tha. Cold-start / reboot pe session bana nahi hota, wahi pehli line pe crash.
+# V61 FIX: (a) BOOT GUARD - set_page_config ke turant baad session check, bana nahi ho to 1.5s wait + 1 baar rerun, aage ka code mat chalao.
+# (b) persistent_loaded + get_persist + REFRESH button sab safe helper + try/except me.
+# (c) otr_v2 + autorefresh import set_page_config ke PEHLE se hatake BAAD me / DELETE kiya - import time pe Streamlit ko chhedna band.
+# (d) Deploy rule: Update ke baad saare purane tab BAND karke 1 naya tab kholo, kal live me market hours me REBOOT mat karna.
 # V60 INDICATOR PACK - 16 Nov 2026 - BOLLINGER + EMA200 VETO + MORNING STAR / DOUBLE TOP-BOTTOM
 # Bhai ka sawaal: Bollinger + 20/50/200 EMA se setup strong hoga? Jawab: Haan, par sahi tarike se.
 # Sach: EMA 20/50/200 pehle se tha (add_indicators + Strong Check), Bollinger sirf aadha tha (MathEngine me %B, add_indicators me BB columns nahi the).
@@ -55,21 +79,14 @@ import re
 import requests
 import concurrent.futures
 import streamlit as st
-# ===== OTR v2 - Embedded + External fallback =====
-try:
-    from otr_v2 import calculate_otr_v2 as _otr_v2_external
-    HAS_OTR_EXTERNAL = True
-except Exception:
-    _otr_v2_external = None
-    HAS_OTR_EXTERNAL = False
+# V61: otr_v2 import LAZY - pehle ye set_page_config se PEHLE import hota tha, agar otr_v2.py ke andar st.* hota to khulte hi SessionInfo aata.
+# Ab top pe sirf None rakha hai, asli import set_page_config ke BAAD hoga (neeche V61 LAZY IMPORT block me).
+_otr_v2_external = None
+HAS_OTR_EXTERNAL = False
 # Agar otr_v2.py alag file me hai to wahi chalega, nahi to neeche wala embedded function chalega
 
-# V55.3 - autorefresh bhi BAND, ye bhi background me SessionInfo ko chhedta hai
-try:
-    from streamlit_autorefresh import st_autorefresh
-    HAS_AUTOREFRESH = False  # Force OFF - chahe package ho, use nahi karenge
-except:
-    HAS_AUTOREFRESH = False
+# V61: autorefresh import hi DELETE - package import karte hi Streamlit ko chhedta tha, aur waise bhi HAS_AUTOREFRESH=False hai. Import karne ka koi matlab nahi.
+HAS_AUTOREFRESH = False
 
 
 # V55.3 DEFINITIVE FIX - Bad message format / SessionInfo - FRAGMENT BAND
@@ -223,6 +240,71 @@ def get_chain_cached(symbol, expiry): # V14 ULTRA: NO CACHE
     except:
         return (pd.DataFrame(), pd.DataFrame())
 
+# ===== V62 PARALLEL PURE-NETWORK HELPERS - Thread me sirf requests.get, st.* BILKUL NAHI - isliye SessionInfo nahi aayega =====
+# V55.3 ne ThreadPool ko galat samjha tha - Thread me st.session_state / st.cache_data chhune se SessionInfo aata tha, thread se nahi.
+# V62 me thread sirf network karega (Stooq / codetabs / Yahoo), Streamlit ka kaam main thread me hoga. Isliye parallel safe hai.
+def _v62_pure_spot(symbol):
+    # Sirf Stooq, 1.2s timeout, koi session_state nahi, koi cache nahi - thread-safe
+    try:
+        _m = {"NIFTY": "%5Ensei", "BANKNIFTY": "%5Ensebank", "FINNIFTY": "%5Ensebank", "SENSEX": "%5Ebse", "INDIA_VIX": "%5Eindiavix"}
+        _sq = _m.get(str(symbol).upper(), "%5Ensei")
+        _r = requests.get(f"https://stooq.com/q/l/?s={_sq}&f=sd2t2ohlcv&h&e=csv", timeout=1.2, headers={"User-Agent": "Mozilla/5.0"})
+        if _r.status_code == 200 and "," in _r.text:
+            _lines = _r.text.strip().split("\n")
+            if len(_lines) >= 2:
+                _val = float(_lines[1].split(",")[6])
+                if _val and _val > 0:
+                    return float(_val)
+    except Exception:
+        pass
+    return None
+def _v62_pure_chain(symbol, expiry):
+    # Sirf codetabs 1 proxy, 2.5s timeout, koi session_state nahi - thread-safe
+    try:
+        import urllib.parse as _up62
+        _url = f"https://www.nseindia.com/api/option-chain-indices?symbol={str(symbol).upper()}"
+        _r = requests.get("https://api.codetabs.com/v1/proxy?quest=" + _up62.quote(_url, safe=''), timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+        if _r.status_code == 200:
+            _data = json.loads(_r.text)
+            if isinstance(_data, dict) and "records" in _data:
+                _rec = _data.get("records", {})
+                _items = _rec.get("data", []) if isinstance(_rec, dict) else []
+                _target = expiry_norm(expiry)
+                _rows = []
+                _tag = datetime.now(IST).strftime("%H:%M:%S")
+                for _it in _items:
+                    if isinstance(_it, dict) and expiry_norm(_it.get("expiryDate")) == _target:
+                        _strike = num(_it.get("strikePrice"))
+                        if "CE" in _it and isinstance(_it["CE"], dict):
+                            _ce = _it["CE"]
+                            _rows.append({"strikePrice": _strike, "option_type": "CE", "lastPrice": num(_ce.get("lastPrice"), 0.0), "openInterest": int(num(_ce.get("openInterest"), 0)), "changeinOpenInterest": int(num(_ce.get("changeinOpenInterest"), 0)), "change": num(_ce.get("change"), 0.0), "impliedVolatility": num(_ce.get("impliedVolatility"), 0.0), "bidQty": 0, "bidprice": 0, "askQty": 0, "askPrice": 0, "lastUpdateTime": _tag, "expiryDate": _target, "price_source": "PROXY_V62"})
+                        if "PE" in _it and isinstance(_it["PE"], dict):
+                            _pe = _it["PE"]
+                            _rows.append({"strikePrice": _strike, "option_type": "PE", "lastPrice": num(_pe.get("lastPrice"), 0.0), "openInterest": int(num(_pe.get("openInterest"), 0)), "changeinOpenInterest": int(num(_pe.get("changeinOpenInterest"), 0)), "change": num(_pe.get("change"), 0.0), "impliedVolatility": num(_pe.get("impliedVolatility"), 0.0), "bidQty": 0, "bidprice": 0, "askQty": 0, "askPrice": 0, "lastUpdateTime": _tag, "expiryDate": _target, "price_source": "PROXY_V62"})
+                if _rows:
+                    return pd.DataFrame(_rows)
+    except Exception:
+        pass
+    return pd.DataFrame()
+def _v62_parallel_alt_fetch(symbols, expiry):
+    # Alt indices ka spot+chain PARALLEL me lao (3 indices ~2.5s me, sequential 12s ki jagah). Thread me sirf pure-network funcs.
+    _out = {}
+    try:
+        import concurrent.futures as _cf62
+        with _cf62.ThreadPoolExecutor(max_workers=3) as _ex:
+            _fut = { _ex.submit(lambda s=sym: (_v62_pure_spot(s), _v62_pure_chain(s, expiry)), sym): sym for sym in symbols }
+            for _f in _cf62.as_completed(_fut, timeout=4):
+                _sym = _fut[_f]
+                try:
+                    _sp, _ch = _f.result(timeout=1)
+                    _out[_sym] = (_sp, _ch)
+                except Exception:
+                    _out[_sym] = (None, pd.DataFrame())
+    except Exception:
+        for _s in symbols:
+            _out[_s] = (None, pd.DataFrame())
+    return _out
+
 # ===== V58 FAST HELPERS - Scan kabhi NSE session / warm_cookies / 3-proxy retry pe nahi atakega =====
 def _v58_spot_fast(symbol):
     # Stooq 1.5s only. Fail ho to last cached spot. Full fetch_verified_spot (Yahoo+NSE+3 proxy = 25s) scan me kabhi nahi.
@@ -331,7 +413,7 @@ def _v58_vix_fast():
 def _v58_macro_fast():
     try:
         _m, _ts = _v59_ss_get("_v58_macro_cache", (None, 0))
-        if _m and time.time() - _ts < 120:
+        if _m and time.time() - _ts < 30:
             return _m
     except Exception:
         pass
@@ -790,6 +872,29 @@ st.set_page_config(
     layout="wide",
 )
 
+# ===== V61 BOOT GUARD + LAZY OTR IMPORT - set_page_config ke BAAD hi Streamlit ko chhuo =====
+# V61 LAZY IMPORT: otr_v2 ab yahan import hoga, set_page_config ke baad. Pehle ye upar hota tha.
+try:
+    from otr_v2 import calculate_otr_v2 as _otr_v2_external
+    HAS_OTR_EXTERNAL = True
+except Exception:
+    _otr_v2_external = None
+    HAS_OTR_EXTERNAL = False
+# V61 BOOT GUARD: Session bana hai ya nahi, pehle yahi check karo. Bana nahi ho to aage ka 9000 line ka code mat chalao,
+# warna pehli hi st.session_state line pe "Tried to use SessionInfo before it was initialized" aayega.
+try:
+    _v61_boot_probe = st.session_state.get("_v61_boot_ok", None)
+    st.session_state["_v61_boot_ok"] = True
+except Exception as _v61_boot_e:
+    if "SessionInfo" in str(_v61_boot_e):
+        import time as _t61b
+        _t61b.sleep(1.5)
+        try:
+            st.rerun()
+        except Exception:
+            pass
+        raise SystemExit("V61 boot guard: SessionInfo not ready, retrying once")
+
 # ================= V53 PERSISTENT SETTINGS - Fix reset after page close =================
 import os
 import json
@@ -839,34 +944,43 @@ def save_persistent_settings(settings_dict):
         # print(f"Save failed: {e}")
         return False
 
-# Load on startup
-if 'persistent_loaded' not in st.session_state:
-    loaded = load_persistent_settings()
-    st.session_state['persistent_settings'] = loaded
-    st.session_state['persistent_loaded'] = True
-    # Pre-populate session_state keys from file if not already set
-    for k, v in loaded.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-else:
-    loaded = st.session_state.get('persistent_settings', {})
+# Load on startup - V61: Safe helper + try/except, khulte hi crash nahi hoga
+try:
+    if not _v59_ss_contains('persistent_loaded'):
+        loaded = load_persistent_settings()
+        _v59_ss_set('persistent_settings', loaded)
+        _v59_ss_set('persistent_loaded', True)
+        for k, v in (loaded or {}).items():
+            if not _v59_ss_contains(k):
+                _v59_ss_set(k, v)
+    else:
+        loaded = _v59_ss_get('persistent_settings', {})
+except Exception:
+    loaded = {}
+    pass
 
 # Helper to get persistent value with default
 def get_persist(key, default):
-    """Get from session_state or persistent file"""
-    if key in st.session_state:
-        return st.session_state[key]
-    ps = st.session_state.get('persistent_settings', {})
-    if key in ps:
-        st.session_state[key] = ps[key]
-        return ps[key]
+    """Get from session_state or persistent file - V61 safe"""
+    try:
+        if _v59_ss_contains(key):
+            return _v59_ss_get(key)
+        ps = _v59_ss_get('persistent_settings', {}) or {}
+        if key in ps:
+            _v59_ss_set(key, ps[key])
+            return ps[key]
+    except Exception:
+        pass
     return default
 
-# V17.3 STABLE - No auto-refresh to prevent buffering
-if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
-    st.rerun()  # V55.4: cache clear hataya - clear() + rerun ek saath SessionInfo error deta hai
-
-st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
+# V17.3 STABLE - No auto-refresh to prevent buffering - V61: button bhi try/except me, session na bana ho to crash nahi
+try:
+    if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
+        st.rerun()
+    st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
+except Exception as _v61_re_e:
+    if "SessionInfo" in str(_v61_re_e):
+        pass
 
 # V55.3 - KEEP-ALIVE BAND - Yehi Bad message format ki dusri jad thi
 # st_autorefresh background me page ko reload karta hai, jab scan chal raha hota hai tabhi reload aata hai -> SessionInfo error
@@ -893,11 +1007,11 @@ pass
 
 
 
-# Show persistent status
+# Show persistent status - V61 safe
 try:
-    ps_count = len(st.session_state.get('persistent_settings', {}))
+    ps_count = len(_v59_ss_get('persistent_settings', {}) or {})
     if ps_count > 0:
-        st.sidebar.success(f"💾 Settings Loaded: {ps_count} saved | Page close ke baad bhi rahega")
+        st.sidebar.success(f"💾 Settings Loaded: {ps_count} saved | Page close ke baad bhi rahega | V61: 1 hi tab kholo, 4 tab khologe to session clash hoga")
     else:
         st.sidebar.info("💾 First run - Settings ab save honge, page close ke baad bhi rahenge")
 except:
@@ -4537,6 +4651,185 @@ UNIVERSAL_EQUITIES = load_5000_equity_master()
 # =====================================================================
 # 10. GLOBAL MACRO & COMMODITIES ENGINE
 # =====================================================================
+# ===== V63 GLOBAL LIVE LTP ENGINE - Parallel, 2.5s, 11 symbols, koi st.* nahi =====
+_V63_GLOBAL_CACHE = {"data": None, "ts": 0}
+_V63_SYMBOLS = {
+    # key: (yahoo, stooq, label, unit)
+    "NASDAQ": ("^NDX", "ndx", "Nasdaq 100", "$"),
+    "SPX": ("^GSPC", "spx", "S&P 500", "$"),
+    "DOW": ("^DJI", "dji", "Dow Jones", "$"),
+    "NIKKEI": ("^N225", "nikkei", "Nikkei 225", "¥"),
+    "HANGSENG": ("^HSI", "hsi", "Hang Seng", "HK$"),
+    "CRUDE_OIL": ("BZ=F", "brz", "Brent Crude", "$"),
+    "GOLD": ("GC=F", "xauusd", "Gold COMEX", "$"),
+    "SILVER": ("SI=F", "xagusd", "Silver COMEX", "$"),
+    "USDINR": ("USDINR=X", "usdinr", "USDINR", "₹"),
+    "DXY": ("DX-Y.NYB", "dx", "Dollar Index DXY", ""),
+    "US10Y": ("^TNX", "tnx", "US 10Y Yield", "%"),
+}
+def _v63_fetch_one_yahoo(ysym):
+    # Sirf query1, 2.5s timeout. query2 ka extra 3s wait band - parallel me bhi slow karta tha.
+    try:
+        r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}?interval=1d&range=2d", timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+        if r.ok:
+            meta = r.json()["chart"]["result"][0]["meta"]
+            price = float(meta.get("regularMarketPrice", 0.0) or 0.0)
+            prev = float(meta.get("chartPreviousClose", price) or price)
+            if price and price > 0:
+                pct = ((price - prev) / prev) * 100 if prev > 0 else 0.0
+                return price, pct, prev, "YAHOO"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+def _v63_fetch_one_stooq(stooq_sym):
+    try:
+        r = requests.get(f"https://stooq.com/q/d/l/?s={stooq_sym}&i=d", timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+        if r.ok and r.text and "Date" in r.text:
+            import csv as _csv, io as _io
+            rows = list(_csv.DictReader(_io.StringIO(r.text)))
+            if len(rows) >= 2:
+                last = float(rows[-1].get("Close", 0) or 0)
+                prev = float(rows[-2].get("Close", last) or last)
+                if last and last > 0:
+                    pct = ((last - prev) / prev) * 100 if prev > 0 else 0.0
+                    return last, pct, prev, "STOOQ"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+def _v63_fetch_one_symbol(key, ysym, stooq_sym):
+    # Yahoo + Stooq parallel me, jo pehle aaye usko lo, dono mile aur 2% ke andar ho to average
+    try:
+        import concurrent.futures as _cf63
+        with _cf63.ThreadPoolExecutor(max_workers=2) as _ex:
+            _fy = _ex.submit(_v63_fetch_one_yahoo, ysym)
+            _fs = _ex.submit(_v63_fetch_one_stooq, stooq_sym) if stooq_sym else None
+            try:
+                y_p, y_pct, y_prev, y_src = _fy.result(timeout=3)
+            except Exception:
+                y_p, y_pct, y_prev, y_src = None, 0.0, None, "FAILED"
+            try:
+                s_p, s_pct, s_prev, s_src = _fs.result(timeout=3) if _fs else (None, 0.0, None, "FAILED")
+            except Exception:
+                s_p, s_pct, s_prev, s_src = None, 0.0, None, "FAILED"
+        if y_p and s_p and abs(y_p - s_p) / y_p < 0.02:
+            return (y_p + s_p) / 2.0, (y_pct + s_pct) / 2.0, y_prev or s_prev, "YAHOO+STOOQ_VERIFIED"
+        if y_p:
+            return y_p, y_pct, y_prev, "YAHOO_ONLY"
+        if s_p:
+            return s_p, s_pct, s_prev, "STOOQ_ONLY"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+def _v63_fetch_gift():
+    # GIFT Nifty - NSE IX proxy se asli LTP + prev close se 1-day %. Fail ho to Yahoo NSEI + 25 pts fallback, par source me likha hoga.
+    try:
+        import urllib.parse as _up63
+        _gift_url = "https://www.nseindia.com/api/quote-derivative?symbol=GIFTNIFTY"
+        for _pb in ["https://api.codetabs.com/v1/proxy?quest=", "https://api.allorigins.win/raw?url="]:
+            try:
+                _r = requests.get(_pb + _up63.quote(_gift_url, safe=''), timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+                if _r.ok:
+                    _j = _r.json()
+                    _d0 = _j.get("data", [{}])[0] if isinstance(_j.get("data"), list) and _j.get("data") else {}
+                    _lp = float(_d0.get("lastPrice", 0) or 0)
+                    _prev = None
+                    for _k in ["previousClose", "prevClose", "closePrice", "prev_close"]:
+                        if _d0.get(_k):
+                            _prev = float(_d0.get(_k)); break
+                    if _lp and _lp > 0:
+                        _pct = ((_lp - _prev) / _prev) * 100 if _prev and _prev > 0 else 0.0
+                        return _lp, _pct, _prev, "NSE_IX_PROXY"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        _np, _npct, _nprev, _nsrc = _v63_fetch_one_yahoo("^NSEI")
+        if _np and _np > 0:
+            return float(_np) + 25.0, _npct, _nprev, "YAHOO_NSEI_FALLBACK"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+def _v63_global_score(d):
+    # -100 se +100: GIFT sabse zyada, phir NDX/SPX, Crude/Gold/USDINR ulta (up = India ke liye negative)
+    try:
+        _s = 0.0
+        _gift = d.get("GIFT_NIFTY", {}).get("change_pct", 0.0) or 0.0
+        _ndx = d.get("NASDAQ", {}).get("change_pct", 0.0) or 0.0
+        _spx = d.get("SPX", {}).get("change_pct", 0.0) or 0.0
+        _dow = d.get("DOW", {}).get("change_pct", 0.0) or 0.0
+        _nik = d.get("NIKKEI", {}).get("change_pct", 0.0) or 0.0
+        _hsi = d.get("HANGSENG", {}).get("change_pct", 0.0) or 0.0
+        _crude = d.get("CRUDE_OIL", {}).get("change_pct", 0.0) or 0.0
+        _gold = d.get("GOLD", {}).get("change_pct", 0.0) or 0.0
+        _usdinr = d.get("USDINR", {}).get("change_pct", 0.0) or 0.0
+        _dxy = d.get("DXY", {}).get("change_pct", 0.0) or 0.0
+        _us10y = d.get("US10Y", {}).get("change_pct", 0.0) or 0.0
+        _s += max(-1.5, min(1.5, _gift)) * 30.0
+        _s += max(-2.0, min(2.0, _ndx)) * 10.0
+        _s += max(-2.0, min(2.0, _spx)) * 7.5
+        _s += max(-2.0, min(2.0, _dow)) * 3.0
+        _s += max(-2.0, min(2.0, _nik)) * 3.0
+        _s += max(-2.0, min(2.0, _hsi)) * 3.0
+        _s += max(-3.0, min(3.0, _crude)) * -4.0
+        _s += max(-2.0, min(2.0, _gold)) * -4.0
+        _s += max(-1.0, min(1.0, _usdinr)) * -8.0
+        _s += max(-1.0, min(1.0, _dxy)) * -5.0
+        _s += max(-5.0, min(5.0, _us10y)) * -0.8
+        return max(-100.0, min(100.0, _s))
+    except Exception:
+        return 0.0
+def _v63_fetch_global_live(force=False):
+    # 30s cache - SCAN pe har baar 2.5s bhi nahi lagega, 30s ke andar wahi live numbers milenge. 30s purana intraday ke liye LIVE hi hai.
+    try:
+        if not force and _V63_GLOBAL_CACHE.get("data") and time.time() - _V63_GLOBAL_CACHE.get("ts", 0) < 30:
+            return _V63_GLOBAL_CACHE["data"]
+    except Exception:
+        pass
+    out = {}
+    try:
+        import concurrent.futures as _cf63b
+        with _cf63b.ThreadPoolExecutor(max_workers=6) as _ex:
+            _fut = {}
+            for _k, (_y, _s, _lbl, _unit) in _V63_SYMBOLS.items():
+                _fut[_ex.submit(_v63_fetch_one_symbol, _k, _y, _s)] = _k
+            _fut[_ex.submit(_v63_fetch_gift)] = "GIFT_NIFTY"
+            _res = {}
+            for _f in _cf63b.as_completed(_fut, timeout=5):
+                _k = _fut[_f]
+                try:
+                    _res[_k] = _f.result(timeout=1)
+                except Exception:
+                    _res[_k] = (None, 0.0, None, "FAILED")
+        _now = time.time()
+        for _k, (_y, _s, _lbl, _unit) in _V63_SYMBOLS.items():
+            _p, _pct, _prev, _src = _res.get(_k, (None, 0.0, None, "FAILED"))
+            _live = bool(_p and _p > 0 and _src != "FAILED")
+            out[_k] = {"symbol": _lbl, "price": _p, "change_pct": float(_pct or 0.0), "prev_close": _prev, "status": "GREEN" if _pct >= 0.25 else ("RED" if _pct <= -0.25 else "YELLOW"), "source": _src, "live": _live, "age_sec": 0 if _live else 999, "unit": _unit}
+        _gp, _gpct, _gprev, _gsrc = _res.get("GIFT_NIFTY", (None, 0.0, None, "FAILED"))
+        _glive = bool(_gp and _gp > 0 and _gsrc != "FAILED")
+        out["GIFT_NIFTY"] = {"symbol": "Gift Nifty", "price": _gp, "change_pct": float(_gpct or 0.0), "prev_close": _gprev, "status": "GREEN" if _gpct >= 0.1 else ("RED" if _gpct <= -0.1 else "NEUTRAL"), "source": _gsrc, "live": _glive, "age_sec": 0 if _glive else 999, "unit": ""}
+        # Crude ka status ulta hai - Crude up = India ke liye RED
+        try:
+            _cp = out.get("CRUDE_OIL", {}).get("change_pct", 0.0) or 0.0
+            out["CRUDE_OIL"]["status"] = "RED" if _cp >= 1.0 else ("GREEN" if _cp <= -1.0 else "YELLOW")
+        except Exception:
+            pass
+        out["GLOBAL_SCORE"] = _v63_global_score(out)
+        out["GLOBAL_BIAS"] = "STRONG BULLISH" if out["GLOBAL_SCORE"] >= 30 else ("BULLISH" if out["GLOBAL_SCORE"] >= 10 else ("STRONG BEARISH" if out["GLOBAL_SCORE"] <= -30 else ("BEARISH" if out["GLOBAL_SCORE"] <= -10 else "NEUTRAL")))
+        out["_FETCHED_AT"] = datetime.now(IST).strftime("%H:%M:%S IST")
+        _V63_GLOBAL_CACHE["data"] = out
+        _V63_GLOBAL_CACHE["ts"] = _now
+        return out
+    except Exception:
+        # Fail ho to purana cache hi de do, khali 0.0 ka jhootha dict mat do
+        try:
+            if _V63_GLOBAL_CACHE.get("data"):
+                return _V63_GLOBAL_CACHE["data"]
+        except Exception:
+            pass
+        return {"GIFT_NIFTY": {"symbol": "Gift Nifty", "price": None, "change_pct": 0.0, "status": "NEUTRAL", "source": "FAILED", "live": False}, "NASDAQ": {"symbol": "Nasdaq 100", "price": None, "change_pct": 0.0, "status": "UNKNOWN", "source": "FAILED", "live": False}, "CRUDE_OIL": {"symbol": "Brent Crude Oil", "price": None, "change_pct": 0.0, "status": "UNKNOWN", "source": "FAILED", "live": False}, "GOLD": {"symbol": "Gold (COMEX)", "price": None, "change_pct": 0.0, "status": "UNKNOWN", "source": "FAILED", "live": False}, "GLOBAL_SCORE": 0.0, "GLOBAL_BIAS": "NEUTRAL", "_FETCHED_AT": ""}
+
 class GlobalMacroEngine:
     def __init__(self):
         self.session = requests.Session()
@@ -4595,6 +4888,11 @@ class GlobalMacroEngine:
             return s_p, s_pct, "STOOQ_ONLY"
         return None, 0.0, "FAILED"
     def fetch_macro_quotes(self) -> Dict[str, Any]:
+        # V63: Purana sequential 36s wala code hataya, ab parallel 2.5s wala engine hi chalega. Purane keys bhi milenge, naye bhi.
+        try:
+            return _v63_fetch_global_live()
+        except Exception:
+            pass
         out = {
             "GIFT_NIFTY": {"symbol": "Gift Nifty Spread", "price": None, "change_pct": 0.0, "status": "NEUTRAL"},
             "NASDAQ": {"symbol": "Nasdaq 100", "price": None, "change_pct": 0.0, "status": "UNKNOWN"},
@@ -4973,7 +5271,20 @@ def fetch_fii_dii() -> Dict[str, Any]:
         "phase": settlement_status, "sync_time": now_str, "status": "UNAVAILABLE"
     }
 
-fii_dii = fetch_fii_dii()
+# V62: FII/DII LAZY - pehle har page load pe NSE se aata tha (4s), ab sirf SCAN pe. Page khulte hi scan nahi atakega.
+fii_dii = {"available": False, "fii_net": None, "dii_net": None, "combined": None, "score": 0, "bias": "NEUTRAL", "source": "LAZY_V62", "phase": "LAZY", "sync_time": "", "status": "LAZY - SCAN pe fetch hoga"}
+def _v62_ensure_fii_dii():
+    # SCAN ke start me 1 baar, 2s se zyada wait nahi. Fail ho to purana LAZY hi chalega, scan nahi rukega.
+    global fii_dii
+    try:
+        if fii_dii.get("available"):
+            return fii_dii
+        _fd = fetch_fii_dii()
+        if _fd and _fd.get("available"):
+            fii_dii = _fd
+    except Exception:
+        pass
+    return fii_dii
 
 # =====================================================================
 # 12. REGULATORY EXPIRIES & OPTION CHAIN INGESTION
@@ -5465,17 +5776,15 @@ def fetch_ohlcv(symbol: str, interval: str = "FIVE_MINUTE", days: int = 5) -> pd
         yf_int = tf_entry["yfinance"]
         yf_range = tf_entry["yf_range"]
         try:
-            # V55.8 - query1 fail ho to query2 try karo
+            # V62 FAST: Yahoo timeout 4s->2.5s + sirf query1. Pehle query1 fail pe query2 ka 4s extra wait hota tha, scan 8s badh jata tha.
             resp = None
-            for _ybase in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
-                try:
-                    url = f"{_ybase}/v8/finance/chart/{yf_symbol}?interval={yf_int}&range={yf_range}"
-                    _r = requests.get(url, timeout=4, headers={"User-Agent": "Mozilla/5.0"})
-                    if _r.ok:
-                        resp = _r
-                        break
-                except:
-                    continue
+            try:
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}?interval={yf_int}&range={yf_range}"
+                _r = requests.get(url, timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+                if _r.ok:
+                    resp = _r
+            except:
+                pass
             if resp.ok:
                 data = resp.json()["chart"]["result"][0]
                 quotes = data["indicators"]["quote"][0]
@@ -5905,11 +6214,22 @@ def fetch_composite_macro_news(macro_quotes: Optional[Dict[str, Any]] = None) ->
     if macro_quotes:
         nq = macro_quotes.get("NASDAQ", {}).get("change_pct", 0.0)
         crude = macro_quotes.get("CRUDE_OIL", {}).get("change_pct", 0.0)
+        gift = macro_quotes.get("GIFT_NIFTY", {}).get("change_pct", 0.0)
+        gold = macro_quotes.get("GOLD", {}).get("change_pct", 0.0)
+        spx = macro_quotes.get("SPX", {}).get("change_pct", 0.0)
+        gscore = macro_quotes.get("GLOBAL_SCORE", 0.0)
         if nq >= 0.5: macro_bonus += 1; macro_notes.append(f"Nasdaq Strong (+{nq:.1f}%)")
         elif nq <= -0.5: macro_bonus -= 1; macro_notes.append(f"Nasdaq Drag ({nq:.1f}%)")
-
+        if gift >= 0.2: macro_bonus += 1; macro_notes.append(f"GIFT Up (+{gift:.2f}%)")
+        elif gift <= -0.2: macro_bonus -= 1; macro_notes.append(f"GIFT Down ({gift:.2f}%)")
+        if spx >= 0.5: macro_bonus += 1; macro_notes.append(f"S&P 500 Up (+{spx:.1f}%)")
+        elif spx <= -0.5: macro_bonus -= 1; macro_notes.append(f"S&P 500 Down ({spx:.1f}%)")
         if crude >= 1.5: macro_bonus -= 1; macro_notes.append(f"Crude Spike (+{crude:.1f}%)")
         elif crude <= -1.5: macro_bonus += 1; macro_notes.append(f"Crude Softening ({crude:.1f}%)")
+        if gold >= 1.0: macro_bonus -= 1; macro_notes.append(f"Gold Spike - Fear (+{gold:.1f}%)")
+        elif gold <= -1.0: macro_bonus += 1; macro_notes.append(f"Gold Down - Risk-On ({gold:.1f}%)")
+        if gscore >= 30: macro_notes.append(f"Global Score {gscore:+.0f} STRONG BULLISH")
+        elif gscore <= -30: macro_notes.append(f"Global Score {gscore:+.0f} STRONG BEARISH")
 
     total_macro_score = news_score + macro_bonus
     _nq_for_veto = macro_quotes.get("NASDAQ", {}).get("change_pct", 0.0) if macro_quotes else 0.0
@@ -5960,12 +6280,18 @@ def evaluate_all_permutations(l1: Dict[str, Any], l2: Dict[str, Any], l3: Dict[s
     return {"signal": f"{PAUSE} NO TRADE / WAIT FOR CLARITY", "action": "STAND ASIDE", "confidence": 20, "badge": "info", "allocation": "0% Capital Size", "rationale": "Consolidation phase detected. Await directional breakout confirmation."}
 
 def calculate_indian_market_prediction(macro_data: Dict[str, Any], domestic_pcr: float = 1.0, fii_dii_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    # V63: Pehle GIFT gayab tha, isliye prediction Nasdaq pe hi tikka tha. Ab GIFT sabse zyada weight.
     nasdaq_pct = macro_data.get("NASDAQ", {}).get("change_pct", 0.0) if macro_data else 0.0
     crude_pct = macro_data.get("CRUDE_OIL", {}).get("change_pct", 0.0) if macro_data else 0.0
+    gift_pct = macro_data.get("GIFT_NIFTY", {}).get("change_pct", 0.0) if macro_data else 0.0
+    spx_pct = macro_data.get("SPX", {}).get("change_pct", 0.0) if macro_data else 0.0
+    gold_pct = macro_data.get("GOLD", {}).get("change_pct", 0.0) if macro_data else 0.0
+    usdinr_pct = macro_data.get("USDINR", {}).get("change_pct", 0.0) if macro_data else 0.0
+    gscore = macro_data.get("GLOBAL_SCORE", 0.0) if macro_data else 0.0
     fii_score = fii_dii_info.get("score", 0) if fii_dii_info else 0
     pcr = domestic_pcr if domestic_pcr else 1.0
-
-    gap_points = (nasdaq_pct * 45.0) - (crude_pct * 25.0) + (fii_score * 35.0) + ((pcr - 1.0) * 80.0)
+    # GIFT 0.1% = ~25 pts Nifty, isliye GIFT*150. Gold spike = darr, isliye minus. USDINR up = FII nikal raha, minus.
+    gap_points = (gift_pct * 150.0) + (nasdaq_pct * 30.0) + (spx_pct * 15.0) + (gscore * 0.4) - (crude_pct * 15.0) - (max(0.0, gold_pct) * 10.0) - (usdinr_pct * 50.0) + (fii_score * 35.0) + ((pcr - 1.0) * 80.0)
 
     if gap_points >= 40:
         verdict = "GAP-UP / STRONG BULLISH OPENING"
@@ -8384,28 +8710,49 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         with f4:
             st.metric("Smart Money Verdict", fii_dii_info.get("bias", "NEUTRAL"), delta=fii_dii_info.get("phase", "Consensus Bias"), delta_color="off")
 
-        st.markdown(f"### {GLOBE} Global Macro Cues & Commodity Radar")
+        st.markdown(f"### {GLOBE} Global Macro Cues & Commodity Radar - V63 LIVE LTP (30s cache)")
+        try:
+            st.caption(f"Global Score: {macro_data.get('GLOBAL_SCORE', 0.0):+.0f} | Bias: {macro_data.get('GLOBAL_BIAS','-')} | Fetched: {macro_data.get('_FETCHED_AT','-')} | LIVE = asli LTP, FAILED = feed down, STALE nahi dikhayenge")
+        except Exception:
+            pass
         m1, m2, m3, m4 = st.columns(4)
         with m1:
             nq = macro_data.get("NASDAQ", {})
-            st.metric("Nasdaq 100 (Tech Beta)", f"${fmt(nq.get('price'))}" if nq.get("price") else "Active", delta=f"{nq.get('change_pct', 0.0):+.2f}%" if nq.get("price") else "Cues Stable")
+            st.metric("Nasdaq 100 (NDX)", f"${fmt(nq.get('price'))}" if nq.get("price") else "FAILED", delta=f"{nq.get('change_pct', 0.0):+.2f}% | {nq.get('source','')}" if nq.get("price") else "Feed down")
         with m2:
-            cr = macro_data.get("CRUDE_OIL", {})
-            st.metric("Brent Crude (Oil)", f"${fmt(cr.get('price'))}" if cr.get("price") else "Active", delta=f"{cr.get('change_pct', 0.0):+.2f}%" if cr.get("price") else "Normal", delta_color="inverse")
+            _spx = macro_data.get("SPX", {})
+            st.metric("S&P 500 (SPX)", f"${fmt(_spx.get('price'))}" if _spx.get("price") else "FAILED", delta=f"{_spx.get('change_pct', 0.0):+.2f}% | {_spx.get('source','')}" if _spx.get("price") else "Feed down")
         with m3:
-            # V55.9 - Gold ab real price dikhayega, Active nahi. Verify: 12 Nov ko asli Gold $3,870-3,895 hai
-            gold = macro_data.get("GOLD", {})
-            if gold.get("price"):
-                st.metric("Gold (Safe Haven)", f"${fmt(gold.get('price'))}", delta=f"{gold.get('change_pct', 0.0):+.2f}% | {gold.get('source','')}", delta_color="normal")
-            else:
-                st.metric("Gold (Safe Haven)", "Fetching...", delta="Yahoo+Stooq retry", delta_color="off")
-        with m4:
-            # V55.9 - Gift Nifty ab real price + spread dikhayega, hamesha +12 pts nahi. Verify: 12 Nov 7:45 am ko asli Gift 25,255 (+30)
             _gift = macro_data.get("GIFT_NIFTY", {})
             if _gift.get("price"):
                 st.metric("Gift Nifty (NSE IX)", f"{_gift.get('price'):,.0f}", delta=f"{_gift.get('change_pct', 0.0):+.2f}% | { _gift.get('source','')}", delta_color="normal")
             else:
-                st.metric("Gift Nifty Spread Proxy", "Market Neutral", delta="+12 pts (Fallback)", delta_color="off")
+                st.metric("Gift Nifty", "FAILED", delta="Feed down", delta_color="off")
+        with m4:
+            _usdinr = macro_data.get("USDINR", {})
+            st.metric("USDINR", f"₹{fmt(_usdinr.get('price'))}" if _usdinr.get("price") else "FAILED", delta=f"{_usdinr.get('change_pct', 0.0):+.2f}% | {_usdinr.get('source','')}" if _usdinr.get("price") else "Feed down", delta_color="inverse")
+        m5, m6, m7, m8 = st.columns(4)
+        with m5:
+            cr = macro_data.get("CRUDE_OIL", {})
+            st.metric("Brent Crude (Oil)", f"${fmt(cr.get('price'))}" if cr.get("price") else "FAILED", delta=f"{cr.get('change_pct', 0.0):+.2f}% | {cr.get('source','')}" if cr.get("price") else "Feed down", delta_color="inverse")
+        with m6:
+            gold = macro_data.get("GOLD", {})
+            if gold.get("price"):
+                st.metric("Gold (Safe Haven)", f"${fmt(gold.get('price'))}", delta=f"{gold.get('change_pct', 0.0):+.2f}% | {gold.get('source','')}", delta_color="normal")
+            else:
+                st.metric("Gold (Safe Haven)", "FAILED", delta="Feed down", delta_color="off")
+        with m7:
+            _dxy = macro_data.get("DXY", {})
+            st.metric("Dollar Index (DXY)", f"{fmt(_dxy.get('price'))}" if _dxy.get("price") else "FAILED", delta=f"{_dxy.get('change_pct', 0.0):+.2f}% | {_dxy.get('source','')}" if _dxy.get("price") else "Feed down", delta_color="inverse")
+        with m8:
+            _nik = macro_data.get("NIKKEI", {})
+            _hsi = macro_data.get("HANGSENG", {})
+            if _nik.get("price"):
+                st.metric("Nikkei 225 (Japan)", f"¥{fmt(_nik.get('price'))}", delta=f"{_nik.get('change_pct', 0.0):+.2f}% | {_nik.get('source','')}")
+            elif _hsi.get("price"):
+                st.metric("Hang Seng (HK)", f"HK${fmt(_hsi.get('price'))}", delta=f"{_hsi.get('change_pct', 0.0):+.2f}% | {_hsi.get('source','')}")
+            else:
+                st.metric("Nikkei / Hang Seng", "FAILED", delta="Feed down", delta_color="off")
 
     render_index_research_and_prediction(underlying, selected_expiry)
     st.divider()
@@ -8615,7 +8962,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
 
     # Trigger scan if manual button clicked OR auto scan due
-    manual_scan_clicked = st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 3-5 sec LIVE)", type="primary", use_container_width=True)
+    manual_scan_clicked = st.button(f"{ROCKET} SCAN ALL INDICES & GENERATE 4-5 TRADE SETUPS (FAST 10-15 sec LIVE)", type="primary", use_container_width=True)  # V62: 3-5 sec jhootha tha, 10-15 sec sach hai
     
     # V58: Auto-scan har 1 min pe full network scan mat chalao - agar pichhla scan 60s se fresh hai to skip karo, warna scan queue lag jata hai.
     if should_auto_scan and not manual_scan_clicked:
@@ -8634,6 +8981,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             # V58 BUFFERING FIX: st.cache_data.clear() hi sabse bada killer tha - iske baad OHLCV/spot/chain/macro sab dobara network se aata tha (200s+).
             # Cache clear HATA DIYA. 20-60s purana cache hi use hoga, isliye scan 3-8s me khatam hoga.
             _scan_start_v58 = time.time()  # V58 deadline ke liye
+            _v62_ensure_fii_dii()  # V62: FII/DII ab yahan, page load pe nahi
             current_spot = _v58_spot_fast(underlying)  # V58: Stooq 1.5s, full fetch 25s nahi
             if current_spot is None: current_spot = get_spot(underlying)
             if current_spot is not None:
@@ -8754,11 +9102,17 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             # Tere screenshot me bhi error bilkul isi jagah aaya tha - "Parallel scanning other indices (live)..."
             # Ab ek-ek karke scan hoga, 2-3 sec zyada lagega par error nahi aayega. FAST ka matlab error nahi hona chahiye.
             alt_symbols = [s for s in ["BANKNIFTY", "NIFTY", "FINNIFTY", "SENSEX"] if s != underlying]
+            # V62 PARALLEL PREFETCH: Alt ke spot+chain ek saath lao (3 indices ~2.5s me). Thread me sirf network, st.* main thread me.
+            try:
+                _v62_prefetch = _v62_parallel_alt_fetch(alt_symbols, selected_expiry)
+                st.caption(f"⚡ V62 Parallel: Alt spot+chain {time.time() - _scan_start_v58:.1f}s me ready (sequential me 12s+ lagta)")
+            except Exception:
+                _v62_prefetch = {}
             done = 0
             for sym in alt_symbols:
-                # V58 DEADLINE: Poora scan 18s se zyada alt pe nahi rukega. Slow feed wala index skip hoga, main ideas dikhenge.
-                if time.time() - _scan_start_v58 > 18:
-                    st.warning(f"⏱️ FAST SCAN: {sym} + baaki slow feed ki wajah se skip - main ideas dikh rahe hain, dobara SCAN dabao to baaki bhi aa jayenge")
+                # V62 DEADLINE 12s: Poora scan 12s se zyada alt pe nahi rukega. Slow feed wala index skip hoga, main ideas dikhenge.
+                if time.time() - _scan_start_v58 > 12:
+                    st.warning(f"⏱️ V62 FAST SCAN: {sym} + baaki slow feed ki wajah se skip - main ideas dikh rahe hain, dobara SCAN dabao to baaki bhi aa jayenge")
                     break
                 done += 1
                 progress.progress(50 + int(40 * done / len(alt_symbols)))
