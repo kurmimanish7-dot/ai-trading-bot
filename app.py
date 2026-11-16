@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# V60 INDICATOR PACK - 16 Nov 2026 - BOLLINGER + EMA200 VETO + MORNING STAR / DOUBLE TOP-BOTTOM
+# Bhai ka sawaal: Bollinger + 20/50/200 EMA se setup strong hoga? Jawab: Haan, par sahi tarike se.
+# Sach: EMA 20/50/200 pehle se tha (add_indicators + Strong Check), Bollinger sirf aadha tha (MathEngine me %B, add_indicators me BB columns nahi the).
+# V60 me sirf 3 cheezein add ki - sab SAME OHLCV se, koi naya network call nahi, isliye app slow nahi hoga:
+# (1) Bollinger Bands poora - BB_UPPER/LOWER + %B + Bandwidth + Squeeze, add_indicators me (pandas rolling, ~0ms).
+# (2) EMA200 VETO - analyze_market me: CE ke liye Price > EMA200 bhi chahiye (sirf score nahi, veto jaisa filter). 15m pe 200 candles poore nahi hote to guard hai (len>=100 tabhi use).
+# (3) Morning Star / Evening Star + Double Top/Bottom (strict) - same candle df se, koi extra fetch nahi.
+# JO NAHI LAGAYA (jaan ke): SMA (EMA ka duplicate), Head & Shoulders / Cup / Flag / Triangle (5m pe false positive + 50-100 candle chahiye, tab tak move khatam), Order Flow / Volume Profile / Market Profile (tick data chahiye, NSE free me nahi deta, app hang hoga), Sharpe (intraday 1 trade pe bekaar), Kelly full (options pe overbet karta hai).
 # V59 SESSIONINFO DEFINITIVE FIX - 16 Nov 2026 - BAD MESSAGE FORMAT FIX
 # Tera screenshot: 'Bad message format - Tried to use SessionInfo before it was initialized' - trading time pe roz aata tha.
 # V55.3 ne fragment + autorefresh + parallel scan band kiya tha, par 2 jad BACHI hui thi, isliye error wapas aaya:
@@ -5500,6 +5508,22 @@ def add_indicators(df: pd.DataFrame, current_live_price: Optional[float] = None)
     work["EMA50"] = close.ewm(span=50, adjust=False).mean()
     work["EMA200"] = close.ewm(span=200, adjust=False).mean()
 
+    # V60 BOLLINGER BANDS (poora) - SMA20 +/- 2*StdDev, same close se, koi naya fetch nahi. pandas rolling = ~0ms.
+    _bb_mid = close.rolling(20, min_periods=5).mean()
+    _bb_std = close.rolling(20, min_periods=5).std().fillna(0.0)
+    work["BB_MID"] = _bb_mid
+    work["BB_STD"] = _bb_std
+    work["BB_UPPER"] = _bb_mid + 2.0 * _bb_std
+    work["BB_LOWER"] = _bb_mid - 2.0 * _bb_std
+    # Bandwidth = (Upper-Lower)/Mid - squeeze pakadne ke liye. Mid 0 ho to 0.
+    work["BB_WIDTH"] = ((work["BB_UPPER"] - work["BB_LOWER"]) / _bb_mid.replace(0, np.nan)).fillna(0.0)
+    # %B = (Price-Lower)/(Upper-Lower) - 0=lower, 1=upper, >0.95 overbought, <0.05 oversold
+    _bb_range = (work["BB_UPPER"] - work["BB_LOWER"]).replace(0, np.nan)
+    work["BB_PCTB"] = ((close - work["BB_LOWER"]) / _bb_range).fillna(0.5)
+    # Squeeze = Bandwidth aaj last 20 candle ka sabse kam (ya uske 5% andar) - breakout aane wala hai, WAIT karo
+    _bb_wmin20 = work["BB_WIDTH"].rolling(20, min_periods=5).min()
+    work["BB_SQUEEZE"] = work["BB_WIDTH"] <= (_bb_wmin20 * 1.05)
+
     # Wilder's RMA Smoothing for RSI
     delta = close.diff()
     gain = delta.clip(lower=0.0)
@@ -5559,7 +5583,9 @@ def analyze_market(symbol: str, proxy: Optional[Dict[str, Any]] = None, explicit
 
     res = {
         "symbol": symbol, "trend": "UNKNOWN", "last": explicit_spot, "rsi": None, "adx": None,
-        "ema20": None, "ema50": None, "vwap": None, "vwap_upper_1": None, "vwap_lower_1": None,
+        "ema20": None, "ema50": None, "ema200": None,
+        "bb_upper": None, "bb_lower": None, "bb_pctb": None, "bb_width": None, "bb_squeeze": False,
+        "vwap": None, "vwap_upper_1": None, "vwap_lower_1": None,
         "support": None, "resistance": None, "technical_score": 0, "institutional_score": 0,
         "score": 0, "reasons": [],
         "day_open": None, "open": None, "volume": 0, "avg_volume": 0,
@@ -5591,6 +5617,15 @@ def analyze_market(symbol: str, proxy: Optional[Dict[str, Any]] = None, explicit
     res["adx"] = num(row.get("ADX"))
     res["ema20"] = num(row.get("EMA20"))
     res["ema50"] = num(row.get("EMA50"))
+    res["ema200"] = num(row.get("EMA200"))
+    res["bb_upper"] = num(row.get("BB_UPPER"))
+    res["bb_lower"] = num(row.get("BB_LOWER"))
+    res["bb_pctb"] = num(row.get("BB_PCTB"))
+    res["bb_width"] = num(row.get("BB_WIDTH"))
+    try:
+        res["bb_squeeze"] = bool(row.get("BB_SQUEEZE")) if "BB_SQUEEZE" in row else False
+    except Exception:
+        res["bb_squeeze"] = False
     res["vwap"] = num(row.get("VWAP"))
     res["vwap_upper_1"] = num(row.get("VWAP_UPPER_1"))
     res["vwap_lower_1"] = num(row.get("VWAP_LOWER_1"))
@@ -5622,6 +5657,27 @@ def analyze_market(symbol: str, proxy: Optional[Dict[str, Any]] = None, explicit
         elif last < res["ema20"] < res["ema50"]:
             score -= 2
             res["reasons"].append(f"Price sustained below EMA20 & EMA50 ({tf_cfg['label']}).")
+
+    # V60 EMA200 VETO - sirf score nahi, trend filter. 15m pe 200 candle poore nahi hote (7 din ~175 candle), isliye len>=100 ka guard hai.
+    # 5m pe EMA200 = ~2.5 din ka trend hai, daily 200 EMA nahi hai - isko long-term samajh ke galat trade mat karna.
+    if res["ema200"] and last and len(_closed_df) >= 100:
+        if last > res["ema200"]:
+            score += 1
+            res["reasons"].append(f"Price above EMA200 ({res['ema200']:,.0f}) - trend filter PASS (CE side allowed).")
+        else:
+            score -= 1
+            res["reasons"].append(f"Price below EMA200 ({res['ema200']:,.0f}) - trend filter FAIL (CE chase mat karo).")
+
+    # V60 BOLLINGER - %B se chase roko, Squeeze se WAIT. Ye filter hai, entry signal nahi.
+    if res["bb_pctb"] is not None and res["bb_upper"] and res["bb_lower"]:
+        if res["bb_pctb"] > 0.95:
+            score -= 1
+            res["reasons"].append(f"Bollinger Upper pe overbought (%B {res['bb_pctb']:.2f}) - CE chase mat karo, pullback ka wait karo.")
+        elif res["bb_pctb"] < 0.05:
+            score -= 1
+            res["reasons"].append(f"Bollinger Lower pe oversold (%B {res['bb_pctb']:.2f}) - PE chase mat karo, bounce ka wait karo.")
+    if res.get("bb_squeeze"):
+        res["reasons"].append(f"Bollinger Squeeze (Bandwidth {res['bb_width']:.3f} - 20 candle me sabse kam) - breakout aane wala hai, abhi NO TRADE / WAIT, break ke baad entry.")
 
     if res["vwap"] and last:
         if last > res["vwap"]:
@@ -5705,6 +5761,61 @@ def analyze_candlesticks_and_volume(df: pd.DataFrame) -> Dict[str, Any]:
 
     if (close_p < open_p) and (float(p["close"]) > float(p["open"])) and (close_p <= float(p["open"])):
         return {"status": "RED", "pattern": "BEARISH ENGULFING", "vol_ratio": vol_ratio, "reversal_risk": True, "reason": f"Bearish engulfing breakdown overriding prior candle ({vol_ratio:.2f}x vol)."}
+
+    # V60 MORNING STAR / EVENING STAR - 3-candle, same df se, koi extra fetch nahi. Sirf tab jab trend pehle se us direction me tha.
+    try:
+        if len(df) >= 6:
+            _p2 = df.iloc[_p_idx - 1]
+            _o2, _c2 = float(_p2["open"]), float(_p2["close"])
+            _o1, _c1 = float(p["open"]), float(p["close"])
+            _rng2 = max(float(_p2["high"]) - float(_p2["low"]), 0.001)
+            _body2 = abs(_c2 - _o2)
+            _body1 = abs(_c1 - _o1)
+            _mid2 = (_o2 + _c2) / 2.0
+            # Morning Star: pehle lambi bearish, beech me chhoti (doji jaisi), teesri lambi bullish jo pehli ke mid se upar close kare + pehle 3 close gir rahe the
+            if (_c2 < _o2 and _body2 >= 0.5 * _rng2 and _body1 <= 0.30 * max(float(p["high"]) - float(p["low"]), 0.001)
+                    and close_p > open_p and body >= 0.5 * rng and close_p > _mid2 and is_continuous_fall):
+                return {"status": "GREEN", "pattern": "BULLISH MORNING STAR", "vol_ratio": vol_ratio, "reversal_risk": False, "reason": f"Morning Star - 3-candle reversal, bearish trend ke baad bullish flip ({vol_ratio:.2f}x vol)."}
+            # Evening Star: ulta - pehle lambi bullish, beech chhoti, teesri lambi bearish jo mid se neeche close kare
+            _is_rise = (prior_3_closes[-1] > prior_3_closes[-2] > prior_3_closes[-3]) if len(prior_3_closes) >= 3 else False
+            if (_c2 > _o2 and _body2 >= 0.5 * _rng2 and _body1 <= 0.30 * max(float(p["high"]) - float(p["low"]), 0.001)
+                    and close_p < open_p and body >= 0.5 * rng and close_p < _mid2 and _is_rise):
+                return {"status": "RED", "pattern": "BEARISH EVENING STAR", "vol_ratio": vol_ratio, "reversal_risk": True, "reason": f"Evening Star - 3-candle reversal, bullish trend ke baad bearish flip ({vol_ratio:.2f}x vol)."}
+    except Exception:
+        pass
+
+    # V60 DOUBLE TOP / DOUBLE BOTTOM (STRICT) - 30 candle me 2 swing same level (0.2% andar) + neckline break + valley 0.3%+ gehra, nahi to false positive hi milega.
+    try:
+        if len(df) >= 30:
+            _w = df.tail(30)
+            _highs = _w["high"].values
+            _lows = _w["low"].values
+            # Double Top: 2 high same level, beech me valley, ab price valley (neckline) ke neeche
+            _h1_idx = int(_highs.argmax())
+            _h1 = float(_highs[_h1_idx])
+            _mask = [i for i in range(len(_highs)) if abs(i - _h1_idx) >= 5]
+            if _mask:
+                _h2_idx = max(_mask, key=lambda i: float(_highs[i]))
+                _h2 = float(_highs[_h2_idx])
+                if abs(_h1 - _h2) / max(_h1, 0.001) <= 0.002:
+                    _lo, _hi = min(_h1_idx, _h2_idx), max(_h1_idx, _h2_idx)
+                    _neck = float(_lows[_lo:_hi + 1].min()) if _hi > _lo else None
+                    if _neck and (_h1 - _neck) / max(_h1, 0.001) >= 0.003 and close_p < _neck and vol_ratio >= 1.0:
+                        return {"status": "RED", "pattern": "BEARISH DOUBLE TOP", "vol_ratio": vol_ratio, "reversal_risk": True, "reason": f"Double Top - 2 baar {_h1:,.0f} pe reject + neckline {_neck:,.0f} break, PE side confirm ({vol_ratio:.2f}x vol)."}
+            # Double Bottom: 2 low same level, beech me peak, ab price peak (neckline) ke upar
+            _l1_idx = int(_lows.argmin())
+            _l1 = float(_lows[_l1_idx])
+            _mask2 = [i for i in range(len(_lows)) if abs(i - _l1_idx) >= 5]
+            if _mask2:
+                _l2_idx = min(_mask2, key=lambda i: float(_lows[i]))
+                _l2 = float(_lows[_l2_idx])
+                if abs(_l1 - _l2) / max(_l1, 0.001) <= 0.002:
+                    _lo2, _hi2 = min(_l1_idx, _l2_idx), max(_l1_idx, _l2_idx)
+                    _neck2 = float(_highs[_lo2:_hi2 + 1].max()) if _hi2 > _lo2 else None
+                    if _neck2 and (_neck2 - _l1) / max(_l1, 0.001) >= 0.003 and close_p > _neck2 and vol_ratio >= 1.0:
+                        return {"status": "GREEN", "pattern": "BULLISH DOUBLE BOTTOM", "vol_ratio": vol_ratio, "reversal_risk": False, "reason": f"Double Bottom - 2 baar {_l1:,.0f} pe support + neckline {_neck2:,.0f} break, CE side confirm ({vol_ratio:.2f}x vol)."}
+    except Exception:
+        pass
 
     if body >= (0.50 * rng):
         status = "RED" if close_p < open_p else "GREEN"
