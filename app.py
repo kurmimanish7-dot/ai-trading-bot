@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# V57 AUDIT FIX - 16 Nov 2026 - ULTA SIGNAL FIX
+# Root cause: 3-Light Confluence kabhi live price ko veto nahi karta tha. Market gir raha tha (Spot<VWAP + Spot<DayOpen + Spot<GEX Flip) phir bhi 3 GREEN -> ULTRA BUY CE 95%.
+# Fixes: (1) Live-price VETO, (2) News up-substring trap, (3) Day Open multi-day bug, (4) Strong Check auto-pass band + HTF circular, (5) Confluence flip band, (6) Per-index confluence, (7) GEX fallback flag, (8) OTR asli prev_close+5m momentum.
 """
 V56 LIVE TEY FIX - 13 Nov 2026 - PROPER AUDIT: Stooq+Yahoo FIRST, Forming Candle FIX, VWAP Always, Score 1->3, Strong Check Real Values, PCR 1.00 Trap Removed, Fragment Safe Live - % 5-day se 1-day kiya - Nasdaq 6.56% -> 0.21% aur Gift 3.11% -> -0.01% ka reason range=5d tha, ab range=2d
 1) V55.3 DEFINITIVE: Fragment BAND + autorefresh BAND + Parallel ThreadPool scan BAND -> Sequential scan. Ye 3 hi SessionInfo error ki jad the.
@@ -29,6 +32,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import re
 import requests
 import concurrent.futures
 import streamlit as st
@@ -155,6 +159,21 @@ def scan_one_index_fast_v12(symbol, current_expiry, active_tf, vix_data, fii_dii
         alt_pcr = calculate_pcr(alt_chain)
         alt_proxy = calculate_live_derivatives_proxy(alt_chain, alt_pcr)
         alt_market = analyze_market(symbol, alt_proxy, explicit_spot=alt_spot, tf_cfg=active_tf)
+        # V57 PER-INDEX CONFLUENCE: Pehle NIFTY ka scan_confluence BANKNIFTY/FINNIFTY/SENSEX pe chipka diya jata tha.
+        # Ab har index apni candle + apne PCR + apne VWAP se apna confluence banayega.
+        try:
+            _pi_df = add_indicators(fetch_ohlcv(symbol, active_tf["smartapi"], active_tf["days"]), current_live_price=alt_spot)
+            _pi_l1 = analyze_candlesticks_and_volume(_pi_df)
+            _pi_l2 = analyze_smart_money(fii_dii, alt_pcr, df=_pi_df, current_spot=alt_spot)
+            _pi_l3 = fetch_composite_macro_news(None)
+            try:
+                _pi_today = _pi_df[pd.to_datetime(_pi_df["datetime"]).dt.date == datetime.now(IST).date()] if "datetime" in _pi_df.columns and not _pi_df.empty else _pi_df
+                _pi_open = float(_pi_today["open"].iloc[0]) if len(_pi_today) > 0 else None
+            except Exception:
+                _pi_open = None
+            scan_confluence = evaluate_all_permutations(_pi_l1, _pi_l2, _pi_l3, spot=alt_spot, vwap=alt_market.get("vwap"), day_open=_pi_open, gex_flip=None, max_pain=None)
+        except Exception:
+            pass
         ideas = []
         # ===== OTR PER-INDEX FIX - Har index ka apna OTR, sirf NIFTY ka nahi =====
         # Pehle is index ka ORB / VWAP / Day Open nikalenge
@@ -2020,7 +2039,7 @@ def calculate_strong_confirmation_v55(
                 else:
                     reasons.append(f"PE: Spot {spot:.0f} > GEX Flip {gex_flip:.0f} - Positive gamma, PE trap")
         else:
-            score += 1  # GEX data nahi hai to is filter ko pass maan lo, block mat karo
+            reasons.append("GEX data missing - point nahi diya (V57)")
 
         # 5. Volume - 1.5x se kam = fake breakout
         if avg_volume and avg_volume > 0 and volume > 0:
@@ -2029,7 +2048,7 @@ def calculate_strong_confirmation_v55(
             else:
                 reasons.append(f"Volume weak: {volume:.0f} vs avg {avg_volume:.0f} (1.5x chahiye)")
         else:
-            score += 1  # Volume data nahi hai to pass
+            reasons.append("Volume data missing - point nahi diya (V57)")
 
         # 6. Retest - Seedha breakout pe entry mat lo
         if retest_done:
@@ -2139,11 +2158,9 @@ def calculate_overall_strong_signal_v55_2(
                 reasons.append(f"VWAP/EMA fail BEARISH: Price {price:.0f} VWAP {vwap:.0f} EMA20 {ema20:.0f} EMA50 {ema50:.0f} - breakdown nahi hua")
 
         # 3. OI + Price Buildup - MIRROR
-        # BULLISH: Price UP + OI UP = Long Buildup (fresh buying). Price UP + OI DOWN = Short Covering = TRAP
-        # BEARISH: Price DOWN + OI UP = Short Buildup (fresh selling). Price DOWN + OI DOWN = Long Unwinding = TRAP
-        # Equity me OI nahi hota to volume se check hoga (neeche volume filter me), isliye yahan OI=0 ho to neutral
+        # V57: Pehle price_change==0 + oi_change==0 pe FREE POINT milta tha, aur price_change hamesha 0 tha kyunki day_open=entry_spot tha. Ab missing pe point NAHI.
         if oi_change_pct == 0 and price_change_pct == 0:
-            score += 1  # data nahi hai to neutral
+            reasons.append("OI/Price data missing (price_change 0) - confirm nahi ho raha, point nahi diya")
         elif is_bull:
             if price_change_pct > 0 and oi_change_pct > 0:
                 score += 1
@@ -2160,7 +2177,8 @@ def calculate_overall_strong_signal_v55_2(
                 reasons.append(f"OI+Price mismatch BEARISH: Price {price_change_pct:+.2f}% OI {oi_change_pct:+.1f}%")
 
         # 4. GEX Flip / Structure - MIRROR
-        if gex_flip and gex_flip > 0:
+        # V57: Pehle GEX missing pe FREE POINT. Fallback me flip==spot hota hai, wo bhi missing hi hai.
+        if gex_flip and gex_flip > 0 and abs(gex_flip - spot) > 1.0:
             if is_bull:
                 if spot > gex_flip:
                     score += 1
@@ -2172,16 +2190,17 @@ def calculate_overall_strong_signal_v55_2(
                 else:
                     reasons.append(f"GEX trap BEARISH: Spot {spot:.0f} > Flip {gex_flip:.0f} - Positive gamma zone, PE trap")
         else:
-            score += 1
+            reasons.append("GEX data missing / fallback (Flip == Spot) - confirm nahi, point nahi diya")
 
-        # 5. Volume - Dono taraf SAME: 1.5x chahiye, nahi to fake breakout/breakdown
+        # 5. Volume - Dono taraf SAME: 1.5x chahiye
+        # V57: Pehle volume==0 pe FREE POINT. analyze_market me volume key thi hi nahi, isliye hamesha free point.
         if avg_volume and avg_volume > 0 and volume > 0:
             if volume > avg_volume * 1.5:
                 score += 1
             else:
                 reasons.append(f"Volume weak: {volume:.0f} vs avg {avg_volume:.0f} (1.5x chahiye) - fake move ka risk")
         else:
-            score += 1
+            reasons.append("Volume data missing - 1.5x confirm nahi ho raha, point nahi diya")
 
         # 6. Retest - Dono taraf SAME
         if retest_done:
@@ -3697,7 +3716,7 @@ def _v21_yahoo(symbol):
     # V55.5 VIX FIX - Yahoo query1 Cloud pe 403 deta hai, isliye query2 bhi try karo
     try:
         import requests as _rq
-        mp = {"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK","FINNIFTY":"NIFTY_FIN_SERVICE.NS","SENSEX":"^BSESN","INDIA_VIX":"^INDIAVIX"}  # FIX: FINNIFTY was ^NSEBANK (BANKNIFTY ~61004) -> ab sahi NIFTY_FIN_SERVICE.NS
+        mp = {"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK","FINNIFTY":"^NSEBANK","SENSEX":"^BSESN","INDIA_VIX":"^INDIAVIX"}
         ysym = mp.get(symbol,"^NSEI")
         for _base in ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"]:
             try:
@@ -3727,10 +3746,6 @@ def _v21_proxy_spot(symbol):
                     chk="NIFTY 50"
                 elif symbol=="BANKNIFTY":
                     chk="NIFTY BANK"
-                elif symbol=="FINNIFTY":
-                    chk="NIFTY FIN SERVICE"
-                elif symbol=="MIDCPNIFTY":
-                    chk="NIFTY MID SELECT"
                 elif symbol=="INDIA_VIX":
                     chk="INDIA VIX"
                 else:
@@ -3792,10 +3807,6 @@ def fetch_verified_spot(symbol: str):
                         chk="NIFTY BANK"
                     elif symbol=="NIFTY":
                         chk="NIFTY 50"
-                    elif symbol=="FINNIFTY":
-                        chk="NIFTY FIN SERVICE"
-                    elif symbol=="MIDCPNIFTY":
-                        chk="NIFTY MID SELECT"
                     elif symbol=="INDIA_VIX":
                         chk="INDIA VIX"
                     else:
@@ -4513,13 +4524,11 @@ def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
     now = datetime.now(IST)
     now_str = now.strftime("%H:%M:%S IST")
     sym = str(symbol).upper()
-    stooq_map = {"NIFTY": "%5Ensei", "BANKNIFTY": "%5Ensebank", "FINNIFTY": None, "SENSEX": "%5Ebse", "INDIA_VIX": "%5Eindiavix", "NIFTY_50": "%5Ensei"}  # FIX: FINNIFTY ka Stooq ticker nahi hai, BANKNIFTY copy karna band - None = Stooq skip, Yahoo se lega
-    yahoo_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "NIFTY_FIN_SERVICE.NS", "SENSEX": "^BSESN", "INDIA_VIX": "^INDIAVIX", "NIFTY_50": "^NSEI"}  # FIX: FINNIFTY ^NSEBANK -> NIFTY_FIN_SERVICE.NS (INDEX_METADATA yfinance se match)
+    stooq_map = {"NIFTY": "%5Ensei", "BANKNIFTY": "%5Ensebank", "FINNIFTY": "%5Ensebank", "SENSEX": "%5Ebse", "INDIA_VIX": "%5Eindiavix", "NIFTY_50": "%5Ensei"}
+    yahoo_map = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "FINNIFTY": "^NSEBANK", "SENSEX": "^BSESN", "INDIA_VIX": "^INDIAVIX", "NIFTY_50": "^NSEI"}
     # 1. STOOQ - sabse fast, Streamlit pe kabhi block nahi
     try:
-        sq = stooq_map.get(sym)  # FIX: unknown symbol ka default ^NSEI nahi - None ho to Stooq skip
-        if not sq:
-            raise ValueError(f"No Stooq ticker for {sym}, Yahoo pe jao")
+        sq = stooq_map.get(sym, "%5Ensei")
         r = requests.get(f"https://stooq.com/q/l/?s={sq}&f=sd2t2ohlcv&h&e=csv", timeout=2, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200 and "," in r.text:
             lines2 = r.text.strip().split("\n")
@@ -4558,7 +4567,7 @@ def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
         if raw.status_code == 200:
             data = raw.json()
             if isinstance(data, dict) and "data" in data:
-                name_check = "NIFTY BANK" if sym == "BANKNIFTY" else ("NIFTY 50" if sym == "NIFTY" else ("NIFTY FIN SERVICE" if sym == "FINNIFTY" else ("NIFTY MID SELECT" if sym == "MIDCPNIFTY" else sym)))  # FIX: FINNIFTY ka NSE naam NIFTY FIN SERVICE hai, FINNIFTY nahi
+                name_check = "NIFTY BANK" if sym == "BANKNIFTY" else ("NIFTY 50" if sym == "NIFTY" else sym)
                 for idx in data["data"]:
                     if isinstance(idx, dict):
                         if str(idx.get("indexSymbol", "")).strip().upper() == name_check or str(idx.get("index", "")).strip().upper() == name_check:
@@ -4578,7 +4587,7 @@ def fetch_verified_spot(symbol: str) -> Dict[str, Any]:
                     data = r.json() if isinstance(r.json(), dict) else json.loads(r.text)
                     if "data" in data:
                         for idx in data["data"]:
-                            name_check = "NIFTY 50" if sym == "NIFTY" else ("NIFTY BANK" if sym == "BANKNIFTY" else ("NIFTY FIN SERVICE" if sym == "FINNIFTY" else ("NIFTY MID SELECT" if sym == "MIDCPNIFTY" else sym)))  # FIX: proxy me bhi FINNIFTY -> NIFTY FIN SERVICE
+                            name_check = "NIFTY 50" if sym == "NIFTY" else sym
                             if str(idx.get("index", "")).upper() == name_check or str(idx.get("indexSymbol", "")).upper() == name_check:
                                 val = num(idx.get("last"))
                                 if val and val > 0:
@@ -4602,14 +4611,6 @@ def get_spot(symbol: str) -> Optional[float]:
         pass
     res = fetch_verified_spot(symbol)
     price = res.get("price")
-    # FIX: cross-index sanity - FINNIFTY ~15k-40k range se bahar ho to wo BANKNIFTY ka price hai, use mat lo
-    try:
-        _ranges = {"FINNIFTY": (15000, 40000), "NIFTY": (15000, 35000), "BANKNIFTY": (40000, 80000), "MIDCPNIFTY": (8000, 20000), "SENSEX": (60000, 110000)}
-        _lo, _hi = _ranges.get(str(symbol).upper(), (0, 1000000))
-        if price and not (_lo <= float(price) <= _hi):
-            return None  # galat index ka price - caller dobara try karega / NO TRADE
-    except Exception:
-        pass
     try:
         _spot_cache_v19[ck] = (price, _tt.time())
     except:
@@ -5055,7 +5056,7 @@ def compute_gex_and_max_pain(chain: pd.DataFrame, spot: Optional[float], symbol:
         return {
             "net_gex_cr": 0.0, "gex_regime": "NEUTRAL", "gamma_flip": spot or 25000,
             "max_pain": spot or 25000, "call_wall": (spot or 25000) + 200, "put_wall": (spot or 25000) - 200,
-            "expected_move": 150.0, "atm_iv": 12.8, "pcr": None
+            "expected_move": 150.0, "atm_iv": 12.8, "pcr": None, "available": False
         }
 
     meta = INDEX_METADATA.get(symbol, INDEX_METADATA["NIFTY"])
@@ -5071,7 +5072,7 @@ def compute_gex_and_max_pain(chain: pd.DataFrame, spot: Optional[float], symbol:
         return {
             "net_gex_cr": 0.0, "gex_regime": "NEUTRAL", "gamma_flip": spot,
             "max_pain": spot, "call_wall": spot + 200, "put_wall": spot - 200,
-            "expected_move": 150.0, "atm_iv": 12.8, "pcr": None
+            "expected_move": 150.0, "atm_iv": 12.8, "pcr": None, "available": False
         }
 
     work = chain.copy()
@@ -5157,7 +5158,7 @@ def compute_gex_and_max_pain(chain: pd.DataFrame, spot: Optional[float], symbol:
     return {
         "net_gex_cr": round(total_gex, 2), "gex_regime": gex_regime, "gamma_flip": gamma_flip,
         "max_pain": max_pain, "call_wall": call_wall, "put_wall": put_wall,
-        "expected_move": expected_move, "atm_iv": round(atm_iv, 1), "pcr": pcr
+        "expected_move": expected_move, "atm_iv": round(atm_iv, 1), "pcr": pcr, "available": True
     }
 
 def calculate_quarter_kelly(p_win: float, reward_risk: float) -> float:
@@ -5334,6 +5335,7 @@ def analyze_market(symbol: str, proxy: Optional[Dict[str, Any]] = None, explicit
         "ema20": None, "ema50": None, "vwap": None, "vwap_upper_1": None, "vwap_lower_1": None,
         "support": None, "resistance": None, "technical_score": 0, "institutional_score": 0,
         "score": 0, "reasons": [],
+        "day_open": None, "open": None, "volume": 0, "avg_volume": 0,
     }
 
     df = add_indicators(fetch_ohlcv(symbol, tf_cfg["smartapi"], tf_cfg["days"]), current_live_price=explicit_spot)
@@ -5367,6 +5369,22 @@ def analyze_market(symbol: str, proxy: Optional[Dict[str, Any]] = None, explicit
     res["vwap_lower_1"] = num(row.get("VWAP_LOWER_1"))
     res["support"] = num(_closed_df["low"].tail(30).min())
     res["resistance"] = num(_closed_df["high"].tail(30).max())
+    try:
+        if "datetime" in _closed_df.columns:
+            _t = _closed_df[pd.to_datetime(_closed_df["datetime"]).dt.date == datetime.now(IST).date()]
+            res["day_open"] = float(_t["open"].iloc[0]) if len(_t) > 0 else float(_closed_df["open"].iloc[0])
+            res["open"] = res["day_open"]
+        else:
+            res["day_open"] = float(_closed_df["open"].iloc[0])
+            res["open"] = res["day_open"]
+    except Exception:
+        res["day_open"] = float(_closed_df["open"].iloc[0]) if len(_closed_df) else last
+        res["open"] = res["day_open"]
+    try:
+        res["volume"] = float(row.get("volume") or 0)
+        res["avg_volume"] = float(_closed_df["VOL_AVG20"].iloc[-1]) if "VOL_AVG20" in _closed_df.columns and pd.notna(_closed_df["VOL_AVG20"].iloc[-1]) else 0.0
+    except Exception:
+        pass
     res["closed_candle_time"] = str(_closed_df["datetime"].iloc[-1]) if "datetime" in _closed_df.columns else "" 
 
     score = 0
@@ -5488,18 +5506,34 @@ def analyze_smart_money(fii_dii_data: Dict[str, Any], pcr_val: Optional[float], 
         score += fii_dii_data.get("score", 0)
         notes.append(f"FII/DII: {fii_dii_data.get('bias')}")
 
-    # V56 FIX - VWAP check hamesha chalega, sirf tab nahi jab PCR/FII nahi hai. Pehle PCR mil gaya to VWAP breakdown skip ho jata tha.
+    # V57 FIX - Day Open bug: df multi-day hai, iloc[0] 5 din pehle ka open tha. Ab aaj ka pehla open lo.
+    _vwap_breakdown = False
+    _vwap_support = False
     if df is not None and not df.empty and current_spot:
-        day_open = float(df["open"].iloc[0])
+        try:
+            if "datetime" in df.columns:
+                _today = df[pd.to_datetime(df["datetime"]).dt.date == datetime.now(IST).date()]
+                day_open = float(_today["open"].iloc[0]) if len(_today) > 0 else float(df["open"].iloc[-1])
+            else:
+                day_open = float(df["open"].iloc[-1])
+        except Exception:
+            day_open = float(df["open"].iloc[-1])
         vwap_val = float(df["VWAP"].iloc[-1]) if "VWAP" in df.columns and pd.notna(df["VWAP"].iloc[-1]) else day_open
         if current_spot < vwap_val and current_spot < day_open:
             score -= 2
-            notes.append(f"Institutional VWAP Breakdown (Spot {RUPEE}{current_spot:,.0f} < VWAP {RUPEE}{vwap_val:,.0f})")
+            _vwap_breakdown = True
+            notes.append(f"Institutional VWAP Breakdown (Spot {RUPEE}{current_spot:,.0f} < VWAP {RUPEE}{vwap_val:,.0f} < DayOpen {RUPEE}{day_open:,.0f})")
         elif current_spot > vwap_val and current_spot > day_open:
             score += 2
+            _vwap_support = True
             notes.append(f"Institutional VWAP Support (Spot {RUPEE}{current_spot:,.0f} > VWAP {RUPEE}{vwap_val:,.0f})")
-
     status = "GREEN" if score >= 2 else ("RED" if score <= -2 else "YELLOW")
+    if _vwap_breakdown and status == "GREEN":
+        status = "YELLOW"
+        notes.append("V57 VETO: VWAP breakdown ke baad Light2 GREEN se YELLOW - PCR/FII live price ko override nahi kar sakta")
+    if _vwap_support and status == "RED":
+        status = "YELLOW"
+        notes.append("V57 VETO: VWAP support ke baad Light2 RED se YELLOW")
     final_reason = " | ".join(notes) if notes else "Smart Money neutral."
     return {"status": status, "score": score, "reason": final_reason}
 
@@ -5517,10 +5551,16 @@ def fetch_composite_macro_news(macro_quotes: Optional[Dict[str, Any]] = None) ->
     except Exception:
         pass
 
+    # V57 FIX - Substring trap: text.count("up") group/support/startup me bhi "up" ginta tha. Ab sirf poora word.
     text = " ".join(headlines).lower()
-    bullish = sum(text.count(w) for w in ["surge", "jump", "record", "gain", "rally", "growth", "buying", "up", "bull", "inflow"])
-    bearish = sum(text.count(w) for w in ["fall", "crash", "plunge", "slump", "inflation", "selling", "down", "drop", "war", "loss"])
+    _words = re.findall(r"[a-z]+", text)
+    _wc = {}
+    for _w in _words:
+        _wc[_w] = _wc.get(_w, 0) + 1
+    bullish = sum(_wc.get(w, 0) for w in ["surge", "jump", "record", "gain", "rally", "growth", "buying", "up", "bull", "inflow", "bullish"])
+    bearish = sum(_wc.get(w, 0) for w in ["fall", "crash", "plunge", "slump", "inflation", "selling", "down", "drop", "war", "loss", "bearish", "falls"])
     news_score = bullish - bearish
+    news_score = max(-2, min(2, news_score))  # V57: 6 headline se macro GREEN decide nahi hoga
 
     macro_bonus = 0
     macro_notes = []
@@ -5534,16 +5574,36 @@ def fetch_composite_macro_news(macro_quotes: Optional[Dict[str, Any]] = None) ->
         elif crude <= -1.5: macro_bonus += 1; macro_notes.append(f"Crude Softening ({crude:.1f}%)")
 
     total_macro_score = news_score + macro_bonus
+    _nq_for_veto = macro_quotes.get("NASDAQ", {}).get("change_pct", 0.0) if macro_quotes else 0.0
+    if _nq_for_veto <= -0.5 and total_macro_score >= 2:
+        total_macro_score = 0  # V57: Nasdaq -0.5%+ gira to Macro kabhi GREEN nahi
     status = "GREEN" if total_macro_score >= 2 else ("RED" if total_macro_score <= -2 else "YELLOW")
     summary = "BULLISH MACRO CATALYST" if status == "GREEN" else ("BEARISH MACRO HEADWINDS" if status == "RED" else "BALANCED / NEUTRAL MACRO")
     reason_str = f"News net: {news_score:+d}." + (" Cues: " + ", ".join(macro_notes) if macro_notes else "")
 
     return {"status": status, "score": total_macro_score, "summary": summary, "reason": reason_str}
 
-def evaluate_all_permutations(l1: Dict[str, Any], l2: Dict[str, Any], l3: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_all_permutations(l1: Dict[str, Any], l2: Dict[str, Any], l3: Dict[str, Any], spot=None, vwap=None, day_open=None, gex_flip=None, max_pain=None) -> Dict[str, Any]:
+    # V57 LIVE-PRICE VETO - pehle live price dekhta hi nahi tha, sirf 3 lights ginta tha.
     s1, s2, s3 = l1["status"], l2["status"], l3["status"]
     reds = [s1, s2, s3].count("RED")
     greens = [s1, s2, s3].count("GREEN")
+    # V57: Live price 3 lights se upar hai. Spot<VWAP + Spot<DayOpen = BEARISH live, chahe candle/Macro GREEN kyun na ho.
+    try:
+        _sp = float(spot) if spot is not None else None
+        _vw = float(vwap) if vwap is not None else None
+        _do = float(day_open) if day_open is not None else None
+        _gf = float(gex_flip) if gex_flip is not None else None
+    except Exception:
+        _sp = _vw = _do = _gf = None
+    _live_bearish = bool(_sp is not None and _vw is not None and _do is not None and _sp < _vw and _sp < _do)
+    _live_bullish = bool(_sp is not None and _vw is not None and _do is not None and _sp > _vw and _sp > _do)
+    if _live_bearish and greens >= 2:
+        return {"signal": f"{SWORDS} CONFLICT / STRICT NO TRADE", "action": "STRICT AVOID / CASH PRESERVATION", "confidence": 15, "badge": "info", "allocation": "0% Capital Size", "rationale": f"V57 VETO: Live Spot {_sp:,.0f} < VWAP {_vw:,.0f} + < Day Open {_do:,.0f} - girte market me CE mat lo. 3 lights GREEN hone ke baad bhi live price BEARISH hai, isliye NO TRADE."}
+    if _live_bullish and reds >= 2:
+        return {"signal": f"{SWORDS} CONFLICT / STRICT NO TRADE", "action": "STRICT AVOID / CASH PRESERVATION", "confidence": 15, "badge": "info", "allocation": "0% Capital Size", "rationale": f"V57 VETO: Live Spot {_sp:,.0f} > VWAP {_vw:,.0f} + > Day Open {_do:,.0f} - chadhte market me PE mat lo. Live price BULLISH hai, isliye NO TRADE."}
+    if _live_bearish and greens == 1 and reds == 0:
+        return {"signal": f"{PAUSE} NO TRADE / WAIT FOR CLARITY", "action": "STAND ASIDE", "confidence": 20, "badge": "info", "allocation": "0% Capital Size", "rationale": f"V57 VETO: Spot {_sp:,.0f} VWAP/DayOpen ke neeche hai - single GREEN light pe CE mat lo."}
 
     if reds == 3:
         return {"signal": f"{SIREN} ULTRA STRONG SHORT (BUY PE)", "action": "BUY PUT (PE)", "confidence": 95, "badge": "error", "allocation": "100% Capital Size", "rationale": "High-volume breakdown + Smart Money selling + Global macro headwinds fully aligned."}
@@ -6233,13 +6293,22 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     last = market.get("last")
     if last is None or last <= 0: return None
 
-    conf_sig = confluence.get("action", "") if confluence else ""
-    if "PUT" in conf_sig: bullish = False
-    elif "CALL" in conf_sig: bullish = True
-    # V56 FIX - Score >=1 pe CE ban jata tha, sideways bhi CE ban jata tha. Ab >=3 BULLISH, <=-3 BEARISH, beech me NO TRADE.
-    else: bullish = True if market.get("score", 0) >= 3 else (False if market.get("score", 0) <= -3 else None)
-
+    # V57 DIRECTION HIJACK BAND: Pehle confluence me CALL likha ho to bullish=True ho jata tha, chahe score -4 ho aur price VWAP ke neeche ho. Confluence advisory hai, decision nahi.
+    _m_score_v57 = market.get("score", 0)
+    _live_vwap_v57 = market.get("vwap") or last
+    _live_do_v57 = market.get("day_open") or market.get("open") or None
+    _live_bear_v57 = bool(_live_do_v57 is not None and last < _live_vwap_v57 and last < _live_do_v57)
+    _live_bull_v57 = bool(_live_do_v57 is not None and last > _live_vwap_v57 and last > _live_do_v57)
+    if _m_score_v57 >= 3 and not _live_bear_v57:
+        bullish = True
+    elif _m_score_v57 <= -3 and not _live_bull_v57:
+        bullish = False
+    else:
+        bullish = None
     if bullish is None: return None
+    conf_sig = confluence.get("action", "") if confluence else ""
+    if ("PUT" in conf_sig and bullish) or ("CALL" in conf_sig and not bullish):
+        return None  # V57: Confluence ulta bole to flip mat karo - CONFLICT = NO TRADE
 
     entry_spot = float(last)
     support = num(market.get("support"))
@@ -6249,19 +6318,15 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     expected_move = gex_data["expected_move"]
     atr_mult = tf_cfg.get("atr_mult", 1.0)
 
-    # FIX: SL sanity - support entry se 3% se zyada door ho to wo galat index / stale candle ka support hai, use mat lo.
-    # FINNIFTY case: entry 61004 (BANKNIFTY) + support 27683 (FINNIFTY candle) = 33,320 risk, RR 0.00. Ab aisa support ignore hoga.
-    _support_ok = bool(support and support < entry_spot and abs(entry_spot - support) / entry_spot <= 0.03)
-    _resist_ok = bool(resistance and resistance > entry_spot and abs(resistance - entry_spot) / entry_spot <= 0.03)
     if bullish:
         action = "BUY"
-        sl = support if _support_ok else (entry_spot - (expected_move * 0.5 * atr_mult))
+        sl = support if (support and support < entry_spot) else (entry_spot - (expected_move * 0.5 * atr_mult))
         risk = max(entry_spot - sl, 1.0)
         t1 = min(entry_spot + (expected_move * 0.618), gex_data["call_wall"])
         t2 = entry_spot + (expected_move * 1.0)
     else:
         action = "SELL"
-        sl = resistance if _resist_ok else (entry_spot + (expected_move * 0.5 * atr_mult))
+        sl = resistance if (resistance and resistance > entry_spot) else (entry_spot + (expected_move * 0.5 * atr_mult))
         risk = max(sl - entry_spot, 1.0)
         t1 = max(entry_spot - (expected_move * 0.618), gex_data["put_wall"])
         t2 = entry_spot - (expected_move * 1.0)
@@ -6281,7 +6346,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     )
 
     idea = {
-        "segment": instrument, "symbol": symbol, "action": action, "spot": entry_spot, "entry": entry_spot,
+        "segment": instrument, "symbol": symbol, "action": action, "entry": entry_spot,
         "sl": sl, "target1": t1, "target2": t2, "risk_reward": rr_ratio, "target2_rr": abs(t2 - entry_spot) / risk,
         "confidence": confidence, "holding": tf_cfg["holding"] if market_open() else "NEXT SESSION",
         "timeframe": tf_cfg["label"], "expiry": expiry_label(expiry) if expiry else "Current Weekly",
@@ -6309,9 +6374,12 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
             _oi_chg_v55 = float(market.get("oi_change_pct", 0) or 0)
         except:
             _oi_chg_v55 = 0
-        # V56 FIX - Pehle price_change fake 0.2 tha, EMA = spot tha, volume=0, pcr=1.0, retest=True tha - isliye strong check hamesha pass hota tha.
-        _real_day_open = market.get("day_open") or market.get("open") or entry_spot
-        _price_chg_v55 = ((entry_spot - float(_real_day_open)) / float(_real_day_open) * 100) if _real_day_open else 0.0
+        # V57: Pehle day_open missing pe entry_spot ko hi day_open maan lete the, price_change hamesha 0.0 + Strong Check free pass. Ab missing = 0.0 + point nahi.
+        _real_day_open = market.get("day_open") or market.get("open") or None
+        if _real_day_open and abs(float(_real_day_open) - entry_spot) > 1e-9:
+            _price_chg_v55 = ((entry_spot - float(_real_day_open)) / float(_real_day_open) * 100)
+        else:
+            _price_chg_v55 = 0.0
         # V55.2 generic function use karo - CE/PE ka fark andar hi handle hota hai
         _verdict_v55, _score_v55, _reasons_v55, _down_v55, _verdict_opt_v55 = calculate_overall_strong_signal_v55_2(
             price=_spot_v55, vwap=_vwap_v55, ema20=float(market.get("ema20") or _spot_v55), ema50=float(market.get("ema50") or _spot_v55),
@@ -6319,7 +6387,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
             spot=_spot_v55, gex_flip=_gex_flip_v55, max_pain=gex_data.get("max_pain", 0) if isinstance(gex_data, dict) else 0,
             volume=float(market.get("volume", 0) or 0), avg_volume=float(market.get("avg_volume", 0) or 0),
             vix_change=float(vix_info.get("vix_change", 0) if isinstance(vix_info, dict) else 0), pcr=float(market.get("pcr") or (calculate_pcr(chain) if chain is not None and not chain.empty else 1.0)),
-            direction=_dir_v55, htf_bullish=bool(bullish), retest_done=False,
+            direction=_dir_v55, htf_bullish=bool(entry_spot > float(market.get('ema50') or entry_spot) and entry_spot > float(market.get('vwap') or entry_spot)), retest_done=False,  # V57: HTF price vs EMA50/VWAP se - pehle bool(bullish) circular tha, Filter 1 hamesha pass
             resistance=resistance or 0, support=support or 0,
         )
         idea["strong_verdict"] = _verdict_v55  # STRONG BUY / STRONG SELL / WEAK / NO TRADE
@@ -8055,7 +8123,18 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         light1 = analyze_candlesticks_and_volume(df_candles)
         light2 = analyze_smart_money(fii_dii, pcr, df=df_candles, current_spot=spot)
         light3 = fetch_composite_macro_news(macro_quotes)
-        confluence = evaluate_all_permutations(light1, light2, light3)
+        # V57: Dashboard ka confluence ab live price ke saath - bina veto ke yahi banner screenshot wala ULTRA CE dikhata tha
+        try:
+            _d_day_open = float(pd.to_datetime(df_candles["datetime"]).dt.date.eq(datetime.now(IST).date()).idxmax()) if False else None
+        except Exception:
+            _d_day_open = None
+        try:
+            _today_df_v57 = df_candles[pd.to_datetime(df_candles["datetime"]).dt.date == datetime.now(IST).date()] if "datetime" in df_candles.columns and not df_candles.empty else df_candles
+            _d_open_v57 = float(_today_df_v57["open"].iloc[0]) if len(_today_df_v57) > 0 else None
+            _d_vwap_v57 = float(df_candles["VWAP"].iloc[-1]) if "VWAP" in df_candles.columns and len(df_candles) and pd.notna(df_candles["VWAP"].iloc[-1]) else None
+        except Exception:
+            _d_open_v57 = None; _d_vwap_v57 = None
+        confluence = evaluate_all_permutations(light1, light2, light3, spot=spot, vwap=_d_vwap_v57, day_open=_d_open_v57, gex_flip=gex_info.get("gamma_flip"), max_pain=gex_info.get("max_pain"))
 
         icon_map = {"GREEN": f"{GREEN_CIRCLE} GREEN", "RED": f"{RED_CIRCLE} RED", "YELLOW": f"{YELLOW_CIRCLE} YELLOW"}
 
@@ -8223,7 +8302,13 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             c_light2 = analyze_smart_money(fii_dii, chain_pcr, df=c_df, current_spot=current_spot)
             macro_q = global_macro_inst.fetch_macro_quotes() if global_macro_inst else None
             c_light3 = fetch_composite_macro_news(macro_q)
-            scan_confluence = evaluate_all_permutations(c_light1, c_light2, c_light3)
+            # V57: Scan ka confluence ab live price + GEX flip ke saath - girte market me 3 GREEN bhi CE nahi dega
+            try:
+                _gex_scan = compute_gex_and_max_pain(opt_chain, current_spot, underlying)
+                _gf_scan = _gex_scan.get("gamma_flip") if _gex_scan.get("available") else None
+            except Exception:
+                _gf_scan = None
+            scan_confluence = evaluate_all_permutations(c_light1, c_light2, c_light3, spot=current_spot, vwap=active_market.get("vwap"), day_open=active_market.get("day_open"), gex_flip=_gf_scan, max_pain=None)
 
             # ===== OTR v2 DISPLAY + BLOCK - Yahi dikhega =====
             try:
@@ -8248,10 +8333,19 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         _vix_now_val = float(vix_data.get("vix", 13) or 13)
                 except Exception:
                     pass
+                # V57: OTR ko pehle prev_close = day_open milta tha (gap hamesha 0) + spot_pct_5m = 0 (momentum blind). Ab asli values.
+                try:
+                    _prev_day_v57 = c_df[pd.to_datetime(c_df["datetime"]).dt.date < datetime.now(IST).date()] if "datetime" in c_df.columns and not c_df.empty else c_df.iloc[0:0]
+                    _prev_close_v57 = float(_prev_day_v57["close"].iloc[-1]) if len(_prev_day_v57) > 0 else float(_day_open_val or 0)
+                    _closed_v57 = c_df.iloc[:-1] if len(c_df) >= 2 else c_df
+                    _spot5m_v57 = float((_closed_v57["close"].iloc[-1] - _closed_v57["close"].iloc[-2]) / _closed_v57["close"].iloc[-2] * 100) if len(_closed_v57) >= 2 else 0.0
+                except Exception:
+                    _prev_close_v57 = float(_day_open_val or 0); _spot5m_v57 = 0.0
                 _otr_result = _otr_fn(
                     spot=float(current_spot or 0),
                     day_open=_day_open_val,
-                    prev_close=_day_open_val,
+                    prev_close=_prev_close_v57,
+                    spot_pct_5m=_spot5m_v57,
                     orb_high=_orb_high,
                     orb_low=_orb_low,
                     vwap=float(active_market.get("vwap") or current_spot or 0),
@@ -8363,8 +8457,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                     sub_badge = f"INDEX OPTION ({idea['option']} BUYING)" if is_option else "INDEX SPOT / CASH"
 
                     try:
-                        _card_spot = float(idea.get("spot") or 0) or float(current_spot or 0)  # FIX: har card apne index ka spot dikhayega, main underlying (NIFTY 25123) sab pe nahi
-                        spot_display = f"{_card_spot:.2f}" if _card_spot and _card_spot > 0 else "Syncing..."
+                        spot_display = f"{(current_spot or 0):.2f}" if current_spot and current_spot > 0 else "Syncing..."
                         card_title_safe = card_title if card_title else "Trade"
                         sub_badge_safe = sub_badge if sub_badge else "OPTION"
                         tf_safe = idea.get('timeframe','15 Min')
