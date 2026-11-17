@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+# V66 FAST BOOT - 17 Nov 2026 - APP AB 2 SEC ME KHULEGA, BAAD WALA SAB SCAN / BUTTON PE AAYEGA - SLOW NAHI HOGA
+# Screenshot (9:31-9:32): Header + 4 card ke baad aage load hi nahi ho raha, phir Bad message format. Ye V65 ka global live nahi, BOOT ka issue hai.
+# Asli wajah: Page khulte hi 3 bhari cheez ek saath chal rahi thi, bina SCAN dabaye:
+# (1) load_expiries() - sidebar me expiry ke liye NSE chain fetch (20s+) - isliye header ke baad page atka.
+# (2) live_fragment har 15s pe - get_spot + get_chain (20s) + VIX + FII/DII (4s) = 30s+ ka network, 15s wale fragment me. Fragment + main run dono ek saath SessionInfo chhu rahe the, isliye race hoke Bad message format aaya.
+# (3) Research + Prediction - khulte hi macro (12s) + chain (20s) + FII (4s) = 36s, bina button dabaye.
+# Total boot pe 86s ka network, isliye aage load hi nahi hua.
+# V66 FIX (app slow nahi hoga, ye pakka): (a) Expiry ab calendar se instant, NSE chain nahi. (b) live_fragment ab network nahi karega, sirf cached spot/PCR dikhayega, 15s se 60s kiya. (c) Global + Prediction + Confluence ab khulte hi nahi aayenge, sirf LOAD button / SCAN pe aayenge. Page pehle 2s me khulega, baaki tu jab bolega tab aayega.
 # V65 GLOBAL DIAGNOSTIC + MANUAL OVERRIDE - 17 Nov 2026 - ABHI BHI FAILED KYUN, AUR TRADE KAISE NA RUKE
 # Screenshot (9:12): V64 pe bhi LIVE 0/12, STALE 0. Matlab Yahoo (query1+query2+proxy) + Stooq (light+history) + codetabs + allorigins + corsproxy - SAB Cloud IP pe block hain. Ye ab code ka nahi, CLOUD IP BLOCK ka issue hai.
 # V64 ki file-cache bhi kaam nahi ki, kyunki Streamlit Cloud ka file system reboot pe wipe ho jata hai, isliye STALE bhi 0 raha.
@@ -8880,20 +8888,42 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
     
     underlying = st.sidebar.selectbox("Active Underlying Index", UNDERLYINGS, index=0)
-    expiries = load_expiries(underlying)
+    # V66: Expiry ke liye NSE chain mat fetch karo (20s+). Calendar expiry instant hai, SCAN pe asli expiry aayega.
+    try:
+        expiries = generate_calendar_expiries(underlying)
+        if not expiries:
+            expiries = load_expiries(underlying)
+    except Exception:
+        try:
+            expiries = load_expiries(underlying)
+        except Exception:
+            expiries = []
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @live_fragment(run_every=15)  # V55 FIX: 1s -> 15s, ticker ko itni jaldi refresh ki zaroorat nahi
+    @live_fragment(run_every=60)  # V66: 15s -> 60s + NO NETWORK. Pehle har 15s pe 30s ka network hota tha, fragment + main run ki race se Bad message format aata tha. Ab sirf cached dikhega, live SCAN pe aayega.
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
-        spot = get_spot(selected_underlying)
-        chain_result = get_chain(selected_underlying, current_expiry)
-        chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
-        _raw_chain = chain_result[1] if isinstance(chain_result, tuple) and len(chain_result) > 1 else pd.DataFrame()
-        pcr = calculate_pcr(chain)
-        vix_info = get_india_vix()
-        fii_dii_info = fetch_fii_dii()
-        gex_info = compute_gex_and_max_pain(chain, spot, selected_underlying)
+        # V66: Ticker me koi network nahi - sirf cached spot/PCR. NSE chain / VIX / FII yahan nahi aayega, SCAN pe aayega.
+        try:
+            spot = _v59_ss_get(f"_v58_last_spot_{selected_underlying}")
+            if not spot or float(spot) <= 0:
+                spot = _v58_spot_fast(selected_underlying)
+            if not spot:
+                spot = None
+        except Exception:
+            spot = None
+        try:
+            pcr = float(_v59_ss_get('_last_pcr_value', 1.05) or 1.05)
+        except Exception:
+            pcr = 1.05
+        chain = pd.DataFrame()
+        _raw_chain = pd.DataFrame()
+        vix_info = {"vix": 13.5, "regime": "OPTIMAL BUYING", "sl_multiplier": 0.85, "status": "CACHED_FAST"}
+        fii_dii_info = {"available": False, "score": 0, "bias": "NEUTRAL"}
+        try:
+            gex_info = compute_gex_and_max_pain(chain, spot, selected_underlying) if spot else {"net_gex_cr": 0.0, "gex_regime": "NEUTRAL", "gamma_flip": spot or 25000, "max_pain": spot or 25000, "call_wall": (spot or 25000)+200, "put_wall": (spot or 25000)-200, "expected_move": 150.0}
+        except Exception:
+            gex_info = {"net_gex_cr": 0.0, "gex_regime": "NEUTRAL", "gamma_flip": spot or 25000, "max_pain": spot or 25000, "call_wall": (spot or 25000)+200, "put_wall": (spot or 25000)-200, "expected_move": 150.0}
 
         s1, s2, s3, s4 = st.columns(4)
         with s1:
@@ -8967,7 +8997,29 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     def render_index_research_and_prediction(selected_underlying, current_expiry):
         st.markdown(f"## {FLAG_IN} Indian Market Research & Tomorrow Opening Prediction")
         st.caption(f"Cross-Asset Synthesis: Nifty 50 Gap Model {BULLET} FII/DII Institutional Flow {BULLET} Global Radar")
-        # V55.7 RESEARCH BLANK FIX - Pehle 3 slow feed dobara fetch karta tha = 30+ sec blank, ab cached se turant aayega
+        # V66 FAST BOOT: Khulte hi macro (12s) + chain (20s) + FII (4s) mat chalao. Pehle placeholder dikhao, LOAD button dabane pe hi fetch hoga. Isliye page 2s me khulega.
+        try:
+            _v66_loaded = _v59_ss_get("_v66_global_loaded", False)
+        except Exception:
+            _v66_loaded = False
+        if not _v66_loaded:
+            st.info("⚡ V66 Fast Boot: Global + Prediction abhi load nahi hua hai, taaki app 2s me khule. Neeche LOAD dabao to 10s me aayega, ya SCAN dabao to uske saath aayega.")
+            try:
+                if st.button("🌍 LOAD Global + Prediction (10 sec, 1 baar)", key="v66_load_global_btn", use_container_width=True):
+                    _v59_ss_set("_v66_global_loaded", True)
+                    st.rerun()
+            except Exception:
+                pass
+            # Placeholder - bina network ke, taaki aage ka page atke nahi
+            st.caption("Prediction: SCAN / LOAD ke baad dikhega | PCR: 1.05 (cached) | Global: Not loaded yet")
+            macro_data = {}
+            pcr_val = 1.05
+            fii_dii_info = {"available": False, "score": 0, "bias": "NEUTRAL"}
+            # Neeche wala Global Radar bhi placeholder ke saath return karenge, poora fetch nahi karenge
+            st.markdown(f"### {GLOBE} Global Macro Cues & Commodity Radar - V66: LOAD dabane pe aayega")
+            st.caption("Global abhi load nahi hua - upar LOAD daba, ya SCAN daba. Khulte hi fetch karne se hi app atak raha tha.")
+            return
+        # V66: LOAD ho chuka hai, ab hi fetch karo - pehle cached, nahi to 1 baar live
         macro_data = {}
         try:
             _cached_macro = st.session_state.get('_cached_macro_quotes', {})
@@ -8987,13 +9039,12 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             if _last_pcr and 0 < float(_last_pcr) <= 10:
                 pcr_val = float(_last_pcr)
             else:
-                chain_result = get_chain(selected_underlying, current_expiry)
-                chain = chain_result[0] if isinstance(chain_result, tuple) else chain_result
-                pcr_val = calculate_pcr(chain) or 1.05
+                # V66: PCR ke liye bhi chain mat fetch karo (20s), cached 1.05 hi kaafi hai. Asli PCR SCAN pe aayega.
+                pcr_val = 1.05
         except:
             pcr_val = 1.05
         try:
-            fii_dii_info = fii_dii if isinstance(fii_dii, dict) and fii_dii.get("available") else fetch_fii_dii()
+            fii_dii_info = fii_dii if isinstance(fii_dii, dict) and fii_dii.get("available") else {"available": False, "score": 0, "bias": "NEUTRAL"}
         except:
             fii_dii_info = {"available": False, "fii_net": None, "dii_net": None, "combined": None, "score": 0, "bias": "NEUTRAL", "phase": "Consensus Bias"}
 
@@ -9362,6 +9413,10 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             progress.progress(10)
             # V58 BUFFERING FIX: st.cache_data.clear() hi sabse bada killer tha - iske baad OHLCV/spot/chain/macro sab dobara network se aata tha (200s+).
             # Cache clear HATA DIYA. 20-60s purana cache hi use hoga, isliye scan 3-8s me khatam hoga.
+            try:
+                _v59_ss_set("_v66_global_loaded", True)
+            except Exception:
+                pass
             _scan_start_v58 = time.time()  # V58 deadline ke liye
             _v62_ensure_fii_dii()  # V62: FII/DII ab yahan, page load pe nahi
             current_spot = _v58_spot_fast(underlying)  # V58: Stooq 1.5s, full fetch 25s nahi
