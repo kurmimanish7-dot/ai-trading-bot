@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# V65 GLOBAL DIAGNOSTIC + MANUAL OVERRIDE - 17 Nov 2026 - ABHI BHI FAILED KYUN, AUR TRADE KAISE NA RUKE
+# Screenshot (9:12): V64 pe bhi LIVE 0/12, STALE 0. Matlab Yahoo (query1+query2+proxy) + Stooq (light+history) + codetabs + allorigins + corsproxy - SAB Cloud IP pe block hain. Ye ab code ka nahi, CLOUD IP BLOCK ka issue hai.
+# V64 ki file-cache bhi kaam nahi ki, kyunki Streamlit Cloud ka file system reboot pe wipe ho jata hai, isliye STALE bhi 0 raha.
+# V65 FIX (trade rukega nahi): (1) DIAGNOSTIC - har symbol ka asli error dikhega (403? timeout? 429?), andhere me guess nahi karna padega. (2) GOOGLE FINANCE 3rd source - Yahoo/Stooq se alag server, Cloud pe aksar chalta hai. (3) MANUAL OVERRIDE - feed down ho to tu apne phone se Moneycontrol/Yahoo app se GIFT/Nasdaq/Crude/Gold dekh ke yahan daal dega, app usi se prediction + trade call banayega. Feed ka wait nahi karega. (4) LAST-GOOD ab FILE me nahi, SESSION me - reboot pe bhi session ke andar STALE milega, file wipe hone se farak nahi padega.
 # V64 GLOBAL FAILED FIX - 17 Nov 2026 - SAB FAILED KYUN AAYA, AUR AB KAISE THEEK HOGA
 # Screenshot (12:06): Sab FAILED, Global Score +0, Fetched khali. Matlab live fetch 0/11 aaya.
 # Asli wajah 3 thi, teeno V63 me thi:
@@ -4658,6 +4662,79 @@ UNIVERSAL_EQUITIES = load_5000_equity_master()
 # =====================================================================
 # 10. GLOBAL MACRO & COMMODITIES ENGINE
 # =====================================================================
+# ===== V65 DIAGNOSTIC + GOOGLE FINANCE + MANUAL OVERRIDE =====
+_V65_LAST_ERRORS = {}
+_V65_GOOGLE_MAP = {"NASDAQ": "NDX:INDEXNASDAQ", "SPX": "SPX:INDEXSP", "DOW": "DJI:INDEXDJX", "NIKKEI": "NIKKEI:INDEXNIKKEI", "HANGSENG": "HSI:INDEXHANGSENG", "CRUDE_OIL": "BZ:NYMEX", "GOLD": "GC:COMEX", "SILVER": "SI:COMEX", "USDINR": "USD-INR:FOREX", "DXY": "DXY:INDEXUSD", "US10Y": "US10Y:INDEXBOND"}
+def _v65_google_one(key):
+    # Google Finance - Yahoo/Stooq se alag server, Cloud IP pe aksar chalta hai. HTML me YMlKec class me price hota hai.
+    try:
+        _g = _V65_GOOGLE_MAP.get(key)
+        if not _g:
+            return None, 0.0, None, "FAILED"
+        r = _v64_get(f"https://www.google.com/finance/quote/{_g}", timeout=5)
+        if r is None or not r.ok:
+            _V65_LAST_ERRORS[key] = f"Google HTTP {r.status_code if r is not None else 'NO_RESP'}"
+            return None, 0.0, None, "FAILED"
+        import re as _re65
+        _m = _re65.findall(r'YMlKec[^>]*>([^<]+)<', r.text or "")
+        if not _m:
+            _V65_LAST_ERRORS[key] = "Google: price tag nahi mila"
+            return None, 0.0, None, "FAILED"
+        _raw = _m[0].replace(",", "").replace("$", "").replace("₹", "").replace("¥", "").replace("HK$", "").strip()
+        try:
+            _price = float(_raw)
+        except Exception:
+            _V65_LAST_ERRORS[key] = f"Google parse fail: {_m[0][:30]}"
+            return None, 0.0, None, "FAILED"
+        # Change % - Google page me P2Luy class me +1.23% hota hai
+        _pct = 0.0
+        try:
+            _pm = _re65.findall(r'P2Luy[^>]*>([^<]+)<', r.text or "")
+            for _x in _pm:
+                if "%" in _x:
+                    _pct = float(_x.replace("%", "").replace("+", "").strip())
+                    break
+        except Exception:
+            _pct = 0.0
+        if _price and _price > 0:
+            _V65_LAST_ERRORS[key] = "OK via Google"
+            return _price, _pct, None, "GOOGLE_FINANCE"
+    except Exception as _e65:
+        _V65_LAST_ERRORS[key] = f"Google exc: {str(_e65)[:60]}"
+        pass
+    return None, 0.0, None, "FAILED"
+def _v65_manual_get():
+    # Manual override - session me hai to use karo, feed ka wait mat karo
+    try:
+        _m = _v59_ss_get("_v65_manual_global", {})
+        if isinstance(_m, dict) and any(_m.values()):
+            return _m
+    except Exception:
+        pass
+    return {}
+def _v65_apply_manual(out, manual):
+    # Manual me jo daala hai wo LIVE se upar hai - user ne phone se dekh ke daala hai, uspe bharosa karo
+    try:
+        _map = {"GIFT_NIFTY": "gift", "NASDAQ": "ndx", "SPX": "spx", "CRUDE_OIL": "crude", "GOLD": "gold", "USDINR": "usdinr"}
+        for _k, _mk in _map.items():
+            _v = manual.get(_mk)
+            if _v and float(_v) > 0:
+                _old = out.get(_k, {})
+                _old["price"] = float(_v)
+                _old["source"] = "MANUAL_USER"
+                _old["live"] = True
+                _old["stale"] = False
+                _old["age_sec"] = 0
+                # change_pct manual me nahi hai, purana pct hi rakho, ya GIFT ke liye Nifty spot se approx
+                out[_k] = _old
+        if manual:
+            out["GLOBAL_SCORE"] = _v63_global_score(out)
+            out["GLOBAL_BIAS"] = "STRONG BULLISH" if out["GLOBAL_SCORE"] >= 30 else ("BULLISH" if out["GLOBAL_SCORE"] >= 10 else ("STRONG BEARISH" if out["GLOBAL_SCORE"] <= -30 else ("BEARISH" if out["GLOBAL_SCORE"] <= -10 else "NEUTRAL")))
+            out["_FETCHED_AT"] = "MANUAL OVERRIDE - " + datetime.now(IST).strftime("%H:%M:%S IST")
+    except Exception:
+        pass
+    return out
+
 # ===== V64 GLOBAL FAILED FIX ENGINE - 4 worker, sequential per symbol, 4 source, last-good file cache =====
 _V64_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", "Accept": "application/json, text/plain, */*", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://finance.yahoo.com/"}
 _V64_SESSION = requests.Session()
@@ -4734,17 +4811,33 @@ def _v64_stooq_one(stooq_sym):
         pass
     return None, 0.0, None, "FAILED"
 def _v64_fetch_one_symbol(key, ysym, stooq_sym):
-    # V64: NESTED THREAD KHATAM - pehle Yahoo (query2->query1->proxy), fail ho to Stooq. Ek symbol pe max 8s, par bahar 4 symbol parallel hain to total 8-12s.
+    # V65: Yahoo -> Stooq -> Google Finance. Google alag server hai, Cloud pe aksar chal jata hai jab Yahoo/Stooq block hain.
     try:
         y_p, y_pct, y_prev, y_src = _v64_yahoo_one(ysym)
         if y_p and y_p > 0:
+            _V65_LAST_ERRORS[key] = f"OK via {y_src}"
             return y_p, y_pct, y_prev, y_src
-    except Exception:
+        else:
+            _V65_LAST_ERRORS[key] = "Yahoo fail (403/timeout)"
+    except Exception as _e65y:
+        _V65_LAST_ERRORS[key] = f"Yahoo exc: {str(_e65y)[:50]}"
         pass
     try:
         s_p, s_pct, s_prev, s_src = _v64_stooq_one(stooq_sym) if stooq_sym else (None, 0.0, None, "FAILED")
         if s_p and s_p > 0:
+            _V65_LAST_ERRORS[key] = f"OK via {s_src}"
             return s_p, s_pct, s_prev, s_src
+        else:
+            _V65_LAST_ERRORS[key] = _V65_LAST_ERRORS.get(key, "") + " | Stooq fail"
+    except Exception as _e65s:
+        _V65_LAST_ERRORS[key] = _V65_LAST_ERRORS.get(key, "") + f" | Stooq exc: {str(_e65s)[:40]}"
+        pass
+    try:
+        g_p, g_pct, g_prev, g_src = _v65_google_one(key)
+        if g_p and g_p > 0:
+            return g_p, g_pct, g_prev, g_src
+        else:
+            _V65_LAST_ERRORS[key] = _V65_LAST_ERRORS.get(key, "") + " | Google fail"
     except Exception:
         pass
     return None, 0.0, None, "FAILED"
@@ -4809,7 +4902,15 @@ def _v64_fetch_global_live(force=False):
     except Exception:
         pass
     out = {}
+    # V65: File cache ke saath SESSION last-good bhi - file Cloud pe wipe ho jati hai, session nahi hoti
     _last_good = _v64_load_last_good()
+    try:
+        _sess_good = _v59_ss_get("_v65_last_good_global", {})
+        if isinstance(_sess_good, dict) and _sess_good.get("GIFT_NIFTY", {}).get("price") and not _last_good:
+            _last_good = _sess_good
+    except Exception:
+        pass
+    _manual = _v65_manual_get()
     try:
         import concurrent.futures as _cf64
         # 4 worker - 6 se kam, Cloud ko overload nahi karega. Timeout 12s - 5s wala bug fix.
@@ -4851,10 +4952,20 @@ def _v64_fetch_global_live(force=False):
         out["_FETCHED_AT"] = datetime.now(IST).strftime("%H:%M:%S IST")
         _V63_GLOBAL_CACHE["data"] = out
         _V63_GLOBAL_CACHE["ts"] = time.time()
-        # Kam se kam 1 live aaya to last-good update karo, taaki agli baar STALE ke liye number rahe
+        # V65: Live aaya to SESSION me bhi save karo - file wipe bhi ho to session se STALE milega
         try:
             if any(isinstance(_v, dict) and _v.get("live") for _v in out.values()):
                 _v64_save_last_good(out)
+                try:
+                    _v59_ss_set("_v65_last_good_global", out)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        # V65: Manual override sabse upar - user ne daala hai to usi se prediction banega
+        try:
+            if _manual:
+                out = _v65_apply_manual(out, _manual)
         except Exception:
             pass
         return out
@@ -8938,7 +9049,52 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         try:
             _live_n = sum(1 for _v in macro_data.values() if isinstance(_v, dict) and _v.get("live"))
             _stale_n = sum(1 for _v in macro_data.values() if isinstance(_v, dict) and _v.get("stale"))
-            st.caption(f"Global Score: {macro_data.get('GLOBAL_SCORE', 0.0):+.0f} | Bias: {macro_data.get('GLOBAL_BIAS','-')} | Fetched: {macro_data.get('_FETCHED_AT','-')} | LIVE: {_live_n}/12 | STALE: {_stale_n} (pichhla sahi number) | FAILED = kabhi number aaya hi nahi")
+            _manual_n = 1 if _v65_manual_get() else 0
+            st.caption(f"Global Score: {macro_data.get('GLOBAL_SCORE', 0.0):+.0f} | Bias: {macro_data.get('GLOBAL_BIAS','-')} | Fetched: {macro_data.get('_FETCHED_AT','-')} | LIVE: {_live_n}/12 | STALE: {_stale_n} | MANUAL: {_manual_n} | FAILED = kabhi number aaya hi nahi")
+        except Exception:
+            pass
+        # V65 DIAGNOSTIC + MANUAL - Feed down ho to bhi trade rukega nahi
+        try:
+            with st.expander("🔧 V65 Global Feed Diagnostic + Manual Override - FAILED aaye to yahan dekho / yahan daalo", expanded=False):
+                st.caption("Diagnostic: Har symbol ka asli error - 403 matlab Cloud IP block, timeout matlab slow, NO_RESP matlab server down")
+                try:
+                    for _k in ["GIFT_NIFTY", "NASDAQ", "SPX", "CRUDE_OIL", "GOLD", "USDINR", "DXY", "NIKKEI"]:
+                        _e = _V65_LAST_ERRORS.get(_k, "Abhi fetch hua hi nahi - SCAN dabao")
+                        _src = macro_data.get(_k, {}).get("source", "FAILED")
+                        st.write(f"- {_k}: Source={_src} | {_e}")
+                except Exception:
+                    pass
+                st.divider()
+                st.caption("Manual Override: Feed down ho to apne phone se Moneycontrol / Yahoo app me dekh ke yahan daal do. Daalte hi prediction + trade call isi se banega. Khali chhodo to auto feed hi chalega.")
+                try:
+                    _cur_m = _v65_manual_get()
+                    _c1, _c2 = st.columns(2)
+                    with _c1:
+                        _mgift = st.number_input("GIFT Nifty manual LTP (e.g. 25300)", value=float(_cur_m.get("gift", 0) or 0), step=1.0, key="v65_man_gift")
+                        _mndx = st.number_input("Nasdaq 100 manual LTP (e.g. 28100)", value=float(_cur_m.get("ndx", 0) or 0), step=1.0, key="v65_man_ndx")
+                        _mspx = st.number_input("S&P 500 manual LTP (e.g. 6800)", value=float(_cur_m.get("spx", 0) or 0), step=1.0, key="v65_man_spx")
+                    with _c2:
+                        _mcrude = st.number_input("Brent Crude manual LTP (e.g. 64.5)", value=float(_cur_m.get("crude", 0) or 0), step=0.1, key="v65_man_crude")
+                        _mgold = st.number_input("Gold manual LTP (e.g. 3890)", value=float(_cur_m.get("gold", 0) or 0), step=1.0, key="v65_man_gold")
+                        _musd = st.number_input("USDINR manual LTP (e.g. 88.5)", value=float(_cur_m.get("usdinr", 0) or 0), step=0.1, key="v65_man_usdinr")
+                    if st.button("✅ Manual Global SAVE - Isi se prediction banega", key="v65_man_save"):
+                        try:
+                            _new_m = {"gift": float(_mgift or 0), "ndx": float(_mndx or 0), "spx": float(_mspx or 0), "crude": float(_mcrude or 0), "gold": float(_mgold or 0), "usdinr": float(_musd or 0)}
+                            _new_m = {k: v for k, v in _new_m.items() if v and v > 0}
+                            _v59_ss_set("_v65_manual_global", _new_m)
+                            st.success(f"Manual saved: {_new_m} - Ab REFRESH daba, prediction isi se banega")
+                            st.rerun()
+                        except Exception as _me:
+                            st.error(f"Save fail: {_me}")
+                    if st.button("🗑️ Manual CLEAR - Wapas auto feed pe jao", key="v65_man_clear"):
+                        try:
+                            _v59_ss_set("_v65_manual_global", {})
+                            st.success("Manual cleared - ab auto feed chalega")
+                            st.rerun()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
         except Exception:
             pass
         m1, m2, m3, m4 = st.columns(4)
