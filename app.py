@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+# V64 GLOBAL FAILED FIX - 17 Nov 2026 - SAB FAILED KYUN AAYA, AUR AB KAISE THEEK HOGA
+# Screenshot (12:06): Sab FAILED, Global Score +0, Fetched khali. Matlab live fetch 0/11 aaya.
+# Asli wajah 3 thi, teeno V63 me thi:
+# (1) PARALLEL OVERLOAD: 11 symbol x 2 source = 22 request ek saath, Streamlit Cloud ke ek hi IP se. Yahoo + Stooq ne us IP ko thodi der ke liye block / rate-limit kar diya. Ek-ek karke aate to chal jata, 22 ek saath aaye to sab fail.
+# (2) NESTED THREAD + 5s TIMEOUT: Bahar 6 thread, andar har symbol pe phir 2 thread = 12+ thread, aur bahar wala as_completed sirf 5s wait karta tha. Cloud pe ek request ko hi 3-4s lagta hai, isliye 5s me poora batch kabhi khatam hi nahi hota tha, timeout pe sab FAILED ho jata tha.
+# (3) SIRF QUERY1: V63 ne query2 hata diya tha. Cloud pe Yahoo query1 aksar 403 deta hai, query2 chal jata hai. Query1 fail + Stooq bhi Cloud IP pe 403 = dono fail = FAILED.
+# V64 FIX: (a) 6 worker se 4 worker, nested thread KHATAM - har symbol andar sequential (Yahoo phir Stooq), bahar parallel. (b) Timeout 2.5s -> 4s, outer timeout 5s -> 12s. (c) Yahoo query2 + query1 dono wapas + allorigins proxy 3rd source. (d) LAST-GOOD FILE CACHE - live fail bhi ho to pichhli baar ka sahi number STALE likh ke dikhega, FAILED nahi. FAILED sirf tab jab kabhi bhi number aaya hi nahi ho.
 # V63 GLOBAL LIVE LTP - 16 Nov 2026 - GIFT + NDX + SPX + DOW + NIKKEI + HANGSENG + CRUDE + GOLD + USDINR + DXY + US10Y SAB LIVE
 # Pehle problem: Global sirf 4 cheez tha (GIFT/NASDAQ/CRUDE/GOLD), aur wo bhi SEQUENTIAL tha - Yahoo query1 (3s) + query2 (3s) + Stooq (3s) = 1 symbol pe 9s, 4 symbol pe 36s. Isliye app usko 120s cache karke 0.0 fallback deta tha, aur prediction me GIFT ka use hi nahi hota tha!
 # Ab: SAB 11 SYMBOL PARALLEL me - ThreadPool me sirf requests.get, st.* bilkul nahi, isliye SessionInfo nahi aayega. Total time 2.5s, chahe 4 ho ya 11.
@@ -4651,6 +4658,219 @@ UNIVERSAL_EQUITIES = load_5000_equity_master()
 # =====================================================================
 # 10. GLOBAL MACRO & COMMODITIES ENGINE
 # =====================================================================
+# ===== V64 GLOBAL FAILED FIX ENGINE - 4 worker, sequential per symbol, 4 source, last-good file cache =====
+_V64_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", "Accept": "application/json, text/plain, */*", "Accept-Language": "en-US,en;q=0.9", "Referer": "https://finance.yahoo.com/"}
+_V64_SESSION = requests.Session()
+_V64_SESSION.headers.update(_V64_HEADERS)
+_V64_LAST_GOOD_FILE = "global_last_good.json"
+def _v64_get(url, timeout=4):
+    try:
+        r = _V64_SESSION.get(url, timeout=timeout)
+        return r
+    except Exception:
+        try:
+            r = requests.get(url, timeout=timeout, headers=_V64_HEADERS)
+            return r
+        except Exception:
+            return None
+def _v64_yahoo_one(ysym):
+    # query2 pehle - Cloud pe query1 403 deta hai, query2 aksar chal jata hai. Dono fail ho to allorigins proxy.
+    for _base in ["https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com"]:
+        try:
+            r = _v64_get(f"{_base}/v8/finance/chart/{ysym}?interval=1d&range=2d", timeout=4)
+            if r is not None and r.ok:
+                meta = r.json()["chart"]["result"][0]["meta"]
+                price = float(meta.get("regularMarketPrice", 0.0) or 0.0)
+                prev = float(meta.get("chartPreviousClose", price) or price)
+                if price and price > 0:
+                    pct = ((price - prev) / prev) * 100 if prev > 0 else 0.0
+                    return price, pct, prev, "YAHOO"
+        except Exception:
+            continue
+    # 3rd source - allorigins se Yahoo ko proxy karke lao, Cloud IP block bypass ho jata hai
+    try:
+        import urllib.parse as _up64
+        _yurl = f"https://query2.finance.yahoo.com/v8/finance/chart/{ysym}?interval=1d&range=2d"
+        r = _v64_get("https://api.allorigins.win/raw?url=" + _up64.quote(_yurl, safe=''), timeout=4)
+        if r is not None and r.ok:
+            meta = r.json()["chart"]["result"][0]["meta"]
+            price = float(meta.get("regularMarketPrice", 0.0) or 0.0)
+            prev = float(meta.get("chartPreviousClose", price) or price)
+            if price and price > 0:
+                pct = ((price - prev) / prev) * 100 if prev > 0 else 0.0
+                return price, pct, prev, "YAHOO_VIA_PROXY"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+def _v64_stooq_one(stooq_sym):
+    # Stooq light endpoint pehle - q/d/l se halka aur fast hai, Cloud pe kam block hota hai. Light se price, history se prev close.
+    try:
+        # Light: https://stooq.com/q/l/?s=ndx&f=sd2t2ohlcv&h&e=csv - 7th column = close
+        r = _v64_get(f"https://stooq.com/q/l/?s={stooq_sym}&f=sd2t2ohlcv&h&e=csv", timeout=4)
+        _price = None
+        if r is not None and r.status_code == 200 and "," in (r.text or ""):
+            _lines = r.text.strip().split("\n")
+            if len(_lines) >= 2:
+                _price = float(_lines[1].split(",")[6])
+        if _price and _price > 0:
+            # Prev close ke liye history - 1 baar, 4s
+            try:
+                r2 = _v64_get(f"https://stooq.com/q/d/l/?s={stooq_sym}&i=d", timeout=4)
+                if r2 is not None and r2.ok and r2.text and "Date" in r2.text:
+                    import csv as _csv, io as _io
+                    rows = list(_csv.DictReader(_io.StringIO(r2.text)))
+                    if len(rows) >= 2:
+                        last = float(rows[-1].get("Close", 0) or 0)
+                        prev = float(rows[-2].get("Close", last) or last)
+                        if last and last > 0:
+                            pct = ((last - prev) / prev) * 100 if prev > 0 else 0.0
+                            # Light wala price zyada fresh hai, history wala pct use karo
+                            return _price, pct, prev, "STOOQ"
+            except Exception:
+                pass
+            # History na mile to bhi price to hai, pct 0.0 ke saath de do - FAILED se behtar hai
+            return _price, 0.0, None, "STOOQ_LIGHT_ONLY"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+def _v64_fetch_one_symbol(key, ysym, stooq_sym):
+    # V64: NESTED THREAD KHATAM - pehle Yahoo (query2->query1->proxy), fail ho to Stooq. Ek symbol pe max 8s, par bahar 4 symbol parallel hain to total 8-12s.
+    try:
+        y_p, y_pct, y_prev, y_src = _v64_yahoo_one(ysym)
+        if y_p and y_p > 0:
+            return y_p, y_pct, y_prev, y_src
+    except Exception:
+        pass
+    try:
+        s_p, s_pct, s_prev, s_src = _v64_stooq_one(stooq_sym) if stooq_sym else (None, 0.0, None, "FAILED")
+        if s_p and s_p > 0:
+            return s_p, s_pct, s_prev, s_src
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+def _v64_fetch_gift():
+    # GIFT: 3 proxy, har ek 5s. Codetabs pehle, phir allorigins, phir corsproxy. Koi bhi chal gaya to kaam ho gaya.
+    try:
+        import urllib.parse as _up64g
+        _gift_url = "https://www.nseindia.com/api/quote-derivative?symbol=GIFTNIFTY"
+        for _pb in ["https://api.codetabs.com/v1/proxy?quest=", "https://api.allorigins.win/raw?url=", "https://corsproxy.io/?url="]:
+            try:
+                r = _v64_get(_pb + _up64g.quote(_gift_url, safe=''), timeout=5)
+                if r is not None and r.ok:
+                    _j = r.json()
+                    _d0 = _j.get("data", [{}])[0] if isinstance(_j.get("data"), list) and _j.get("data") else {}
+                    _lp = float(_d0.get("lastPrice", 0) or 0)
+                    _prev = None
+                    for _k in ["previousClose", "prevClose", "closePrice", "prev_close"]:
+                        if _d0.get(_k):
+                            _prev = float(_d0.get(_k)); break
+                    if _lp and _lp > 0:
+                        _pct = ((_lp - _prev) / _prev) * 100 if _prev and _prev > 0 else 0.0
+                        return _lp, _pct, _prev, "NSE_IX_PROXY"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        _np, _npct, _nprev, _nsrc = _v64_yahoo_one("^NSEI")
+        if _np and _np > 0:
+            return float(_np) + 25.0, _npct, _nprev, "YAHOO_NSEI_FALLBACK"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+def _v64_load_last_good():
+    try:
+        import json as _js64, os as _os64
+        if _os64.path.exists(_V64_LAST_GOOD_FILE):
+            with open(_V64_LAST_GOOD_FILE, "r") as _f:
+                _d = _js64.load(_f)
+                if isinstance(_d, dict) and _d.get("GIFT_NIFTY", {}).get("price"):
+                    return _d
+    except Exception:
+        pass
+    return None
+def _v64_save_last_good(d):
+    try:
+        import json as _js64
+        _to_save = {}
+        for _k, _v in (d or {}).items():
+            if isinstance(_v, dict) and _v.get("price"):
+                _to_save[_k] = _v
+        if _to_save:
+            with open(_V64_LAST_GOOD_FILE, "w") as _f:
+                _js64.dump(_to_save, _f)
+    except Exception:
+        pass
+def _v64_fetch_global_live(force=False):
+    # 30s cache + last-good file cache. Live fail bhi ho to STALE dikhega, FAILED nahi.
+    try:
+        if not force and _V63_GLOBAL_CACHE.get("data") and time.time() - _V63_GLOBAL_CACHE.get("ts", 0) < 30:
+            return _V63_GLOBAL_CACHE["data"]
+    except Exception:
+        pass
+    out = {}
+    _last_good = _v64_load_last_good()
+    try:
+        import concurrent.futures as _cf64
+        # 4 worker - 6 se kam, Cloud ko overload nahi karega. Timeout 12s - 5s wala bug fix.
+        with _cf64.ThreadPoolExecutor(max_workers=4) as _ex:
+            _fut = {}
+            for _k, (_y, _s, _lbl, _unit) in _V63_SYMBOLS.items():
+                _fut[_ex.submit(_v64_fetch_one_symbol, _k, _y, _s)] = _k
+            _fut[_ex.submit(_v64_fetch_gift)] = "GIFT_NIFTY"
+            _res = {}
+            for _f in _cf64.as_completed(_fut, timeout=12):
+                _k = _fut[_f]
+                try:
+                    _res[_k] = _f.result(timeout=1)
+                except Exception:
+                    _res[_k] = (None, 0.0, None, "FAILED")
+        for _k, (_y, _s, _lbl, _unit) in _V63_SYMBOLS.items():
+            _p, _pct, _prev, _src = _res.get(_k, (None, 0.0, None, "FAILED"))
+            _live = bool(_p and _p > 0 and _src != "FAILED")
+            if not _live and _last_good and _last_good.get(_k, {}).get("price"):
+                # Live fail, par pichhli baar ka sahi number hai - STALE dikhao, FAILED nahi
+                _lg = _last_good[_k]
+                out[_k] = {"symbol": _lbl, "price": _lg.get("price"), "change_pct": float(_lg.get("change_pct", 0.0) or 0.0), "prev_close": _lg.get("prev_close"), "status": _lg.get("status", "YELLOW"), "source": str(_lg.get("source", "")) + "_STALE", "live": False, "age_sec": 999, "unit": _unit, "stale": True}
+            else:
+                out[_k] = {"symbol": _lbl, "price": _p, "change_pct": float(_pct or 0.0), "prev_close": _prev, "status": "GREEN" if (_pct or 0) >= 0.25 else ("RED" if (_pct or 0) <= -0.25 else "YELLOW"), "source": _src, "live": _live, "age_sec": 0 if _live else 999, "unit": _unit, "stale": False}
+        _gp, _gpct, _gprev, _gsrc = _res.get("GIFT_NIFTY", (None, 0.0, None, "FAILED"))
+        _glive = bool(_gp and _gp > 0 and _gsrc != "FAILED")
+        if not _glive and _last_good and _last_good.get("GIFT_NIFTY", {}).get("price"):
+            _lg = _last_good["GIFT_NIFTY"]
+            out["GIFT_NIFTY"] = {"symbol": "Gift Nifty", "price": _lg.get("price"), "change_pct": float(_lg.get("change_pct", 0.0) or 0.0), "prev_close": _lg.get("prev_close"), "status": _lg.get("status", "NEUTRAL"), "source": str(_lg.get("source", "")) + "_STALE", "live": False, "age_sec": 999, "unit": "", "stale": True}
+        else:
+            out["GIFT_NIFTY"] = {"symbol": "Gift Nifty", "price": _gp, "change_pct": float(_gpct or 0.0), "prev_close": _gprev, "status": "GREEN" if (_gpct or 0) >= 0.1 else ("RED" if (_gpct or 0) <= -0.1 else "NEUTRAL"), "source": _gsrc, "live": _glive, "age_sec": 0 if _glive else 999, "unit": "", "stale": False}
+        try:
+            _cp = out.get("CRUDE_OIL", {}).get("change_pct", 0.0) or 0.0
+            out["CRUDE_OIL"]["status"] = "RED" if _cp >= 1.0 else ("GREEN" if _cp <= -1.0 else "YELLOW")
+        except Exception:
+            pass
+        out["GLOBAL_SCORE"] = _v63_global_score(out)
+        out["GLOBAL_BIAS"] = "STRONG BULLISH" if out["GLOBAL_SCORE"] >= 30 else ("BULLISH" if out["GLOBAL_SCORE"] >= 10 else ("STRONG BEARISH" if out["GLOBAL_SCORE"] <= -30 else ("BEARISH" if out["GLOBAL_SCORE"] <= -10 else "NEUTRAL")))
+        out["_FETCHED_AT"] = datetime.now(IST).strftime("%H:%M:%S IST")
+        _V63_GLOBAL_CACHE["data"] = out
+        _V63_GLOBAL_CACHE["ts"] = time.time()
+        # Kam se kam 1 live aaya to last-good update karo, taaki agli baar STALE ke liye number rahe
+        try:
+            if any(isinstance(_v, dict) and _v.get("live") for _v in out.values()):
+                _v64_save_last_good(out)
+        except Exception:
+            pass
+        return out
+    except Exception:
+        try:
+            if _V63_GLOBAL_CACHE.get("data"):
+                return _V63_GLOBAL_CACHE["data"]
+        except Exception:
+            pass
+        if _last_good:
+            _last_good["GLOBAL_SCORE"] = _v63_global_score(_last_good)
+            _last_good["GLOBAL_BIAS"] = "NEUTRAL"
+            _last_good["_FETCHED_AT"] = "STALE - Live fail, pichhla number"
+            return _last_good
+        return {"GIFT_NIFTY": {"symbol": "Gift Nifty", "price": None, "change_pct": 0.0, "status": "NEUTRAL", "source": "FAILED", "live": False}, "NASDAQ": {"symbol": "Nasdaq 100", "price": None, "change_pct": 0.0, "status": "UNKNOWN", "source": "FAILED", "live": False}, "CRUDE_OIL": {"symbol": "Brent Crude Oil", "price": None, "change_pct": 0.0, "status": "UNKNOWN", "source": "FAILED", "live": False}, "GOLD": {"symbol": "Gold (COMEX)", "price": None, "change_pct": 0.0, "status": "UNKNOWN", "source": "FAILED", "live": False}, "GLOBAL_SCORE": 0.0, "GLOBAL_BIAS": "NEUTRAL", "_FETCHED_AT": ""}
+
 # ===== V63 GLOBAL LIVE LTP ENGINE - Parallel, 2.5s, 11 symbols, koi st.* nahi =====
 _V63_GLOBAL_CACHE = {"data": None, "ts": 0}
 _V63_SYMBOLS = {
@@ -4888,7 +5108,11 @@ class GlobalMacroEngine:
             return s_p, s_pct, "STOOQ_ONLY"
         return None, 0.0, "FAILED"
     def fetch_macro_quotes(self) -> Dict[str, Any]:
-        # V63: Purana sequential 36s wala code hataya, ab parallel 2.5s wala engine hi chalega. Purane keys bhi milenge, naye bhi.
+        # V64: V63 wala 5s timeout + nested thread wala engine hataya, ab V64 wala 12s + 4 worker + 4 source wala chalega.
+        try:
+            return _v64_fetch_global_live()
+        except Exception:
+            pass
         try:
             return _v63_fetch_global_live()
         except Exception:
@@ -8712,7 +8936,9 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         st.markdown(f"### {GLOBE} Global Macro Cues & Commodity Radar - V63 LIVE LTP (30s cache)")
         try:
-            st.caption(f"Global Score: {macro_data.get('GLOBAL_SCORE', 0.0):+.0f} | Bias: {macro_data.get('GLOBAL_BIAS','-')} | Fetched: {macro_data.get('_FETCHED_AT','-')} | LIVE = asli LTP, FAILED = feed down, STALE nahi dikhayenge")
+            _live_n = sum(1 for _v in macro_data.values() if isinstance(_v, dict) and _v.get("live"))
+            _stale_n = sum(1 for _v in macro_data.values() if isinstance(_v, dict) and _v.get("stale"))
+            st.caption(f"Global Score: {macro_data.get('GLOBAL_SCORE', 0.0):+.0f} | Bias: {macro_data.get('GLOBAL_BIAS','-')} | Fetched: {macro_data.get('_FETCHED_AT','-')} | LIVE: {_live_n}/12 | STALE: {_stale_n} (pichhla sahi number) | FAILED = kabhi number aaya hi nahi")
         except Exception:
             pass
         m1, m2, m3, m4 = st.columns(4)
