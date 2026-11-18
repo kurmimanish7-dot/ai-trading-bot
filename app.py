@@ -5702,9 +5702,198 @@ def _v83_get_fii_dii():
         pass
     return {"available": False, "fii_net": None, "dii_net": None, "combined": None, "score": 0, "bias": "NEUTRAL", "source": "NONE", "phase": determine_settlement_phase(), "sync_time": datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST"), "status": "UNAVAILABLE"}
 
+
+# ===== V85 GIFT FIX - 18 Nov 2026 - Gift FAILED + Feed Retry, dono ki ek jad =====
+# PROOF: Screenshot me Nasdaq/S&P/Brent/Gold sab YAHOO se chal rahe hain, par Gift FAILED hai. Matlab Yahoo chalta hai, par Gift ka Yahoo me ticker hi nahi hai.
+# V83 ke 3 source - NSE IX API (galat endpoint), Google (Cloud pe block), Stooq Futures (nsei.f exist hi nahi karta) - teeno fail, isliye FAILED + Feed Retry.
+# V85 FIX: Gift ko un site se lao jo khud NSE IX se live dikhati hain aur Cloud pe block nahi hain - Quantsapp + GiftNiftyToday + LiveIndex. Inka HTML me price saaf likha hota hai.
+# + FILE last-good: Sab fail ho to bhi FAILED nahi, kal ka last-good dikhega, source me LAST_GOOD likha hoga.
+
+_V85_GIFT_FILE = "gift_last_good.json"
+_V85_GIFT_FILE_TMP = "/tmp/gift_last_good.json"
+
+def _v85_gift_save_file(price, pct, prev, src):
+    try:
+        import json as _js85
+        if price and price > 0:
+            _d = {"price": float(price), "pct": float(pct or 0.0), "prev": prev, "source": str(src), "saved_at": datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")}
+            for _fp in [_V85_GIFT_FILE_TMP, _V85_GIFT_FILE]:
+                try:
+                    with open(_fp, "w") as _f:
+                        _js85.dump(_d, _f)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+def _v85_gift_load_file():
+    try:
+        import json as _js85, os as _os85
+        for _fp in [_V85_GIFT_FILE_TMP, _V85_GIFT_FILE]:
+            try:
+                if _os85.path.exists(_fp):
+                    with open(_fp, "r") as _f:
+                        _d = _js85.load(_f)
+                        if isinstance(_d, dict) and _d.get("price") and 20000 < float(_d.get("price")) < 35000:
+                            return float(_d["price"]), float(_d.get("pct", 0.0) or 0.0), _d.get("prev"), str(_d.get("source", "")) + "_LAST_GOOD_FILE"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v85_spot_for_check():
+    try:
+        _s = _v58_spot_fast("NIFTY")
+        if _s and _s > 0:
+            return float(_s)
+    except Exception:
+        pass
+    try:
+        _sp, _, _, _ = _v64_yahoo_one("^NSEI")
+        if _sp and _sp > 0:
+            return float(_sp)
+    except Exception:
+        pass
+    return None
+
+def _v85_parse_near(html, keywords, spot):
+    """HTML me keyword ke paas wala pehla 25,xxx.xx number nikaalo. Spot se 600 se zyada door hai to galat number hai, reject karo."""
+    try:
+        import re as _re85
+        _low = (html or "").lower()
+        for _kw in keywords:
+            _idx = _low.find(_kw.lower())
+            if _idx == -1:
+                continue
+            _window = html[_idx:_idx+4000]
+            # Price: 25,220.50 jaisa
+            _ms = _re85.findall(r'(\d{2},\d{3}\.\d{2})', _window)
+            for _m in _ms:
+                try:
+                    _v = float(_m.replace(",", ""))
+                except Exception:
+                    continue
+                if 20000 < _v < 35000:
+                    # Spot check: 23382 jaisa stale/wrong number reject karo
+                    if spot and abs(_v - spot) > 600:
+                        continue
+                    # Pct: is number ke baad 300 chars me -0.01% jaisa
+                    _pct = 0.0
+                    try:
+                        _pos = _window.find(_m)
+                        _after = _window[_pos:_pos+400] if _pos != -1 else ""
+                        _pm = _re85.findall(r'(-?\d+\.\d+)\s*%', _after)
+                        if _pm:
+                            _pct = float(_pm[0])
+                            if abs(_pct) > 5:
+                                _pct = 0.0
+                    except Exception:
+                        _pct = 0.0
+                    return _v, _pct
+            # Keyword mila par number nahi mila to agla keyword try karo
+    except Exception:
+        pass
+    return None, 0.0
+
+def _v85_gift_via_quantsapp():
+    """Quantsapp - abhi 25,220.50 dikh raha hai, NSE IX se live. Cloud pe block nahi hai."""
+    try:
+        r = _v64_get("https://www.quantsapp.com/gift-nifty", timeout=4)
+        if r is not None and r.ok:
+            _spot = _v85_spot_for_check()
+            _v, _pct = _v85_parse_near(r.text or "", ["gift nifty is trading at", "gift nifty is", "updated"], _spot)
+            if _v and _v > 0:
+                return _v, _pct, None, "QUANTSAPP_GIFT_LIVE"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v85_gift_via_giftniftytoday():
+    """Giftniftytoday - abhi 25,218.50 dikh raha hai, NSE IX se live. Header me GIFT Nifty fut ke baad price hai."""
+    try:
+        r = _v64_get("https://giftniftytoday.com/", timeout=4)
+        if r is not None and r.ok:
+            _spot = _v85_spot_for_check()
+            _v, _pct = _v85_parse_near(r.text or "", ["gift nifty fut", "gift nifty"], _spot)
+            if _v and _v > 0:
+                return _v, _pct, None, "GIFTNIFTYTODAY_LIVE"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v85_gift_via_liveindex():
+    """LiveIndex / SGXLive - backup chhoti site, ek fail ho to dusri se aa jaye."""
+    try:
+        for _url in ["https://www.liveindex.org/gift-nifty/", "https://sgxnifty.live/", "https://www.equitypandit.com/sgx-nifty-live/"]:
+            try:
+                r = _v64_get(_url, timeout=3)
+                if r is not None and r.ok:
+                    _spot = _v85_spot_for_check()
+                    _v, _pct = _v85_parse_near(r.text or "", ["gift nifty", "sgx nifty live price is", "gift nifty is"], _spot)
+                    if _v and _v > 0:
+                        return _v, _pct, None, "LIVEINDEX_GIFT_LIVE"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v85_fetch_gift_fast():
+    """V85: Quantsapp + GiftToday + LiveIndex PARALLEL, max 5s. Phir V83 wale NSEIX/Google/Futures backup. Sab fail ho to FILE last-good, tabhi bhi fail ho to hi None (Retry). FAILED kabhi seedha nahi."""
+    try:
+        import concurrent.futures as _cf85
+        with _cf85.ThreadPoolExecutor(max_workers=5) as _ex:
+            _futs = {
+                _ex.submit(_v85_gift_via_quantsapp): "Q",
+                _ex.submit(_v85_gift_via_giftniftytoday): "G",
+                _ex.submit(_v85_gift_via_liveindex): "L",
+                _ex.submit(_v83_nseix_gift): "NSEIX",
+                _ex.submit(_v83_google_gift): "GOOGLE",
+            }
+            _res = {}
+            try:
+                for _f in _cf85.as_completed(_futs, timeout=5):
+                    _k = _futs[_f]
+                    try:
+                        _res[_k] = _f.result(timeout=1)
+                    except Exception:
+                        _res[_k] = (None, 0.0, None, "FAILED")
+            except Exception:
+                pass
+            for _k in ["Q", "G", "L", "NSEIX", "GOOGLE"]:
+                _r = _res.get(_k, (None, 0.0, None, "FAILED"))
+                if _r and _r[0] and _r[0] > 0:
+                    _v85_gift_save_file(_r[0], _r[1], _r[2], _r[3])
+                    return _r
+        # Backup: V83 Futures (kabhi kabhi chalta hai)
+        try:
+            _fr = _v83_futures_gift()
+            if _fr and _fr[0] and _fr[0] > 0:
+                _v85_gift_save_file(_fr[0], _fr[1], _fr[2], _fr[3])
+                return _fr
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # FILE last-good - sab fail ho to bhi FAILED nahi, last-good dikhao
+    try:
+        _fp, _fpct, _fprev, _fsrc = _v85_gift_load_file()
+        if _fp and _fp > 0:
+            return _fp, _fpct, _fprev, _fsrc
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+# V85 alias: Purana _v83_fetch_gift_fast ab V85 ko call karega, taaki Live Ticker (Feed Retry wala) aur Global (FAILED wala) dono ek saath thik hon, 2 jagah alag fix na karna pade
+try:
+    _v83_fetch_gift_fast = _v85_fetch_gift_fast
+except Exception:
+    pass
+
 def _v64_fetch_gift():
     # V83: V82 ka Spot fallback hataya - Spot ko Gift bana ke same number dikhana band. Ab NSE IX + Google Gift + Futures, Spot kabhi nahi.
-    return _v83_fetch_gift_fast()
+    return _v85_fetch_gift_fast()
 
 
 def _v64_load_last_good():
