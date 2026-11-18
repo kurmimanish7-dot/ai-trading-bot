@@ -5053,36 +5053,164 @@ def _v64_fetch_one_symbol(key, ysym, stooq_sym):
     except Exception:
         pass
     return None, 0.0, None, "FAILED"
-def _v64_fetch_gift():
-    # GIFT: 3 proxy, har ek 5s. Codetabs pehle, phir allorigins, phir corsproxy. Koi bhi chal gaya to kaam ho gaya.
+
+# ===== V82 GIFT LIVE FIX - 18 Nov 2026 - Screenshot: Baaki sab LIVE, sirf Gift FAILED =====
+# Jad (3): (1) Gift sirf NSE India API pe tha, jo Cloud IP block + cookie maangta hai, isliye 3 proxy fail.
+# (2) Gift ka Google/Yahoo/Stooq backup tha hi nahi - _V63_SYMBOLS aur _V65_GOOGLE_MAP me Gift ki entry hi nahi thi.
+# (3) Gift ke 3 proxy x 5s = 15s, par bahar wala ThreadPool sirf 12s wait karta hai - Yahoo fallback tak pahunchne se pehle hi FAILED.
+# V82 FIX: Gift ke liye 3 source PARALLEL me, har ek max 2.5s. Jo pehle aaya wahi LIVE. NSE proxy sirf last me, 1 proxy, 2.5s.
+# Koi nakli number nahi - jo source se aaya uska naam source me likha hoga. Nifty spot proxy bhi clearly likha hoga.
+def _v82_google_gift():
+    """Google Finance GIFT Nifty - Cloud pe sabse zyada chalta hai. URL: GIFTNIFTY:INDEXNSEIX"""
     try:
-        import urllib.parse as _up64g
-        _gift_url = "https://www.nseindia.com/api/quote-derivative?symbol=GIFTNIFTY"
-        for _pb in ["https://api.codetabs.com/v1/proxy?quest=", "https://api.allorigins.win/raw?url=", "https://corsproxy.io/?url="]:
-            try:
-                r = _v64_get(_pb + _up64g.quote(_gift_url, safe=''), timeout=5)
-                if r is not None and r.ok:
-                    _j = r.json()
-                    _d0 = _j.get("data", [{}])[0] if isinstance(_j.get("data"), list) and _j.get("data") else {}
-                    _lp = float(_d0.get("lastPrice", 0) or 0)
-                    _prev = None
-                    for _k in ["previousClose", "prevClose", "closePrice", "prev_close"]:
-                        if _d0.get(_k):
-                            _prev = float(_d0.get(_k)); break
-                    if _lp and _lp > 0:
-                        _pct = ((_lp - _prev) / _prev) * 100 if _prev and _prev > 0 else 0.0
-                        return _lp, _pct, _prev, "NSE_IX_PROXY"
-            except Exception:
-                continue
-    except Exception:
-        pass
-    try:
-        _np, _npct, _nprev, _nsrc = _v64_yahoo_one("^NSEI")
-        if _np and _np > 0:
-            return float(_np) + 25.0, _npct, _nprev, "YAHOO_NSEI_FALLBACK"
+        r = _v64_get("https://www.google.com/finance/quote/GIFTNIFTY:INDEXNSEIX", timeout=3)
+        if r is None or not r.ok:
+            return None, 0.0, None, "FAILED"
+        import re as _re82
+        _m = _re82.findall(r'YMlKec[^>]*>([^<]+)<', r.text or "")
+        if not _m:
+            return None, 0.0, None, "FAILED"
+        _raw = _m[0].replace(",", "").replace("$", "").replace("₹", "").replace("¥", "").strip()
+        try:
+            _price = float(_raw)
+        except Exception:
+            return None, 0.0, None, "FAILED"
+        _pct = 0.0
+        try:
+            _pm = _re82.findall(r'P2Luy[^>]*>([^<]+)<', r.text or "")
+            for _x in _pm:
+                if "%" in _x:
+                    _pct = float(_x.replace("%", "").replace("+", "").strip())
+                    break
+        except Exception:
+            _pct = 0.0
+        if _price and 20000 < _price < 35000:
+            return _price, _pct, None, "GOOGLE_GIFT_LIVE"
     except Exception:
         pass
     return None, 0.0, None, "FAILED"
+
+def _v82_yahoo_gift():
+    """Yahoo Nifty spot se Gift proxy - Gift = Nifty spot + premium, isliye spot bhi kaam ka hai. Source me saaf likha hoga."""
+    try:
+        _np, _npct, _nprev, _nsrc = _v64_yahoo_one("^NSEI")
+        if _np and 20000 < _np < 35000:
+            # Gift aam taur pe Nifty spot se 20-60 pts upar rehta hai, par nakli +25 mat jodo - spot hi dikhao, source me likh do
+            return float(_np), float(_npct or 0.0), _nprev, "YAHOO_NSEI_SPOT"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v82_stooq_gift():
+    """Stooq Nifty - Yahoo fail ho to Stooq se Nifty spot."""
+    try:
+        _sp, _spct, _sprev, _ssrc = _v64_stooq_one("nsei")
+        if _sp and 20000 < _sp < 35000:
+            return float(_sp), float(_spct or 0.0), _sprev, "STOOQ_NSEI_SPOT"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v82_nse_proxy_gift():
+    """NSE IX proxy - sirf 1 proxy, 2.5s. Pehle 3 proxy x 5s = 15s lagta tha, isliye timeout se pehle hi FAILED ho jata tha."""
+    try:
+        import urllib.parse as _up82
+        _gift_url = "https://www.nseindia.com/api/quote-derivative?symbol=GIFTNIFTY"
+        r = _v64_get("https://api.codetabs.com/v1/proxy?quest=" + _up82.quote(_gift_url, safe=''), timeout=3)
+        if r is not None and r.ok:
+            _j = r.json()
+            _d0 = _j.get("data", [{}])[0] if isinstance(_j.get("data"), list) and _j.get("data") else {}
+            _lp = float(_d0.get("lastPrice", 0) or 0)
+            _prev = None
+            for _k in ["previousClose", "prevClose", "closePrice", "prev_close"]:
+                if _d0.get(_k):
+                    _prev = float(_d0.get(_k)); break
+            if _lp and 20000 < _lp < 35000:
+                _pct = ((_lp - _prev) / _prev) * 100 if _prev and _prev > 0 else 0.0
+                return _lp, _pct, _prev, "NSE_IX_PROXY"
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v82_fetch_gift_fast():
+    """V82: Gift ke 4 source PARALLEL me, max 4s total. Jo pehle LIVE aaya wahi return. FAILED tabhi jab 4no fail."""
+    try:
+        import concurrent.futures as _cf82
+        with _cf82.ThreadPoolExecutor(max_workers=4) as _ex:
+            _futs = {
+                _ex.submit(_v82_google_gift): "GOOGLE",
+                _ex.submit(_v82_yahoo_gift): "YAHOO",
+                _ex.submit(_v82_stooq_gift): "STOOQ",
+                _ex.submit(_v82_nse_proxy_gift): "NSE",
+            }
+            # Priority: Google Gift (asli Gift) > NSE Proxy (asli Gift) > Yahoo/ Stooq spot (proxy)
+            # Pehle 4s me jo aaya usme se best chuno, sabka wait mat karo
+            _results = {}
+            try:
+                for _f in _cf82.as_completed(_futs, timeout=4):
+                    _k = _futs[_f]
+                    try:
+                        _results[_k] = _f.result(timeout=1)
+                    except Exception:
+                        _results[_k] = (None, 0.0, None, "FAILED")
+            except Exception:
+                pass
+            # Best pick: GOOGLE Gift pehle, phir NSE, phir Yahoo, phir Stooq
+            for _k in ["GOOGLE", "NSE", "YAHOO", "STOOQ"]:
+                _r = _results.get(_k, (None, 0.0, None, "FAILED"))
+                if _r and _r[0] and _r[0] > 0:
+                    return _r
+            # Agar koi bhi 4s me nahi aaya to bhi 1 baar Yahoo ko direct 3s do - kabhi kabhi slow aata hai
+            try:
+                _np, _npct, _nprev, _nsrc = _v64_yahoo_one("^NSEI")
+                if _np and _np > 0:
+                    return float(_np), float(_npct or 0.0), _nprev, "YAHOO_NSEI_SPOT_RETRY"
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v82_fetch_gift():
+    # Purana naam bhi isi naye fast wale ko bulayega, taaki purane caller na toote
+    return _v82_fetch_gift_fast()
+
+# ===== V82 LIVE STREAMING TICKER - Gift LTP har 15s pe, bina poora page reload kiye =====
+# Ye fragment sirf READ karta hai - koi session_state write nahi, koi st.rerun nahi, isliye Bad message nahi aayega.
+# V81 wala deferred rerun rule yahan bhi lagu hai - fragment ke andar rerun bilkul nahi hai.
+try:
+    @_v82_live_fragment if "_v82_live_fragment" in dir() else st.fragment(run_every=15)
+    def _v82_gift_live_ticker():
+        try:
+            _gp, _gpct, _gprev, _gsrc = _v82_fetch_gift_fast()
+            _now = datetime.now(IST).strftime("%H:%M:%S IST")
+            if _gp and _gp > 0:
+                _arrow = "🟢 ▲" if (_gpct or 0) >= 0 else "🔴 ▼"
+                st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_arrow} {(_gpct or 0.0):+.2f}% | {_gsrc} | Last: {_now} | Auto-update har 15s")
+            else:
+                st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | Feed Retry... | Last try: {_now} | REFRESH dabao ya thoda wait karo, 15s me phir try hoga")
+        except Exception:
+            try:
+                st.caption("Gift Live Ticker - Feed Retry...")
+            except Exception:
+                pass
+except Exception:
+    def _v82_gift_live_ticker():
+        try:
+            _gp, _gpct, _gprev, _gsrc = _v82_fetch_gift_fast()
+            if _gp and _gp > 0:
+                st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | **{_gp:,.2f}** | {_gsrc}")
+            else:
+                st.caption("Gift Live - Feed Retry...")
+        except Exception:
+            pass
+
+def _v64_fetch_gift():
+    # V82: Purana 3-proxy x 5s wala code hataya - wahi 15s lagake timeout karwata tha, isliye hamesha FAILED aata tha.
+    # Ab V82 fast parallel wala chalega (Google + NSE + Yahoo + Stooq, max 4s)
+    return _v82_fetch_gift_fast()
+
+
 def _v64_load_last_good():
     try:
         import json as _js64, os as _os64
@@ -5133,7 +5261,7 @@ def _v64_fetch_global_live(force=False):
             _fut[_ex.submit(_v64_fetch_gift)] = "GIFT_NIFTY"
             _res = {}
             try:
-                for _f in _cf64.as_completed(_fut, timeout=12):
+                for _f in _cf64.as_completed(_fut, timeout=20):  # V82: 12s -> 20s, Gift ko bhi time mile
                     _k = _fut[_f]
                     try:
                         _res[_k] = _f.result(timeout=1)
@@ -9265,6 +9393,11 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         with s4: st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
 
     render_index_live_ticker(underlying, selected_expiry, active_tf)
+    # V82 LIVE STREAMING: Gift LTP har 15s pe, bina poora page reload kiye. Fragment hai, isliye main page nahi atakega.
+    try:
+        _v82_gift_live_ticker()
+    except Exception:
+        pass
     st.divider()
 
     @live_fragment(run_every=30)
