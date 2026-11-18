@@ -205,6 +205,81 @@ def _v59_ss_contains(key):
     except Exception:
         return key in _V59_FALLBACK
 
+# ===== V81 POLISH - 18 Nov 2026 - Bad message format ki aakhri jad khatam =====
+# Polished pattern jo Hello wale example me sikhaya tha, wahi yahan pure app pe lagaya:
+# (1) Button handler me kabhi st.success + st.rerun ek saath mat karo - message queue udd jati hai, Streamlit "Bad message format" bolta hai.
+# (2) Handler me sirf STATE badlo + message ko FLASH me save karo. Rerun mat maaro.
+# (3) FLASH agle run ke TOP pe ek fixed container me dikhega, gayab nahi hoga.
+# (4) Rerun sirf file ke END me EK BAAR hoga (_v81_safe_rerun -> flag, end me st.rerun). Beech me rerun = race = Bad message.
+# Koi feature hataya nahi, sirf rerun ka tarika badla hai.
+_V81_FLASH_KEY = "_v81_flash_msg"
+_V81_RERUN_KEY = "_v81_pending_rerun"
+
+def _v81_flash(msg, kind="success"):
+    """Message ko agle run ke liye save karo, is run me st.success mat likho."""
+    try:
+        _v59_ss_set(_V81_FLASH_KEY, {"msg": str(msg), "kind": kind})
+    except Exception:
+        pass
+    try:
+        st.session_state[_V81_FLASH_KEY] = {"msg": str(msg), "kind": kind}
+    except Exception:
+        pass
+
+def _v81_render_flash():
+    """Pichle run ka flash message TOP pe fixed jagah dikhao, ek baar hi. Return True agar dikhaya."""
+    try:
+        _d = _v59_ss_get(_V81_FLASH_KEY, None)
+        if not _d:
+            return False
+        # Pehle clear karo taaki dobara na dikhe
+        try:
+            _v59_ss_set(_V81_FLASH_KEY, None)
+        except Exception:
+            pass
+        try:
+            st.session_state[_V81_FLASH_KEY] = None
+        except Exception:
+            pass
+        _msg = _d.get("msg", "") if isinstance(_d, dict) else str(_d)
+        _kind = _d.get("kind", "success") if isinstance(_d, dict) else "success"
+        if not _msg:
+            return False
+        if _kind == "error":
+            st.error(_msg)
+        elif _kind == "warning":
+            st.warning(_msg)
+        elif _kind == "info":
+            st.info(_msg)
+        else:
+            st.success(_msg)
+        return True
+    except Exception:
+        return False
+
+def _v81_safe_rerun():
+    """Polished rerun: abhi mat bhaago, flag set karo. End me ek baar hi _v81_safe_rerun() hoga."""
+    try:
+        _v59_ss_set(_V81_RERUN_KEY, True)
+    except Exception:
+        pass
+    try:
+        st.session_state[_V81_RERUN_KEY] = True
+    except Exception:
+        pass
+    # Yahan _v81_safe_rerun() JANBOOJH ke nahi hai - beech me rerun hi Bad message ki jad hai.
+
+# Polished container pattern (Hello example wala) - message ke liye fixed containers
+# c1 = button ke liye, c2 = message ke liye. Container pehle banao, message baad me usi me likho.
+def _v81_make_msg_containers():
+    """Return (button_container, msg_container) - dono pehle se fixed, message idhar-udhar nahi bhagega."""
+    try:
+        _c1 = st.container()
+        _c2 = st.container()
+        return _c1, _c2
+    except Exception:
+        return None, None
+
 # ===== V19 FIX - PENDING FILE + SPEED CACHE =====
 import json as _json_pending
 from pathlib import Path as _Path_pending
@@ -933,6 +1008,12 @@ except Exception as _v61_boot_e:
             pass
         raise SystemExit("V61 boot guard: SessionInfo not ready, retrying once")
 
+# V81 POLISH: Pichle run ka flash message TOP pe fixed jagah dikhao - rerun ke baad bhi gayab nahi hoga
+try:
+    _v81_render_flash()
+except Exception:
+    pass
+
 # ================= V53 PERSISTENT SETTINGS - Fix reset after page close =================
 import os
 import json
@@ -1014,7 +1095,7 @@ def get_persist(key, default):
 # V17.3 STABLE - No auto-refresh to prevent buffering - V61: button bhi try/except me, session na bana ho to crash nahi
 try:
     if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
-        st.rerun()
+        _v81_safe_rerun()
     st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
 except Exception as _v61_re_e:
     if "SessionInfo" in str(_v61_re_e):
@@ -7074,7 +7155,7 @@ def execute_real_trade_with_confirmation(idea, live_ltp, quantity, enable_real=F
 def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str, price: float, qty: int, sl: float, t1: float, t2: float, expiry: str, reasons: str, is_equity: bool = False) -> bool:
     allowed, msg = evaluate_risk_gates(symbol, qty, abs(price - sl) * qty, is_equity=is_equity)
     if not allowed:
-        st.error(f"{STOP} {msg}")
+        _v81_flash(f"{STOP} {msg}", "error")
         return False
 
     trade_id = str(uuid.uuid4())[:8]
@@ -7089,7 +7170,7 @@ def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str,
     }
 
     _v80_get_portfolio()["positions"][trade_id] = position_entry  # V80: safe helper, AttributeError nahi dega
-    st.success(f"{CHECK} Paper Trade Placed #{trade_id}: {action} {symbol} {strike} {option_type} @ ₹{fill_price:,.2f} [Qty: {qty}]")
+    _v81_flash(f"{CHECK} Paper Trade Placed #{trade_id}: {action} {symbol} {strike} {option_type} @ ₹{fill_price:,.2f} [Qty: {qty}]", "success")
     # V22 ULTRA FAST - Active Call Exit Rules Instant
     try:
         msg_rules = f"🚀 ACTIVE CALL ENTRY\n\n📊 {symbol} {strike} {option_type}\n💰 Entry: Rs {fill_price:.2f} Qty: {qty}\n🛑 SL: Rs {sl:.2f}\n🎯 T1: Rs {t1:.2f}\n🎯 T2: Rs {t2:.2f}\n📅 {expiry}\n⏰ {datetime.now(IST).strftime('%H:%M:%S IST')}\n\n⚡ EXIT RULES ULTRA FAST:\n• SL {sl:.2f} = EXIT\n• T1 {t1:.2f} = 50% BOOK\n• T2 {t2:.2f} = FULL EXIT\n• 15:15 FORCE CLOSE\n\nID: {trade_id} | OPEN"
@@ -8414,7 +8495,7 @@ except:
 _v80_set_portfolio_field("daily_loss_limit", max_loss_input)  # V80: safe set
 
 if st.sidebar.button(f"{REFRESH} Force Refresh All Caches", use_container_width=True):
-    st.rerun()  # V55.4: cache clear hataya - clear() + rerun ek saath SessionInfo error deta hai
+    _v81_safe_rerun()  # V55.4: cache clear hataya - clear() + rerun ek saath SessionInfo error deta hai
 
 # Global Header Status Bar
 col_t1, col_t2, col_t3, col_t4 = st.columns(4)
@@ -8631,7 +8712,7 @@ if "Universal 5,000+" in segment_mode:
                             reasons=" | ".join(analysis["reasons"][:3]),
                             is_equity=True,
                         )
-                        st.rerun()
+                        _v81_safe_rerun()
 
             return analysis, fundamentals, corp_intel
 
@@ -8927,7 +9008,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         st.sidebar.error(f"Telegram error: {e2}")
                         import traceback
                         traceback.print_exc()
-                    st.rerun()
+                    _v81_safe_rerun()
                 except Exception as e:
                     st.sidebar.error(f"Test error: {e}")
                     import traceback
@@ -9010,10 +9091,10 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                                 try:
                                     ok, msg = auto_entry_market_price(idea, live_ltp, qty, enable_real=st.session_state.get('enable_real_trading', False))
                                     if ok:
-                                        st.success(f"✅ REAL ORDER PLACED: {msg}")
+                                        _v81_flash(f"✅ REAL ORDER PLACED: {msg}", "success")
                                         # Remove pending
                                         del st.session_state[pkey]
-                                        st.rerun()
+                                        _v81_safe_rerun()
                                     else:
                                         st.error(f"❌ Order failed: {msg}")
                                 except Exception as e:
@@ -9022,8 +9103,8 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             if st.button(f"❌ NO - Cancel", key=f"no_{pkey}"):
                                 try:
                                     del st.session_state[pkey]
-                                    st.info("❌ Cancelled - Order not placed")
-                                    st.rerun()
+                                    _v81_flash("❌ Cancelled - Order not placed", "info")
+                                    _v81_safe_rerun()
                                 except:
                                     pass
                         st.divider()
@@ -9200,7 +9281,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             try:
                 if st.button("🌍 LOAD Global + Prediction (10 sec, 1 baar)", key="v66_load_global_btn", use_container_width=True):
                     _v59_ss_set("_v66_global_loaded", True)
-                    st.rerun()
+                    _v81_safe_rerun()
             except Exception:
                 pass
             # Placeholder - bina network ke, taaki aage ka page atke nahi
@@ -9339,15 +9420,15 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             _new_m = {"gift": float(_mgift or 0), "ndx": float(_mndx or 0), "spx": float(_mspx or 0), "crude": float(_mcrude or 0), "gold": float(_mgold or 0), "usdinr": float(_musd or 0)}
                             _new_m = {k: v for k, v in _new_m.items() if v and v > 0}
                             _v59_ss_set("_v65_manual_global", _new_m)
-                            st.success(f"Manual saved: {_new_m} - Ab REFRESH daba, prediction isi se banega")
-                            st.rerun()
+                            _v81_flash(f"Manual saved: {_new_m} - Ab REFRESH daba, prediction isi se banega", "success")
+                            _v81_safe_rerun()
                         except Exception as _me:
                             st.error(f"Save fail: {_me}")
                     if st.button("🗑️ Manual CLEAR - Wapas auto feed pe jao", key="v65_man_clear"):
                         try:
                             _v59_ss_set("_v65_manual_global", {})
-                            st.success("Manual cleared - ab auto feed chalega")
-                            st.rerun()
+                            _v81_flash("Manual cleared - ab auto feed chalega", "success")
+                            _v81_safe_rerun()
                         except Exception:
                             pass
                 except Exception:
@@ -9500,7 +9581,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 
         st.markdown(f"### {SHIELD} Live Position Exit Monitor ({tf['smartapi']}) - 🔴 LIVE STREAMING")
         if st.button(f"🔄 REFRESH LIVE EXIT ({tf['smartapi']}) - Spot + LTP LIVE", key=f"refresh_exit_{tf['smartapi']}", use_container_width=True):
-            st.rerun()  # V55.4: cache clear hataya
+            _v81_safe_rerun()  # V55.4: cache clear hataya
         st.caption(f"🔴 LIVE | Last: {datetime.now(IST).strftime('%H:%M:%S IST')} | Spot + Premium LTP live | Telegram ON hai to EMERGENCY EXIT pe alert ayega")
         
         # Original header removed, now combined
@@ -10022,7 +10103,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                                     price=idea["entry"], qty=lot_qty, sl=idea["sl"], t1=idea["target1"], t2=idea["target2"],
                                     expiry=idea["expiry"], reasons=idea["why"], is_equity=False
                                 )
-                                st.rerun()
+                                _v81_safe_rerun()
                         with col_real:
                             if 'enable_real_trading' in locals() and enable_real_trading:
                                 if st.button(f"🔴 REAL BUY: {idea['strike']} {idea['option']} ({real_trading_qty} lots) #{i}", key=f"btn_real_{i}", type="primary"):
@@ -10127,7 +10208,7 @@ else:
         with p_col5:
             if st.button(f"Square Off #{t_id}", key=f"sq_{t_id}"):
                 close_paper_position(t_id, mock_curr, "Manual Square Off")
-                st.rerun()
+                _v81_safe_rerun()
 
 st.markdown("### Completed Trade Journal (With Regulatory Charges Deducted)")
 journal = _v80_get_portfolio().get("trade_history", [])  # V80
@@ -10222,3 +10303,19 @@ def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
         return False, str(e)[:80]
 
 
+
+# ===== V81 POLISH END - Deferred rerun: saare handler ne sirf flag set kiya, ab end me EK BAAR rerun =====
+# Beech me st.rerun() karne se hi Bad message aata tha, isliye ab yahan ek hi jagah rerun hoga.
+try:
+    if _v59_ss_get(_V81_RERUN_KEY, False):
+        try:
+            _v59_ss_set(_V81_RERUN_KEY, False)
+        except Exception:
+            pass
+        try:
+            st.session_state[_V81_RERUN_KEY] = False
+        except Exception:
+            pass
+        st.rerun()
+except Exception:
+    pass
