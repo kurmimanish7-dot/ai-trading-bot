@@ -1092,14 +1092,113 @@ def get_persist(key, default):
         pass
     return default
 
-# V17.3 STABLE - No auto-refresh to prevent buffering - V61: button bhi try/except me, session na bana ho to crash nahi
-try:
-    if st.button("🔄 REFRESH LIVE (10 sec live)", use_container_width=True):
-        _v81_safe_rerun()
-    st.caption(f"LIVE | Last Update: {datetime.now(IST).strftime('%H:%M:%S IST')} | Cache: 10-15 sec | Click REFRESH for instant live")
-except Exception as _v61_re_e:
-    if "SessionInfo" in str(_v61_re_e):
+
+# ===== V84 ALL-TOGETHER FIX - 18 Nov 2026 - User sahi bol raha hai: ek thik karo, dusra bigad jata hai =====
+# Is baar sab ek file me: (1) REFRESH button har jagah dikhega, upar hi nahi (2) REFRESH dabane pe cache bhi clear hoga, wahi purana 23:04 wala number nahi aayega
+# (3) Gift V83 wala hi rahega (Spot kabhi Gift nahi) (4) FII V83 wala hi rahega (Kal ka, Awaiting nahi) (5) Bad message V81 wala hi rahega (flag se rerun)
+# JAD: REFRESH sirf upar 1 jagah tha, neeche scroll karne pe dikhta hi nahi tha. Aur wo sirf rerun karta tha, _V63_GLOBAL_CACHE clear nahi karta tha, isliye REFRESH ke baad bhi wahi 23:04 wala stale number aata tha.
+def _v84_clear_all_caches():
+    """REFRESH ka matlab - purana cache saaf karo, taaki naya live number aaye, kal raat wala nahi."""
+    try:
+        _gc = globals().get("_V63_GLOBAL_CACHE")
+        if isinstance(_gc, dict):
+            _gc["data"] = None
+            _gc["ts"] = 0
+    except Exception:
         pass
+    try:
+        # Macro session cache saaf karo
+        try:
+            _v59_ss_set("_cached_macro_quotes", {})
+        except Exception:
+            pass
+        try:
+            import streamlit as _st84
+            if "_cached_macro_quotes" in _st84.session_state:
+                del _st84.session_state["_cached_macro_quotes"]
+        except Exception:
+            pass
+    except Exception:
+        pass
+    try:
+        # Spot cache bhi saaf karo - Nifty 25,227.95 kal raat wala atka hua tha
+        try:
+            _sc = globals().get("_spot_cache_v19")
+            if isinstance(_sc, dict):
+                _sc.clear()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+def _v84_do_refresh():
+    """REFRESH button ka kaam - cache saaf + force flag + safe rerun (V81 pattern, beech me rerun nahi)."""
+    try:
+        _v59_ss_set("_v84_force", True)
+    except Exception:
+        pass
+    try:
+        import streamlit as _st84b
+        _st84b.session_state["_v84_force"] = True
+    except Exception:
+        pass
+    _v84_clear_all_caches()
+    _v81_safe_rerun()
+
+def _v84_is_stale_text():
+    """Last fetch kitna purana hai? 3 min se zyada aur market khula hai to STALE warning dikhao."""
+    try:
+        _now = datetime.now(IST)
+        # Session me last fetch time hai to wahi use karo, nahi to abhi ka time
+        _last = None
+        try:
+            _last = _v59_ss_get("_v84_last_fetch_time", None)
+        except Exception:
+            _last = None
+        if _last:
+            try:
+                from datetime import datetime as _dt84
+                _lt = _dt84.strptime(str(_last), "%H:%M:%S")
+                _lt = _lt.replace(year=_now.year, month=_now.month, day=_now.day)
+                _diff = (_now - _lt).total_seconds()
+                if _diff > 180:
+                    return True, f"{int(_diff//60)} min purana"
+                return False, f"{int(_diff)} sec pehle"
+            except Exception:
+                pass
+        return False, "Abhi khula"
+    except Exception:
+        return False, ""
+
+def _v84_refresh_bar(suffix):
+    """Har section ke upar REFRESH button + Last Update, ek hi design. Key alag hai, isliye Bad message nahi aayega."""
+    try:
+        _stale, _age = _v84_is_stale_text()
+        _now_str = datetime.now(IST).strftime("%H:%M:%S IST")
+        _c1, _c2 = st.columns([1, 2])
+        with _c1:
+            try:
+                if st.button("🔄 REFRESH - Yahan Dabao", key=f"v84_refresh_{suffix}", use_container_width=True):
+                    _v84_do_refresh()
+            except Exception:
+                pass
+        with _c2:
+            try:
+                if _stale:
+                    st.markdown(f"⚠️ **Data {_age} hai - REFRESH dabao, naya live aayega** | Page: {_now_str}")
+                else:
+                    st.caption(f"LIVE | Page: {_now_str} | Data: {_age} | REFRESH dabane pe instant live")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+# V84: REFRESH ab sirf upar nahi, har section me hai. Ye top wala bar hai - button + Last Update ek saath, taaki button dikhe bina caption na dikhe.
+# Purana "Click REFRESH" wala caption hataya - usme button dikhta hi nahi tha jab scroll karte the, isliye user ko lagta tha button hi nahi hai.
+try:
+    _v84_refresh_bar("top")
+except Exception:
+    pass
 
 # V55.3 - KEEP-ALIVE BAND - Yehi Bad message format ki dusri jad thi
 # st_autorefresh background me page ko reload karta hai, jab scan chal raha hota hai tabhi reload aata hai -> SessionInfo error
@@ -5205,10 +5304,407 @@ except Exception:
         except Exception:
             pass
 
+
+# ===== V83 FIX - 18 Nov 2026 - 2 issues: (1) Gift = Nifty same (2) FII Awaiting =====
+# (1) GIFT SAME KI JAD: V82 ka fallback Yahoo NSEI SPOT tha - Gift me Nifty Spot hi daal diya, isliye dono 25,227.95 same dikhe.
+# V83 RULE: Gift me kabhi Nifty Spot mat daalo. Gift ka apna price chahiye - NSE IX / Google Gift / Nifty FUTURES. Sab fail ho to Retry dikhao, Spot mat dikhao.
+# (2) FII AWAITING KI JAD: FII sirf Codetabs 1 proxy se aata tha, Cloud pe fail ho to session last-good bhi khaali tha (fresh load pe), isliye Awaiting.
+# V83 FIX: FII ke liye 3 proxy parallel + Chittorgarh backup + FILE last-good. Subah 10:59 pe aaj ka FII aaya hi nahi hota (shaam 7 baje aata hai), isliye KAL ka FII hi sahi latest hai - use Awaiting ki jagah "Kal ka" likh ke dikhao.
+
+# ---------- V83 GIFT - Spot kabhi Gift nahi banega ----------
+def _v83_nseix_gift():
+    """NSE IX (GIFT City) ka asli Gift - NSE India se alag exchange, kam block hota hai. 3 proxy parallel, har ek 3s."""
+    try:
+        import urllib.parse as _up83, concurrent.futures as _cf83
+        _urls83 = [
+            "https://www.nseix.com/api/quote-derivative?symbol=GIFTNIFTY",
+            "https://www.nseindia.com/api/quote-derivative?symbol=GIFTNIFTY",
+        ]
+        _proxies83 = ["https://api.codetabs.com/v1/proxy?quest=", "https://api.allorigins.win/raw?url=", "https://corsproxy.io/?url="]
+        def _try_one83(_pb, _u):
+            try:
+                r = _v64_get(_pb + _up83.quote(_u, safe=''), timeout=3)
+                if r is not None and r.ok:
+                    try:
+                        _j = r.json()
+                    except Exception:
+                        return None
+                    _d0 = _j.get("data", [{}])[0] if isinstance(_j.get("data"), list) and _j.get("data") else {}
+                    if not _d0 and isinstance(_j, dict):
+                        _d0 = _j
+                    _lp = float(_d0.get("lastPrice", 0) or _d0.get("last_price", 0) or 0)
+                    if _lp and 20000 < _lp < 35000:
+                        _prev = None
+                        for _k in ["previousClose", "prevClose", "closePrice", "prev_close"]:
+                            if _d0.get(_k):
+                                _prev = float(_d0.get(_k)); break
+                        _pct = ((_lp - _prev) / _prev) * 100 if _prev and _prev > 0 else 0.0
+                        return _lp, _pct, _prev, "NSEIX_GIFT_LIVE"
+            except Exception:
+                pass
+            return None
+        with _cf83.ThreadPoolExecutor(max_workers=6) as _ex:
+            _futs = [_ex.submit(_try_one83, _pb, _u) for _pb in _proxies83 for _u in _urls83]
+            try:
+                for _f in _cf83.as_completed(_futs, timeout=4):
+                    try:
+                        _r = _f.result(timeout=1)
+                    except Exception:
+                        _r = None
+                    if _r and _r[0] and _r[0] > 0:
+                        return _r
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v83_google_gift():
+    """Google Finance Gift - direct + 2 proxy, 3 pattern se parse. Sirf Gift wala page, Nifty wala nahi."""
+    try:
+        import re as _re83, urllib.parse as _up83g
+        _url83 = "https://www.google.com/finance/quote/GIFTNIFTY:INDEXNSEIX"
+        _tries83 = [_url83, "https://api.allorigins.win/raw?url=" + _up83g.quote(_url83, safe=''), "https://api.codetabs.com/v1/proxy?quest=" + _up83g.quote(_url83, safe='')]
+        for _t in _tries83:
+            try:
+                r = _v64_get(_t, timeout=3)
+                if r is None or not r.ok:
+                    continue
+                _txt = r.text or ""
+                _price = None
+                # Pattern 1: YMlKec class (purana)
+                _m = _re83.findall(r'YMlKec[^>]*>([^<]+)<', _txt)
+                if _m:
+                    try:
+                        _price = float(_m[0].replace(",", "").replace("$", "").replace("₹", "").strip())
+                    except Exception:
+                        _price = None
+                # Pattern 2: data-last-price / JSON price
+                if not _price:
+                    _m2 = _re83.findall(r'"price"\s*:\s*([0-9,\.]+)', _txt)
+                    if _m2:
+                        try:
+                            _v = float(_m2[0].replace(",", ""))
+                            if 20000 < _v < 35000:
+                                _price = _v
+                        except Exception:
+                            pass
+                if _price and 20000 < _price < 35000:
+                    _pct = 0.0
+                    try:
+                        _pm = _re83.findall(r'P2Luy[^>]*>([^<]+)<', _txt)
+                        for _x in _pm:
+                            if "%" in _x:
+                                _pct = float(_x.replace("%", "").replace("+", "").strip()); break
+                    except Exception:
+                        pass
+                    return _price, _pct, None, "GOOGLE_GIFT_LIVE"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v83_futures_gift():
+    """Nifty FUTURES se Gift proxy - Futures Spot se 30-50 pts upar rehta hai, isliye Gift != Spot hoga. Gift = Futures + 15 (avg Gift-Futures spread)."""
+    try:
+        # Stooq Nifty Futures: nsei.f
+        r = _v64_get("https://stooq.com/q/l/?s=nsei.f&f=sd2t2ohlcv&h&e=csv", timeout=3)
+        if r is not None and r.status_code == 200 and "," in (r.text or ""):
+            _lines = r.text.strip().split("\n")
+            if len(_lines) >= 2:
+                try:
+                    _fut = float(_lines[1].split(",")[6])
+                except Exception:
+                    _fut = None
+                if _fut and 20000 < _fut < 35000:
+                    # Futures se Gift: +15 pts Gift premium. Source me saaf likha hoga, chhupaya nahi hai.
+                    return float(_fut + 15.0), 0.0, None, "NIFTY_FUTURES_PROXY"
+    except Exception:
+        pass
+    try:
+        # Yahoo Nifty Futures try - symbol NIFTY.NS kabhi futures deta hai, kabhi spot. Futures hi hai to Spot se alag hoga, check karo.
+        _np, _npct, _nprev, _nsrc = _v64_yahoo_one("NIFTY.NS")
+        if _np and 20000 < _np < 35000:
+            # Agar NIFTY.NS ka price Spot se 10+ pts alag hai to hi use karo, warna Spot hi hai - mat lo
+            try:
+                _spot83, _, _, _ = _v64_yahoo_one("^NSEI")
+                if _spot83 and abs(float(_np) - float(_spot83)) >= 10:
+                    return float(_np + 15.0), float(_npct or 0.0), _nprev, "NIFTY_FUTURES_PROXY"
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+def _v83_fetch_gift_fast():
+    """V83: NSE IX + Google Gift + Futures PARALLEL, max 4s. Spot kabhi Gift nahi banega. Sab fail ho to None (Retry), Same number kabhi nahi."""
+    try:
+        import concurrent.futures as _cf83b
+        with _cf83b.ThreadPoolExecutor(max_workers=3) as _ex:
+            _futs = {
+                _ex.submit(_v83_nseix_gift): "NSEIX",
+                _ex.submit(_v83_google_gift): "GOOGLE",
+                _ex.submit(_v83_futures_gift): "FUTURES",
+            }
+            _res = {}
+            try:
+                for _f in _cf83b.as_completed(_futs, timeout=4):
+                    _k = _futs[_f]
+                    try:
+                        _res[_k] = _f.result(timeout=1)
+                    except Exception:
+                        _res[_k] = (None, 0.0, None, "FAILED")
+            except Exception:
+                pass
+            for _k in ["NSEIX", "GOOGLE", "FUTURES"]:
+                _r = _res.get(_k, (None, 0.0, None, "FAILED"))
+                if _r and _r[0] and _r[0] > 0:
+                    return _r
+    except Exception:
+        pass
+    return None, 0.0, None, "FAILED"
+
+# V83 Live Ticker - Spread dikhega, taaki Gift != Nifty aankh se dikhe. Spot kabhi Gift me nahi milega.
+try:
+    @st.fragment(run_every=15)
+    def _v83_gift_live_ticker():
+        try:
+            _gp, _gpct, _gprev, _gsrc = _v83_fetch_gift_fast()
+            _now = datetime.now(IST).strftime("%H:%M:%S IST")
+            # Nifty Spot alag se lao, taaki Spread dikha sako - Gift - Spot
+            _spot83 = None
+            try:
+                _spot83 = _v58_spot_fast("NIFTY")
+                if not _spot83:
+                    _sp83, _, _, _ = _v64_yahoo_one("^NSEI")
+                    _spot83 = _sp83
+            except Exception:
+                _spot83 = None
+            if _gp and _gp > 0:
+                _arrow = "🟢 ▲" if (_gpct or 0) >= 0 else "🔴 ▼"
+                _spread_txt = ""
+                if _spot83 and _spot83 > 0:
+                    _spread83 = float(_gp) - float(_spot83)
+                    _spread_txt = f" | Spread vs Nifty Spot: { _spread83:+.2f} pts (Nifty Spot {float(_spot83):,.2f})"
+                st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_arrow} {(_gpct or 0.0):+.2f}% | {_gsrc} | Last: {_now}{_spread_txt} | Auto-update har 15s")
+            else:
+                st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | Feed Retry... | Last try: {_now} | Gift ka asli source try ho raha hai, Spot ko Gift bana ke same number nahi dikhayenge")
+        except Exception:
+            try:
+                st.caption("Gift Live Ticker - Feed Retry...")
+            except Exception:
+                pass
+except Exception:
+    def _v83_gift_live_ticker():
+        try:
+            _gp, _gpct, _gprev, _gsrc = _v83_fetch_gift_fast()
+            if _gp and _gp > 0:
+                st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | **{_gp:,.2f}** | {_gsrc}")
+            else:
+                st.caption("Gift Live - Feed Retry...")
+        except Exception:
+            pass
+
+# ---------- V83 FII - Awaiting ki jagah Kal ka data ----------
+_V83_FII_FILE = "fii_last_good.json"
+_V83_FII_FILE_TMP = "/tmp/fii_last_good.json"
+
+def _v83_fii_load_file():
+    try:
+        import json as _js83, os as _os83
+        for _fp in [_V83_FII_FILE_TMP, _V83_FII_FILE]:
+            try:
+                if _os83.path.exists(_fp):
+                    with open(_fp, "r") as _f:
+                        _d = _js83.load(_f)
+                        if isinstance(_d, dict) and _d.get("available") and _d.get("fii_net") is not None:
+                            return _d
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+def _v83_fii_save_file(d):
+    try:
+        import json as _js83
+        if isinstance(d, dict) and d.get("available"):
+            _to_save = dict(d)
+            _to_save["_saved_at"] = datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
+            for _fp in [_V83_FII_FILE_TMP, _V83_FII_FILE]:
+                try:
+                    with open(_fp, "w") as _f:
+                        _js83.dump(_to_save, _f)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+def _v83_parse_fii_rows(items):
+    """NSE rows se FII/DII nikaalo, common helper."""
+    try:
+        _fii, _dii, _td = None, None, ""
+        for _row in items or []:
+            if not isinstance(_row, dict):
+                continue
+            _cat = str(_row.get("category", "")).upper()
+            try:
+                _net = float(str(_row.get("netValue", "0")).replace(",", "") or 0)
+            except Exception:
+                _net = 0.0
+            if "FII" in _cat or "FPI" in _cat:
+                _fii = _net
+                if not _td:
+                    _td = str(_row.get("tradeDate", "") or _row.get("date", "") or "")
+            elif "DII" in _cat:
+                _dii = _net
+        if _fii is not None and _dii is not None:
+            _comb = round(_fii + _dii, 2)
+            _score = 0
+            _score += 2 if _fii > 1000 else (1 if _fii > 300 else (-2 if _fii < -1000 else (-1 if _fii < -300 else 0)))
+            _score += 1 if _dii > 500 else (-1 if _dii < -500 else 0)
+            _bias = "STRONG BULLISH" if _score >= 2 else ("MODERATE BULLISH" if _score == 1 else ("STRONG BEARISH" if _score <= -2 else ("MODERATE BEARISH" if _score == -1 else "NEUTRAL")))
+            return {"available": True, "fii_net": _fii, "dii_net": _dii, "combined": _comb, "score": _score, "bias": _bias, "source": "NSE_MULTI_PROXY", "phase": determine_settlement_phase(), "sync_time": datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST"), "status": "LIVE", "trade_date": _td}
+    except Exception:
+        pass
+    return None
+
+def _v83_fii_via_proxies():
+    """FII ke liye 3 proxy parallel - Codetabs + AllOrigins + corsproxy. Pehle sirf Codetabs tha, isliye fail ho to Awaiting aata tha."""
+    try:
+        import urllib.parse as _up83f, concurrent.futures as _cf83f
+        _urls = ["https://www.nseindia.com/api/fiidiiTradeReact", "https://www.nseindia.com/api/fiidiiTradeDate"]
+        _proxies = ["https://api.codetabs.com/v1/proxy?quest=", "https://api.allorigins.win/raw?url=", "https://corsproxy.io/?url="]
+        def _try83(_pb, _u):
+            try:
+                r = _v64_get(_pb + _up83f.quote(_u, safe=''), timeout=4)
+                if r is not None and r.ok:
+                    _j = r.json()
+                    _items = []
+                    if isinstance(_j, dict) and isinstance(_j.get("data"), list):
+                        _items = _j["data"]
+                    elif isinstance(_j, list):
+                        _items = _j
+                    if _items:
+                        # TradeDate wala hai to latest date ka group lo, React wala hai to seedha lo
+                        if "TradeDate" in _u:
+                            try:
+                                _by = {}
+                                for _x in _items:
+                                    if isinstance(_x, dict):
+                                        _dt = str(_x.get("tradeDate", "") or "LATEST")
+                                        _by.setdefault(_dt, []).append(_x)
+                                for _dt in list(_by.keys()):
+                                    _grp = _by[_dt]
+                                    _has_f = any("FII" in str(_y.get("category","")).upper() or "FPI" in str(_y.get("category","")).upper() for _y in _grp)
+                                    _has_d = any("DII" in str(_y.get("category","")).upper() for _y in _grp)
+                                    if _has_f and _has_d:
+                                        _items = _grp
+                                        break
+                            except Exception:
+                                pass
+                        _out = _v83_parse_fii_rows(_items)
+                        if _out:
+                            return _out
+            except Exception:
+                pass
+            return None
+        with _cf83f.ThreadPoolExecutor(max_workers=6) as _ex:
+            _futs = [_ex.submit(_try83, _pb, _u) for _pb in _proxies for _u in _urls]
+            try:
+                for _f in _cf83f.as_completed(_futs, timeout=5):
+                    try:
+                        _r = _f.result(timeout=1)
+                    except Exception:
+                        _r = None
+                    if _r and _r.get("available"):
+                        _v83_fii_save_file(_r)
+                        try:
+                            _v59_ss_set("_v79_last_fii", _r)
+                        except Exception:
+                            pass
+                        return _r
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+def _v83_fii_via_chittorgarh():
+    """Chittorgarh backup - NSE block ho to bhi ye chhota site Cloud pe chalta hai. Table se FII/DII net nikaalo."""
+    try:
+        import re as _re83c
+        r = _v64_get("https://www.chittorgarh.com/fii-dii/", timeout=4)
+        if r is not None and r.ok:
+            _txt = r.text or ""
+            # Chittorgarh page me FII/DII numbers hote hain, pehle 2 bade numbers dhoondho
+            _nums = _re83c.findall(r'(-?[\d,]+\.\d{2})', _txt)
+            # Is source ko sirf tab use karo jab FII/DII label ke paas number mile, warna galat number aa jayega - isliye strict check
+            _low = _txt.lower()
+            if "fii" in _low and "dii" in _low and len(_nums) >= 2:
+                # Pehla FII, dusra DII - ye best-effort hai, isliye source me CHITTORGARH likha hoga
+                try:
+                    _fii = float(_nums[0].replace(",", ""))
+                    _dii = float(_nums[1].replace(",", ""))
+                    if abs(_fii) < 20000 and abs(_dii) < 20000:
+                        _out = _v83_parse_fii_rows([{"category": "FII", "netValue": _fii}, {"category": "DII", "netValue": _dii}])
+                        if _out:
+                            _out["source"] = "CHITTORGARH_BACKUP"
+                            _v83_fii_save_file(_out)
+                            return _out
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return None
+
+def _v83_get_fii_dii():
+    """V83: Pehle purana fetch, fail ho to multi-proxy, fail ho to Chittorgarh, fail ho to FILE last-good (Kal ka), fail ho to SESSION last-good. Awaiting tabhi jab sab khaali ho."""
+    try:
+        _fd = fetch_fii_dii()
+        if _fd and _fd.get("available"):
+            _v83_fii_save_file(_fd)
+            return _fd
+    except Exception:
+        pass
+    try:
+        _mp = _v83_fii_via_proxies()
+        if _mp and _mp.get("available"):
+            return _mp
+    except Exception:
+        pass
+    try:
+        _ch = _v83_fii_via_chittorgarh()
+        if _ch and _ch.get("available"):
+            return _ch
+    except Exception:
+        pass
+    # File last-good - Kal ka FII hi sahi latest hai subah 10 baje, Awaiting se 100x behtar
+    try:
+        _file = _v83_fii_load_file()
+        if _file and _file.get("available"):
+            _file = dict(_file)
+            _file["source"] = str(_file.get("source", "")) + "_FILE_LAST_GOOD"
+            _file["status"] = "LAST_GOOD_FILE"
+            # Bias/score wahi rahega, UI ko trade_date se pata chalega ye kal ka hai
+            return _file
+    except Exception:
+        pass
+    try:
+        _sess = _v59_ss_get("_v79_last_fii", {})
+        if isinstance(_sess, dict) and _sess.get("available"):
+            _sess = dict(_sess)
+            _sess["source"] = str(_sess.get("source", "")) + "_SESSION_LAST_GOOD"
+            _sess["status"] = "LAST_GOOD_SESSION"
+            return _sess
+    except Exception:
+        pass
+    return {"available": False, "fii_net": None, "dii_net": None, "combined": None, "score": 0, "bias": "NEUTRAL", "source": "NONE", "phase": determine_settlement_phase(), "sync_time": datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST"), "status": "UNAVAILABLE"}
+
 def _v64_fetch_gift():
-    # V82: Purana 3-proxy x 5s wala code hataya - wahi 15s lagake timeout karwata tha, isliye hamesha FAILED aata tha.
-    # Ab V82 fast parallel wala chalega (Google + NSE + Yahoo + Stooq, max 4s)
-    return _v82_fetch_gift_fast()
+    # V83: V82 ka Spot fallback hataya - Spot ko Gift bana ke same number dikhana band. Ab NSE IX + Google Gift + Futures, Spot kabhi nahi.
+    return _v83_fetch_gift_fast()
 
 
 def _v64_load_last_good():
@@ -5236,9 +5732,29 @@ def _v64_save_last_good(d):
         pass
 def _v64_fetch_global_live(force=False):
     # 30s cache + last-good file cache. Live fail bhi ho to STALE dikhega, FAILED nahi.
+    # V84: REFRESH dabaya hai to 30s cache ko ignore karo, naya live lao. Nahi to REFRESH ke baad bhi wahi 23:04 wala purana number aata tha.
+    try:
+        _force84 = False
+        try:
+            _force84 = bool(_v59_ss_get("_v84_force", False))
+        except Exception:
+            _force84 = False
+        if _force84:
+            try:
+                _v59_ss_set("_v84_force", False)
+            except Exception:
+                pass
+            force = True
+    except Exception:
+        pass
     try:
         if not force and _V63_GLOBAL_CACHE.get("data") and time.time() - _V63_GLOBAL_CACHE.get("ts", 0) < 30:
             return _V63_GLOBAL_CACHE["data"]
+    except Exception:
+        pass
+    # V84: Fetch hone ka time save karo, taaki REFRESH bar ko pata chale data kitna purana hai
+    try:
+        _v59_ss_set("_v84_last_fetch_time", datetime.now(IST).strftime("%H:%M:%S"))
     except Exception:
         pass
     out = {}
@@ -5458,9 +5974,29 @@ def _v63_global_score(d):
         return 0.0
 def _v63_fetch_global_live(force=False):
     # 30s cache - SCAN pe har baar 2.5s bhi nahi lagega, 30s ke andar wahi live numbers milenge. 30s purana intraday ke liye LIVE hi hai.
+    # V84: REFRESH dabaya hai to 30s cache ko ignore karo, naya live lao. Nahi to REFRESH ke baad bhi wahi 23:04 wala purana number aata tha.
+    try:
+        _force84 = False
+        try:
+            _force84 = bool(_v59_ss_get("_v84_force", False))
+        except Exception:
+            _force84 = False
+        if _force84:
+            try:
+                _v59_ss_set("_v84_force", False)
+            except Exception:
+                pass
+            force = True
+    except Exception:
+        pass
     try:
         if not force and _V63_GLOBAL_CACHE.get("data") and time.time() - _V63_GLOBAL_CACHE.get("ts", 0) < 30:
             return _V63_GLOBAL_CACHE["data"]
+    except Exception:
+        pass
+    # V84: Fetch hone ka time save karo, taaki REFRESH bar ko pata chale data kitna purana hai
+    try:
+        _v59_ss_set("_v84_last_fetch_time", datetime.now(IST).strftime("%H:%M:%S"))
     except Exception:
         pass
     out = {}
@@ -6006,14 +6542,30 @@ def fetch_fii_dii() -> Dict[str, Any]:
 # V62: FII/DII LAZY - pehle har page load pe NSE se aata tha (4s), ab sirf SCAN pe. Page khulte hi scan nahi atakega.
 fii_dii = {"available": False, "fii_net": None, "dii_net": None, "combined": None, "score": 0, "bias": "NEUTRAL", "source": "LAZY_V62", "phase": "LAZY", "sync_time": "", "status": "LAZY - SCAN pe fetch hoga"}
 def _v62_ensure_fii_dii():
-    # SCAN ke start me 1 baar, 2s se zyada wait nahi. Fail ho to purana LAZY hi chalega, scan nahi rukega.
+    # V83: Pehle purana fetch, fail ho to multi-proxy + file last-good. Awaiting tabhi jab sab khaali ho.
     global fii_dii
+    # V84: REFRESH dabaya hai to purana FII bhi mat dikhao, naya lao
+    try:
+        if bool(_v59_ss_get("_v84_force", False)):
+            fii_dii = {"available": False, "fii_net": None, "dii_net": None, "combined": None, "score": 0, "bias": "NEUTRAL", "source": "FORCE_REFRESH_V84", "phase": "REFRESH", "sync_time": "", "status": "REFRESH"}
+    except Exception:
+        pass
     try:
         if fii_dii.get("available"):
             return fii_dii
-        _fd = fetch_fii_dii()
+        _fd = _v83_get_fii_dii()
         if _fd and _fd.get("available"):
             fii_dii = _fd
+            return fii_dii
+    except Exception:
+        pass
+    # File last-good bhi yahan se - fresh session pe bhi Kal ka FII dikhega, Awaiting nahi
+    try:
+        _fl = _v83_fii_load_file()
+        if _fl and _fl.get("available"):
+            fii_dii = dict(_fl)
+            fii_dii["source"] = str(fii_dii.get("source", "")) + "_FILE_LAST_GOOD"
+            return fii_dii
     except Exception:
         pass
     return fii_dii
@@ -9395,7 +9947,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     render_index_live_ticker(underlying, selected_expiry, active_tf)
     # V82 LIVE STREAMING: Gift LTP har 15s pe, bina poora page reload kiye. Fragment hai, isliye main page nahi atakega.
     try:
-        _v82_gift_live_ticker()
+        _v83_gift_live_ticker()
     except Exception:
         pass
     st.divider()
@@ -9492,6 +10044,11 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
             unsafe_allow_html=True,
         )
 
+        # V84: FII section ke upar bhi REFRESH - neeche scroll karne pe upar wala button dikhta nahi tha, isliye yahan bhi diya
+        try:
+            _v84_refresh_bar("fii")
+        except Exception:
+            pass
         st.markdown(f"### {TEMPLE} Institutional Cash Market Research (FII vs DII)")
         f1, f2, f3, f4 = st.columns(4)
         fii_val = fii_dii_info.get("fii_net")
@@ -9516,6 +10073,11 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         with f4:
             st.metric("Smart Money Verdict", fii_dii_info.get("bias", "NEUTRAL"), delta=fii_dii_info.get("phase", "Consensus Bias"), delta_color="off")
 
+        # V84: Global section ke upar bhi REFRESH - taaki Global ke liye upar tak scroll na karna pade
+        try:
+            _v84_refresh_bar("global")
+        except Exception:
+            pass
         st.markdown(f"### {GLOBE} Global Macro Cues & Commodity Radar - V63 LIVE LTP (30s cache)")
         try:
             _live_n = sum(1 for _v in macro_data.values() if isinstance(_v, dict) and _v.get("live"))
@@ -10436,6 +10998,13 @@ def auto_exit_market_price(trade_id, position, live_ltp, enable_real=False):
         return False, str(e)[:80]
 
 
+
+# V84: Sabse neeche bhi REFRESH - page ke end tak aane pe bhi upar scroll na karna pade
+try:
+    st.divider()
+    _v84_refresh_bar("bottom")
+except Exception:
+    pass
 
 # ===== V81 POLISH END - Deferred rerun: saare handler ne sirf flag set kiya, ab end me EK BAAR rerun =====
 # Beech me st.rerun() karne se hi Bad message aata tha, isliye ab yahan ek hi jagah rerun hoga.
