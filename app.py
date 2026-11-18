@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# V80 ATTRIBUTEERROR FIX - 18 Nov 2026 - paper_portfolio AttributeError ki jad khatam
+# User error: File app.py line 10074 positions = _v80_get_portfolio().get("positions", {})  # V80: yahi line 10074 pe crash ho raha tha, ab kabhi AttributeError nahi dega -> AttributeError: missing paper_portfolio
+# AUDIT: Init 3993 pe _v59_ss_set se hota tha, jo cold-start pe fallback dict me jata hai, real st.session_state me nahi. Baad me 8 jagah seedha st.session_state.paper_portfolio maanga gaya, jo real session me tha hi nahi, isliye AttributeError aake poora app gir gaya. Ye reboot / fresh session pe hamesha aayega.
+# V80 FIX: _v80_get_portfolio() helper - real session + fallback dono me dekhega, na mile to default bana ke dono me save karega, kabhi crash nahi hoga. 8 unsafe jagah ko isi helper se badla. Koi feature hataya nahi.
 # V79 PERFECT - FULL AUDIT - 18 Nov 2026 - AWAITING + FAILED DONO KI JAD KHATAM, ROZ FIX NAHI KARNA PADEGA
 # User screenshot 4:21 PM: FII/DII Awaiting Data (3 card) + Global LIVE 0/12 + 8 card FAILED. User: "roj roj mujhe fix karana hota hai, ek baar hi acche se audit kar ke perfect app banao"
 # AUDIT RESULT - Dono ki jad alag hai, dono pakad liye:
@@ -4001,6 +4005,40 @@ if not _v59_ss_contains("paper_portfolio"):
         "daily_loss_limit": 10000.0,
         "circuit_broken": False,
     })
+def _v80_get_portfolio():
+    # V80: Kabhi AttributeError nahi dega - real session + fallback dono dekhega, na mile to default bana ke dono me save karega.
+    _def80 = {"cash_balance": 500000.0, "starting_balance": 500000.0, "daily_realized_pnl": 0.0, "positions": {}, "trade_history": [], "session_date": datetime.now(IST).date().isoformat(), "daily_loss_limit": 10000.0, "circuit_broken": False}
+    try:
+        _pp80 = st.session_state.get("paper_portfolio", None)
+        if isinstance(_pp80, dict) and "positions" in _pp80:
+            return _pp80
+    except Exception:
+        pass
+    try:
+        _pp80 = _v59_ss_get("paper_portfolio", None)
+        if isinstance(_pp80, dict) and "positions" in _pp80:
+            # Fallback me mila to real session me bhi daal do, agli baar direct access bhi chale
+            try: st.session_state["paper_portfolio"] = _pp80
+            except Exception: pass
+            return _pp80
+    except Exception:
+        pass
+    # Dono me nahi hai - default banao, dono me save karo
+    try: _v59_ss_set("paper_portfolio", dict(_def80))
+    except Exception: pass
+    try: st.session_state["paper_portfolio"] = dict(_def80)
+    except Exception: pass
+    return dict(_def80)
+def _v80_set_portfolio_field(_k80, _v80):
+    try:
+        _pp80 = _v80_get_portfolio()
+        _pp80[_k80] = _v80
+        try: _v59_ss_set("paper_portfolio", _pp80)
+        except Exception: pass
+        try: st.session_state["paper_portfolio"] = _pp80
+        except Exception: pass
+    except Exception:
+        pass
 
 def check_daily_reset():
     # V59: Safe helper - session na bana ho to crash nahi hoga
@@ -6847,7 +6885,7 @@ def calculate_trade_friction(buy_price: float, sell_price: float, qty: int, is_o
 # 17. STATEFUL PAPER-TRADING RISK CONTROLS & EXECUTION
 # =====================================================================
 def evaluate_risk_gates(symbol: str, proposed_qty: int, trade_risk: float, is_equity: bool = False) -> Tuple[bool, str]:
-    port = st.session_state.paper_portfolio
+    port = _v80_get_portfolio()  # V80: direct st.session_state.paper_portfolio se AttributeError aata tha
     check_daily_reset()
 
     if port.get("circuit_broken", False):
@@ -7050,7 +7088,7 @@ def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str,
         "is_equity": is_equity, "entry_time": datetime.now(IST).strftime("%H:%M:%S"), "status": "OPEN"
     }
 
-    st.session_state.paper_portfolio["positions"][trade_id] = position_entry
+    _v80_get_portfolio()["positions"][trade_id] = position_entry  # V80: safe helper, AttributeError nahi dega
     st.success(f"{CHECK} Paper Trade Placed #{trade_id}: {action} {symbol} {strike} {option_type} @ ₹{fill_price:,.2f} [Qty: {qty}]")
     # V22 ULTRA FAST - Active Call Exit Rules Instant
     try:
@@ -7070,7 +7108,7 @@ def execute_paper_order(symbol: str, action: str, strike: Any, option_type: str,
     return True
 
 def close_paper_position(trade_id: str, current_ltp: float, exit_reason: str):
-    port = st.session_state.paper_portfolio
+    port = _v80_get_portfolio()  # V80
     if trade_id not in port["positions"]: return
 
     pos = port["positions"].pop(trade_id)
@@ -8103,7 +8141,7 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
     kelly_pct = calculate_quarter_kelly(p_win=win_prob, reward_risk=max(rr_t1, 1.2))
 
     # Position Sizing based on Paper Portfolio Cash Balance
-    portfolio_cash = float(st.session_state.paper_portfolio.get("cash_balance", 500000.0))
+    portfolio_cash = float(_v80_get_portfolio().get("cash_balance", 500000.0))  # V80
     alloc_capital = round(portfolio_cash * min(max(kelly_pct / 100.0, 0.05), 0.25), 2)
     recommended_qty = max(1, int(alloc_capital // last))
 
@@ -8373,7 +8411,7 @@ try:
     st.session_state['persistent_settings']['max_daily_loss_limit'] = float(max_loss_input)
 except:
     pass
-st.session_state.paper_portfolio["daily_loss_limit"] = max_loss_input
+_v80_set_portfolio_field("daily_loss_limit", max_loss_input)  # V80: safe set
 
 if st.sidebar.button(f"{REFRESH} Force Refresh All Caches", use_container_width=True):
     st.rerun()  # V55.4: cache clear hataya - clear() + rerun ek saath SessionInfo error deta hai
@@ -8384,7 +8422,7 @@ with col_t1: st.metric("System Mode", "PAPER SIMULATION (ACTIVE)", delta=active_
 with col_t2: st.metric("Market Status", "LIVE SESSION" if market_open() else "SESSION CLOSED", delta="Continuous Trading" if market_open() else "Closed", delta_color="off")
 with col_t3: st.metric("Active Timeframe", active_tf["smartapi"], delta=selected_tf_key.upper(), delta_color="normal")
 with col_t4:
-    circuit_state = "TRIGGERED (LOCKED)" if st.session_state.paper_portfolio["circuit_broken"] else "NORMAL"
+    circuit_state = "TRIGGERED (LOCKED)" if _v80_get_portfolio().get("circuit_broken", False) else "NORMAL"  # V80
     st.metric("Risk Circuit Gate", circuit_state, delta=f"Cap: -₹{max_loss_input:,.0f}", delta_color="inverse" if circuit_state=="TRIGGERED (LOCKED)" else "off")
 
 st.divider()
@@ -10071,7 +10109,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
 # ==============================================================================
 st.divider()
 st.markdown(f"## {SHIELD} Active Paper Positions & Risk Ledger (Options & Equities)")
-positions = st.session_state.paper_portfolio["positions"]
+positions = _v80_get_portfolio().get("positions", {})  # V80: yahi line 10074 pe crash ho raha tha, ab kabhi AttributeError nahi dega
 if not positions:
     st.info("No active open paper positions in portfolio.")
 else:
@@ -10092,7 +10130,7 @@ else:
                 st.rerun()
 
 st.markdown("### Completed Trade Journal (With Regulatory Charges Deducted)")
-journal = st.session_state.paper_portfolio["trade_history"]
+journal = _v80_get_portfolio().get("trade_history", [])  # V80
 if not journal:
     st.caption("No closed trades recorded for this session yet.")
 else:
