@@ -1,3 +1,4 @@
+# V85 STRONG SIGNAL REBUILD - 19 Nov 2026 - 10am bullish par 3/7 NO TRADE ka fix + Bad Message duplicate fix
 # -*- coding: utf-8 -*-
 # V80 ATTRIBUTEERROR FIX - 18 Nov 2026 - paper_portfolio AttributeError ki jad khatam
 # User error: File app.py line 10074 positions = _v80_get_portfolio().get("positions", {})  # V80: yahi line 10074 pe crash ho raha tha, ab kabhi AttributeError nahi dega -> AttributeError: missing paper_portfolio
@@ -2663,20 +2664,56 @@ def calculate_strong_confirmation_v55(
 # verdict: "STRONG BUY" / "STRONG SELL" / "WEAK - WAIT" / "NO TRADE"
 # + extra: "STRONG CE" / "STRONG PE" bhi same verdict ka alias hai taaki purana UI na toote
 # =====================================================================
-def calculate_overall_strong_signal_v55_2(
+
+# =====================================================================
+# V85 STRONG SIGNAL REBUILD - 19 Nov 2026 - Bhai ka case: 10am ke baad market lagatar bullish tha, phir bhi 3/7 NO TRADE
+# JAD (screenshot se proof):
+#  1) Filter 3 OI: OI +0.0% dikh raha tha - ye REAL 0 nahi tha, chain se OI kabhi fetch hi nahi hua tha (market.get("oi_change_pct",0) hamesha 0).
+#     Price +1.30% + OI 0.0% ko purana code "mismatch" bol ke FAIL kar deta tha. Ab exactly-0 OI = DATA MISSING = SKIP, FAIL nahi.
+#  2) Filter 4 GEX: Flip == Spot fallback tha (chain fail pe gamma_flip=spot). Usko bhi FAIL mana. Ab fallback = SKIP, aur Max Pain se proxy check.
+#  3) Filter 5 Volume: 1.5x on 5-min candle - subah 10 baje 5-min candle kabhi 1.5x nahi hota. Ab 1.2x.
+#  4) Filter 6 Retest: caller me retest_done=False HARD-CODED tha - ye filter kabhi PASS hi nahi ho sakta tha.
+#     Ab VWAP-touch / VWAP-hold se REAL retest check hota hai.
+#  5) Short Covering = Trap: Screenshot me 25500 CE pe SHORT COVERING likha tha, par market upar hi gaya. Short Covering + VWAP ke upar hold = rally jaari hai, trap nahi.
+# RULE: MISSING DATA = SKIP (denominator se bahar), FAIL nahi. Score ab "pass/checked" hota hai, "pass/7" nahi.
+# STRONG = sab pass ya sirf 1 fail (aur kam se kam 4 filter checked). WEAK = 60%+ pass. NO TRADE = sirf tab jab kaafi data hai aur fail zyada hai.
+# =====================================================================
+def _v85_oi_change_from_chain(chain):
+    """Chain se REAL OI change % nikalo: sum(changeinOpenInterest)/sum(openInterest)*100. Chain nahi to None."""
+    try:
+        import pandas as _pd
+        if chain is None or (hasattr(chain, "empty") and chain.empty):
+            return None
+        cols = {str(c).lower(): c for c in chain.columns}
+        oi_col = None; chg_col = None
+        for k in ["openinterest", "oi", "opninterest"]:
+            if k in cols: oi_col = cols[k]; break
+        for k in ["changeinopeninterest", "chg_oi", "change_oi", "changein_oi"]:
+            if k in cols: chg_col = cols[k]; break
+        if oi_col is None or chg_col is None:
+            return None
+        tot_oi = _pd.to_numeric(chain[oi_col], errors="coerce").fillna(0).sum()
+        tot_chg = _pd.to_numeric(chain[chg_col], errors="coerce").fillna(0).sum()
+        if tot_oi and tot_oi > 0:
+            return float(tot_chg / tot_oi * 100.0)
+        return None
+    except Exception:
+        return None
+
+def calculate_overall_strong_signal_v85(
     price=0, vwap=0, ema20=0, ema50=0, ema200=0,
-    price_change_pct=0, oi_change_pct=0,
-    spot=0, gex_flip=0, max_pain=0,
+    price_change_pct=None, oi_change_pct=None,
+    spot=0, gex_flip=0, max_pain=0, gex_available=None,
     volume=0, avg_volume=0,
-    vix_change=0, pcr=1.0, breadth_adv_pct=50,
-    direction="BULLISH",  # BULLISH ya BEARISH
-    htf_bullish=True, retest_done=False,
+    vix_change=0, pcr=None, pcr_available=None, breadth_adv_pct=50,
+    direction="BULLISH",
+    htf_bullish=True, retest_done=None,
     resistance=0, support=0,
     rsi=50, adx=20,
-    ce_pe=None,  # purana code CE/PE bhejta hai, usko bhi support karo
+    ce_pe=None,
+    low=None, day_low=None, day_high=None,
 ):
     try:
-        # Backward compat: agar ce_pe aaya hai to usse direction banao
         if ce_pe is not None:
             _cp = str(ce_pe).upper()
             if _cp in ("CE", "BUY", "CALL", "BULLISH", "LONG"):
@@ -2685,135 +2722,230 @@ def calculate_overall_strong_signal_v55_2(
                 direction = "BEARISH"
         _d = str(direction).upper()
         is_bull = _d in ("BULLISH", "BUY", "CE", "CALL", "LONG")
-        # is_bull True = upar ka trade, False = neeche ka trade
-        score = 0
-        reasons = []
         price = float(price or 0) or float(spot or 0)
-        vwap = float(vwap or price)
-        ema20 = float(ema20 or price)
-        ema50 = float(ema50 or price)
-        ema200 = float(ema200 or price)
         spot = float(spot or price)
+        vwap = float(vwap or 0)
+        ema20 = float(ema20 or 0)
+        ema50 = float(ema50 or 0)
+        ema200 = float(ema200 or 0)
         gex_flip = float(gex_flip or 0)
-        volume = float(volume or 0)
-        avg_volume = float(avg_volume or 0)
+        max_pain = float(max_pain or 0)
         resistance = float(resistance or 0)
         support = float(support or 0)
-
-        # 1. HTF Trend - BULLISH ko HTF bullish chahiye, BEARISH ko HTF bearish
-        if (is_bull and htf_bullish) or ((not is_bull) and (not htf_bullish)):
-            score += 1
+        volume = float(volume or 0)
+        avg_volume = float(avg_volume or 0)
+        try: _pcr = float(pcr) if pcr is not None else None
+        except Exception: _pcr = None
+        try: _vix_chg = float(vix_change or 0)
+        except Exception: _vix_chg = 0
+        try: _price_chg = float(price_change_pct) if price_change_pct is not None else None
+        except Exception: _price_chg = None
+        try: _oi_chg = float(oi_change_pct) if oi_change_pct is not None else None
+        except Exception: _oi_chg = None
+        passed = 0; checked = 0
+        reasons = []; skipped = []; details = []
+        def _pass(name, msg):
+            nonlocal passed, checked
+            checked += 1; passed += 1
+            reasons.append(f"✅ {name}: {msg}")
+            details.append((name, "PASS", msg))
+        def _fail(name, msg):
+            nonlocal checked
+            checked += 1
+            reasons.append(f"❌ {name}: {msg}")
+            details.append((name, "FAIL", msg))
+        def _skip(name, msg):
+            skipped.append(f"⏭️ {name}: {msg} - FAIL nahi mana")
+            details.append((name, "SKIP", msg))
+        # 1 HTF
+        if htf_bullish is None:
+            _skip("1 HTF Trend", "HTF data nahi aaya")
         else:
-            reasons.append("HTF trend opposite hai - bada timeframe ulta hai")
-
-        # 2. VWAP + EMA - MIRROR LOGIC, dono taraf barabar
-        if is_bull:
-            if price > vwap and price > ema20 and ema20 > ema50:
-                score += 1
+            ema_ok = True
+            if ema200 and ema200 > 0:
+                ema_ok = (price > ema200) if is_bull else (price < ema200)
+            if ((is_bull and bool(htf_bullish) and ema_ok) or ((not is_bull) and (not bool(htf_bullish)) and ema_ok)):
+                _pass("1 HTF Trend", "Bada timeframe direction ke saath hai")
             else:
-                reasons.append(f"VWAP/EMA fail BULLISH: Price {price:.0f} VWAP {vwap:.0f} EMA20 {ema20:.0f} EMA50 {ema50:.0f}")
+                _fail("1 HTF Trend", "Bada timeframe ulta hai")
+        # 2 VWAP+EMA
+        _all_fallback = (vwap == 0 or ema20 == 0 or ema50 == 0) or (vwap == price and ema20 == price and ema50 == price)
+        if _all_fallback:
+            _skip("2 VWAP+EMA", "VWAP/EMA data nahi aaya (fallback == price)")
         else:
-            if price < vwap and price < ema20 and ema20 < ema50:
-                score += 1
-            else:
-                reasons.append(f"VWAP/EMA fail BEARISH: Price {price:.0f} VWAP {vwap:.0f} EMA20 {ema20:.0f} EMA50 {ema50:.0f} - breakdown nahi hua")
-
-        # 3. OI + Price Buildup - MIRROR
-        # V57: Pehle price_change==0 + oi_change==0 pe FREE POINT milta tha, aur price_change hamesha 0 tha kyunki day_open=entry_spot tha. Ab missing pe point NAHI.
-        if oi_change_pct == 0 and price_change_pct == 0:
-            reasons.append("OI/Price data missing (price_change 0) - confirm nahi ho raha, point nahi diya")
-        elif is_bull:
-            if price_change_pct > 0 and oi_change_pct > 0:
-                score += 1
-            elif price_change_pct > 0 and oi_change_pct < 0:
-                reasons.append(f"OI trap BULLISH: Price {price_change_pct:+.2f}% par OI {oi_change_pct:+.1f}% - Short Covering hai, fresh buying nahi")
-            else:
-                reasons.append(f"OI+Price mismatch BULLISH: Price {price_change_pct:+.2f}% OI {oi_change_pct:+.1f}%")
-        else:
-            if price_change_pct < 0 and oi_change_pct > 0:
-                score += 1
-            elif price_change_pct < 0 and oi_change_pct < 0:
-                reasons.append(f"OI trap BEARISH: Price {price_change_pct:+.2f}% par OI {oi_change_pct:+.1f}% - Long Unwinding hai, fresh selling nahi")
-            else:
-                reasons.append(f"OI+Price mismatch BEARISH: Price {price_change_pct:+.2f}% OI {oi_change_pct:+.1f}%")
-
-        # 4. GEX Flip / Structure - MIRROR
-        # V57: Pehle GEX missing pe FREE POINT. Fallback me flip==spot hota hai, wo bhi missing hi hai.
-        if gex_flip and gex_flip > 0 and abs(gex_flip - spot) > 1.0:
             if is_bull:
-                if spot > gex_flip:
-                    score += 1
+                if price > vwap and price > ema20 and ema20 > ema50:
+                    _pass("2 VWAP+EMA", f"Price {price:.0f} > VWAP {vwap:.0f} > EMA20 {ema20:.0f} > EMA50 {ema50:.0f}")
                 else:
-                    reasons.append(f"GEX trap BULLISH: Spot {spot:.0f} < Flip {gex_flip:.0f} - Negative gamma zone")
+                    _fail("2 VWAP+EMA", f"Price {price:.0f} VWAP {vwap:.0f} EMA20 {ema20:.0f} EMA50 {ema50:.0f} - upar nahi hai")
             else:
-                if spot < gex_flip:
-                    score += 1
+                if price < vwap and price < ema20 and ema20 < ema50:
+                    _pass("2 VWAP+EMA", f"Price {price:.0f} < VWAP {vwap:.0f} < EMA20 {ema20:.0f} - breakdown hai")
                 else:
-                    reasons.append(f"GEX trap BEARISH: Spot {spot:.0f} > Flip {gex_flip:.0f} - Positive gamma zone, PE trap")
+                    _fail("2 VWAP+EMA", f"Price {price:.0f} VWAP {vwap:.0f} - breakdown nahi hua")
+        # 3 OI+Price
+        if _oi_chg is None or _price_chg is None:
+            _skip("3 OI+Price", "OI/Price change data nahi aaya")
+        elif _oi_chg == 0 and _price_chg != 0:
+            _skip("3 OI+Price", f"OI exactly 0.0% + Price {_price_chg:+.2f}% = OI feed nahi aaya, mismatch nahi mana")
         else:
-            reasons.append("GEX data missing / fallback (Flip == Spot) - confirm nahi, point nahi diya")
-
-        # 5. Volume - Dono taraf SAME: 1.5x chahiye
-        # V57: Pehle volume==0 pe FREE POINT. analyze_market me volume key thi hi nahi, isliye hamesha free point.
-        if avg_volume and avg_volume > 0 and volume > 0:
-            if volume > avg_volume * 1.5:
-                score += 1
+            if is_bull:
+                if _price_chg > 0 and _oi_chg > 0:
+                    _pass("3 OI+Price", f"Long Buildup: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}% - fresh buying")
+                elif _price_chg > 0 and _oi_chg < 0:
+                    if vwap and price > vwap:
+                        _pass("3 OI+Price", f"Short Covering + VWAP hold: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}% - sellers bhaag rahe hain, momentum jaari")
+                    else:
+                        _fail("3 OI+Price", f"Short Covering trap: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}% par VWAP ke neeche hai")
+                else:
+                    _fail("3 OI+Price", f"Mismatch BULLISH: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}%")
             else:
-                reasons.append(f"Volume weak: {volume:.0f} vs avg {avg_volume:.0f} (1.5x chahiye) - fake move ka risk")
-        else:
-            reasons.append("Volume data missing - 1.5x confirm nahi ho raha, point nahi diya")
-
-        # 6. Retest - Dono taraf SAME
-        if retest_done:
-            score += 1
-        else:
-            reasons.append("Retest nahi hua - seedha breakout/breakdown hai, fake ka risk")
-
-        # 7. VIX + PCR + Breadth - MIRROR
-        try:
-            _pcr = float(pcr or 1.0)
-        except:
-            _pcr = 1.0
-        if is_bull:
-            if vix_change <= 0.5 and 0.9 <= _pcr <= 1.35:
-                score += 1
+                if _price_chg < 0 and _oi_chg > 0:
+                    _pass("3 OI+Price", f"Short Buildup: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}% - fresh selling")
+                elif _price_chg < 0 and _oi_chg < 0:
+                    if vwap and price < vwap:
+                        _pass("3 OI+Price", f"Long Unwinding + VWAP breakdown: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}% - longs bhaag rahe hain")
+                    else:
+                        _fail("3 OI+Price", f"Long Unwinding trap: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}% par VWAP ke upar hai")
+                else:
+                    _fail("3 OI+Price", f"Mismatch BEARISH: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}%")
+        # 4 GEX
+        _gex_is_fallback = (not gex_flip or gex_flip <= 0 or abs(gex_flip - spot) <= 1.0)
+        if gex_available is False:
+            _gex_is_fallback = True
+        if _gex_is_fallback:
+            if max_pain and abs(max_pain - spot) > 1.0:
+                if (is_bull and spot > max_pain) or ((not is_bull) and spot < max_pain):
+                    _pass("4 GEX/MaxPain(proxy)", f"GEX missing, Max Pain proxy: Spot {spot:.0f} {' > ' if is_bull else ' < '} MaxPain {max_pain:.0f}")
+                else:
+                    _fail("4 GEX/MaxPain(proxy)", f"GEX missing, Max Pain proxy: Spot {spot:.0f} vs MaxPain {max_pain:.0f} - ulta hai")
             else:
-                reasons.append(f"VIX/PCR fail BULLISH: VIX chg {vix_change:+.1f} PCR {_pcr:.2f}")
+                _skip("4 GEX Flip", "GEX data missing / fallback (Flip == Spot)")
         else:
-            # BEARISH ke liye VIX up + PCR low ya breadth weak hona chahiye
-            if vix_change >= -0.2 and _pcr < 1.0:
-                score += 1
+            if is_bull:
+                if spot > gex_flip: _pass("4 GEX Flip", f"Spot {spot:.0f} > Flip {gex_flip:.0f} - positive gamma")
+                else: _fail("4 GEX Flip", f"Spot {spot:.0f} < Flip {gex_flip:.0f} - negative gamma zone")
             else:
-                reasons.append(f"VIX/PCR fail BEARISH: VIX chg {vix_change:+.1f} PCR {_pcr:.2f} - breakdown me dum nahi")
-
-        # Extra Trap: S/R ke bahut paas ho to -1 - MIRROR, dono taraf
+                if spot < gex_flip: _pass("4 GEX Flip", f"Spot {spot:.0f} < Flip {gex_flip:.0f} - breakdown zone")
+                else: _fail("4 GEX Flip", f"Spot {spot:.0f} > Flip {gex_flip:.0f} - positive gamma, PE trap")
+        # 5 Volume 1.2x
+        if not avg_volume or avg_volume <= 0 or not volume or volume <= 0:
+            _skip("5 Volume", "Volume data nahi aaya")
+        else:
+            _ratio = volume / avg_volume if avg_volume else 0
+            if _ratio >= 1.2:
+                _pass("5 Volume", f"{_ratio:.2f}x avg ({volume:.0f} vs {avg_volume:.0f}) - participation hai")
+            elif _ratio >= 1.0:
+                _pass("5 Volume", f"{_ratio:.2f}x avg - average participation, trend slow par valid")
+            else:
+                _fail("5 Volume", f"{_ratio:.2f}x avg ({volume:.0f} vs {avg_volume:.0f}) - fake move ka risk")
+        # 6 Retest - VWAP touch / hold
+        _retest_pass = None; _retest_msg = ""
+        if retest_done is True:
+            _retest_pass = True; _retest_msg = "Retest ho gaya"
+        elif retest_done is False or retest_done is None:
+            _low_val = None
+            try:
+                if low is not None and float(low) > 0: _low_val = float(low)
+                elif day_low is not None and float(day_low) > 0: _low_val = float(day_low)
+            except Exception: _low_val = None
+            if _low_val is not None and vwap and vwap > 0:
+                if is_bull and _low_val <= vwap * 1.003 and price > vwap:
+                    _retest_pass = True; _retest_msg = f"Low {_low_val:.0f} ne VWAP {vwap:.0f} touch karke hold kiya - retest done"
+                elif (not is_bull) and day_high and float(day_high) > 0 and float(day_high) >= vwap * 0.997 and price < vwap:
+                    _retest_pass = True; _retest_msg = f"High ne VWAP {vwap:.0f} touch karke reject kiya - retest done"
+                else:
+                    _dist = abs(price - vwap) / vwap * 100 if vwap else 99
+                    if _dist <= 0.8:
+                        _retest_pass = True; _retest_msg = f"VWAP ke paas hold ({_dist:.2f}% door) - retest jaisa"
+                    elif _dist > 2.0:
+                        _retest_pass = False; _retest_msg = f"VWAP se {_dist:.2f}% door - bina retest ke chase hai"
+                    else:
+                        _retest_pass = True; _retest_msg = f"VWAP ke upar hold ({_dist:.2f}% door) - trend jaari"
+            elif vwap and vwap > 0:
+                _dist2 = abs(price - vwap) / vwap * 100
+                if _dist2 <= 1.0:
+                    _retest_pass = True; _retest_msg = f"VWAP ke paas hold ({_dist2:.2f}% door) - retest jaisa"
+                elif _dist2 > 2.0:
+                    _retest_pass = False; _retest_msg = f"VWAP se {_dist2:.2f}% door - chase risk"
+                else:
+                    _retest_pass = True; _retest_msg = f"VWAP hold ({_dist2:.2f}% door)"
+            else:
+                _retest_pass = None
+        if _retest_pass is True:
+            _pass("6 Retest", _retest_msg)
+        elif _retest_pass is False:
+            _fail("6 Retest", _retest_msg)
+        else:
+            _skip("6 Retest", "Retest confirm nahi ho raha (low/VWAP data nahi)")
+        # 7 VIX+PCR
+        _pcr_missing = (_pcr is None) or (pcr_available is False)
+        if _pcr_missing:
+            _skip("7 VIX+PCR", "PCR data nahi aaya")
+        else:
+            if is_bull:
+                if _vix_chg <= 1.0 and 0.85 <= _pcr <= 1.40:
+                    _pass("7 VIX+PCR", f"VIX chg {_vix_chg:+.1f} PCR {_pcr:.2f} - support hai")
+                else:
+                    _fail("7 VIX+PCR", f"VIX chg {_vix_chg:+.1f} PCR {_pcr:.2f} - support nahi")
+            else:
+                if _vix_chg >= -0.5 and _pcr < 1.10:
+                    _pass("7 VIX+PCR", f"VIX chg {_vix_chg:+.1f} PCR {_pcr:.2f} - breakdown support hai")
+                else:
+                    _fail("7 VIX+PCR", f"VIX chg {_vix_chg:+.1f} PCR {_pcr:.2f} - breakdown me dum nahi")
+        # S/R trap 0.2%
         if is_bull and resistance and resistance > 0 and spot:
-            dist = abs(resistance - spot) / spot * 100
-            if dist < 0.3:
-                score = max(0, score - 1)
-                reasons.append(f"Resistance bahut paas BULLISH: {resistance:.0f} ({dist:.2f}% door) - trap risk")
+            _d = abs(resistance - spot) / spot * 100
+            if _d < 0.2:
+                passed = max(0, passed - 1)
+                reasons.append(f"⚠️ Resistance bahut paas: {resistance:.0f} ({_d:.2f}% door) - trap risk, 1 point kata")
         if (not is_bull) and support and support > 0 and spot:
-            dist2 = abs(spot - support) / spot * 100
-            if dist2 < 0.3:
-                score = max(0, score - 1)
-                reasons.append(f"Support bahut paas BEARISH: {support:.0f} ({dist2:.2f}% door) - trap risk, breakdown fake ho sakta hai")
-
-        if score >= 6:
+            _d2 = abs(spot - support) / spot * 100
+            if _d2 < 0.2:
+                passed = max(0, passed - 1)
+                reasons.append(f"⚠️ Support bahut paas: {support:.0f} ({_d2:.2f}% door) - trap risk, 1 point kata")
+        if checked == 0:
+            verdict = "DATA MISSING - WAIT"; verdict_opt = verdict; downgrade = False
+        elif passed == checked or (checked >= 4 and passed >= checked - 1 and passed >= 4):
             verdict = "STRONG BUY" if is_bull else "STRONG SELL"
-            # Option UI ke liye alias bhi de do taaki CE/PE wali jagah bhi samajh aaye
             verdict_opt = "STRONG CE" if is_bull else "STRONG PE"
             downgrade = False
-        elif score == 5:
-            verdict = "WEAK - WAIT"
-            verdict_opt = verdict
-            downgrade = True
+        elif checked > 0 and (passed / checked) >= 0.6:
+            verdict = "WEAK - WAIT"; verdict_opt = verdict; downgrade = True
         else:
-            verdict = "NO TRADE"
-            verdict_opt = verdict
-            downgrade = True
-        return verdict, score, reasons, downgrade, verdict_opt
+            verdict = "NO TRADE"; verdict_opt = verdict
+            downgrade = True if checked >= 4 else False
+        return verdict, passed, checked, reasons, skipped, downgrade, verdict_opt, details
+    except Exception as e:
+        return "WEAK - WAIT", 0, 0, [f"Overall calc error: {e}"], [], False, "WEAK - WAIT", []
+
+def calculate_overall_strong_signal_v55_2(
+    price=0, vwap=0, ema20=0, ema50=0, ema200=0,
+    price_change_pct=0, oi_change_pct=0,
+    spot=0, gex_flip=0, max_pain=0,
+    volume=0, avg_volume=0,
+    vix_change=0, pcr=1.0, breadth_adv_pct=50,
+    direction="BULLISH",
+    htf_bullish=True, retest_done=False,
+    resistance=0, support=0,
+    rsi=50, adx=20,
+    ce_pe=None,
+):
+    # Backward-compat wrapper - purana code 5 values expect karta hai, V85 logic se chalega
+    try:
+        _v, _p, _c, _r, _s, _d, _vo, _det = calculate_overall_strong_signal_v85(
+            price=price, vwap=vwap, ema20=ema20, ema50=ema50, ema200=ema200,
+            price_change_pct=price_change_pct, oi_change_pct=oi_change_pct,
+            spot=spot, gex_flip=gex_flip, max_pain=max_pain,
+            volume=volume, avg_volume=avg_volume,
+            vix_change=vix_change, pcr=pcr,
+            direction=direction, htf_bullish=htf_bullish, retest_done=retest_done,
+            resistance=resistance, support=support, rsi=rsi, adx=adx, ce_pe=ce_pe,
+        )
+        return _v, _p, _r + _s, _d, _vo
     except Exception as e:
         return "WEAK - WAIT", 5, [f"Overall calc error: {e}"], False, "WEAK - WAIT"
+
 
 # ================= V18.1 HIGH CONVICTION MATH ENGINE (Non-Destructive) =================
 # Ye module purane features ko hilaye bina add hua hai - sirf naya layer hai
@@ -8498,48 +8630,66 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
         "trailing": f"Book 50% at Target 1 and trail Stop Loss to Entry. [Quarter-Kelly Size: {kelly_allocation}%].",
     }
 
-    # V55.2 OVERALL STRONG SIGNAL - make_trade_idea me apply - CE/PE dono ke liye SAME rule
-    # Bhai ka rule: Jo trade ban raha hai uska signal de - CE ho ya PE, BUY ho ya SELL
-    # Pehle wala code CE pe zyada strict tha, PE ko halka chhod deta tha. Ab dono barabar.
+    # V85 STRONG SIGNAL - make_trade_idea me apply - MISSING = SKIP, hardcoded False hataya
     try:
-        _gex_flip_v55 = gex_data.get("gamma_flip", 0) if isinstance(gex_data, dict) else 0
-        _vwap_v55 = market.get("vwap", entry_spot) if isinstance(market, dict) else entry_spot
-        _spot_v55 = entry_spot
-        # Direction: bullish=True -> BULLISH (CE/BUY), bullish=False -> BEARISH (PE/SELL)
-        _dir_v55 = "BULLISH" if bullish else "BEARISH"
-        _oi_chg_v55 = 0
+        _gex_flip_v85 = gex_data.get("gamma_flip", 0) if isinstance(gex_data, dict) else 0
+        _gex_avail_v85 = gex_data.get("available", None) if isinstance(gex_data, dict) else None
+        if _gex_flip_v85 and abs(float(_gex_flip_v85) - float(entry_spot)) <= 1.0:
+            _gex_avail_v85 = False
+        _vwap_v85 = market.get("vwap", entry_spot) if isinstance(market, dict) else entry_spot
+        _spot_v85 = entry_spot
+        _dir_v85 = "BULLISH" if bullish else "BEARISH"
+        _oi_chg_v85 = None
         try:
-            _oi_chg_v55 = float(market.get("oi_change_pct", 0) or 0)
-        except:
-            _oi_chg_v55 = 0
-        # V57: Pehle day_open missing pe entry_spot ko hi day_open maan lete the, price_change hamesha 0.0 + Strong Check free pass. Ab missing = 0.0 + point nahi.
+            _m_oi = market.get("oi_change_pct", None) if isinstance(market, dict) else None
+            if _m_oi is not None and float(_m_oi) != 0:
+                _oi_chg_v85 = float(_m_oi)
+            else:
+                _oi_chg_v85 = _v85_oi_change_from_chain(chain)
+        except Exception:
+            try: _oi_chg_v85 = _v85_oi_change_from_chain(chain)
+            except Exception: _oi_chg_v85 = None
         _real_day_open = market.get("day_open") or market.get("open") or None
         if _real_day_open and abs(float(_real_day_open) - entry_spot) > 1e-9:
-            _price_chg_v55 = ((entry_spot - float(_real_day_open)) / float(_real_day_open) * 100)
+            _price_chg_v85 = ((entry_spot - float(_real_day_open)) / float(_real_day_open) * 100)
         else:
-            _price_chg_v55 = 0.0
-        # V55.2 generic function use karo - CE/PE ka fark andar hi handle hota hai
-        _verdict_v55, _score_v55, _reasons_v55, _down_v55, _verdict_opt_v55 = calculate_overall_strong_signal_v55_2(
-            price=_spot_v55, vwap=_vwap_v55, ema20=float(market.get("ema20") or _spot_v55), ema50=float(market.get("ema50") or _spot_v55),
-            price_change_pct=_price_chg_v55, oi_change_pct=_oi_chg_v55,
-            spot=_spot_v55, gex_flip=_gex_flip_v55, max_pain=gex_data.get("max_pain", 0) if isinstance(gex_data, dict) else 0,
+            _price_chg_v85 = None
+        _pcr_v85 = None; _pcr_avail_v85 = False
+        try:
+            _pcr_cand = market.get("pcr") if isinstance(market, dict) else None
+            if _pcr_cand is not None and float(_pcr_cand) not in (0, 1.0):
+                _pcr_v85 = float(_pcr_cand); _pcr_avail_v85 = True
+            elif chain is not None and not chain.empty:
+                _pcr_cand2 = calculate_pcr(chain)
+                if _pcr_cand2 is not None and float(_pcr_cand2) > 0:
+                    _pcr_v85 = float(_pcr_cand2); _pcr_avail_v85 = True
+        except Exception:
+            pass
+        _verdict_v85, _passed_v85, _checked_v85, _reasons_v85, _skipped_v85, _down_v85, _verdict_opt_v85, _details_v85 = calculate_overall_strong_signal_v85(
+            price=_spot_v85, vwap=_vwap_v85, ema20=float(market.get("ema20") or _spot_v85), ema50=float(market.get("ema50") or _spot_v85), ema200=float(market.get("ema200") or 0),
+            price_change_pct=_price_chg_v85, oi_change_pct=_oi_chg_v85,
+            spot=_spot_v85, gex_flip=_gex_flip_v85, max_pain=gex_data.get("max_pain", 0) if isinstance(gex_data, dict) else 0, gex_available=_gex_avail_v85,
             volume=float(market.get("volume", 0) or 0), avg_volume=float(market.get("avg_volume", 0) or 0),
-            vix_change=float(vix_info.get("vix_change", 0) if isinstance(vix_info, dict) else 0), pcr=float(market.get("pcr") or (calculate_pcr(chain) if chain is not None and not chain.empty else 1.0)),
-            direction=_dir_v55, htf_bullish=bool(entry_spot > float(market.get('ema50') or entry_spot) and entry_spot > float(market.get('vwap') or entry_spot)), retest_done=False,  # V57: HTF price vs EMA50/VWAP se - pehle bool(bullish) circular tha, Filter 1 hamesha pass
+            vix_change=float(vix_info.get("vix_change", 0) if isinstance(vix_info, dict) else 0), pcr=_pcr_v85, pcr_available=_pcr_avail_v85,
+            direction=_dir_v85, htf_bullish=bool(entry_spot > float(market.get('ema50') or entry_spot) and entry_spot > float(market.get('vwap') or entry_spot)), retest_done=None,
             resistance=resistance or 0, support=support or 0,
         )
-        idea["strong_verdict"] = _verdict_v55  # STRONG BUY / STRONG SELL / WEAK / NO TRADE
-        idea["strong_verdict_opt"] = _verdict_opt_v55  # STRONG CE / STRONG PE - purane UI ke liye
-        idea["strong_score"] = f"{_score_v55}/7"
-        idea["strong_reasons"] = _reasons_v55
-        idea["strong_direction"] = _dir_v55
-        # Dono taraf SAME downgrade rule: score <=4 ho to 85% -> 55% NO TRADE, chahe CE ho ya PE
-        if _score_v55 <= 4 and confidence >= 75:
+        idea["strong_verdict"] = _verdict_v85
+        idea["strong_verdict_opt"] = _verdict_opt_v85
+        idea["strong_score"] = f"{_passed_v85}/{_checked_v85}"
+        idea["strong_checked"] = _checked_v85
+        idea["strong_passed"] = _passed_v85
+        idea["strong_reasons"] = _reasons_v85
+        idea["strong_skipped"] = _skipped_v85
+        idea["strong_details"] = _details_v85
+        idea["strong_direction"] = _dir_v85
+        if _verdict_v85 == "NO TRADE" and _checked_v85 >= 4 and confidence >= 75:
             idea["confidence"] = 55
-            idea["why"] = idea.get("why", "") + f" | V55.2 Overall Strong: {_verdict_v55} ({_score_v55}/7) [{_dir_v55}] - {' | '.join(_reasons_v55[:2])} - Downgraded 85% -> 55% NO TRADE"
-        elif _score_v55 == 5 and confidence >= 80:
-            # 5/7 ho to WAIT - poora block nahi, par full qty mat do
-            idea["why"] = idea.get("why", "") + f" | V55.2 Overall: WEAK - WAIT ({_score_v55}/7) [{_dir_v55}] - Half qty / wait karo"
+            idea["why"] = idea.get("why", "") + f" | V85 Strong: {_verdict_v85} ({_passed_v85}/{_checked_v85}) [{_dir_v85}] - {' | '.join(_reasons_v85[:2])} - Downgraded 85% -> 55% NO TRADE"
+        elif _verdict_v85 == "WEAK - WAIT" and confidence >= 80:
+            idea["why"] = idea.get("why", "") + f" | V85: WEAK - WAIT ({_passed_v85}/{_checked_v85}) [{_dir_v85}] - Half qty / wait karo"
+        elif _verdict_v85 == "DATA MISSING - WAIT":
+            idea["why"] = idea.get("why", "") + f" | V85: DATA MISSING - WAIT ({_passed_v85}/{_checked_v85}) - data kam hai, conviction same rakha, fail nahi mana"
     except Exception as _e55:
         idea["strong_verdict"] = "CHECK FAILED"
         idea["strong_score"] = "N/A"
@@ -9155,7 +9305,7 @@ def analyze_equity_setup(stock_info: Dict[str, Any], quote: Dict[str, Any], df: 
                 rsi=rsi, adx=adx,
             )
             _eq_strong_verdict = _v
-            _eq_strong_score = f"{_s}/7"
+            _eq_strong_score = f"{_s}/checked"  # V85: denominator checked hai, fixed 7 nahi - wrapper se passed aata hai
             _eq_strong_reasons = _r
             # Agar strong fail hai to BUY/SELL ko WAIT me downgrade karo - dono taraf SAME
             if _s <= 4 and action_dir in ("BUY", "SELL"):
@@ -10797,10 +10947,11 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                             _snum = int(str(_ss).split('/')[0]) if '/' in str(_ss) else 0
                         except:
                             _snum = 0
-                        if _snum >= 6:
+                        # V85: colour verdict se, fixed 6/7 se nahi - kyunki denominator ab checked hai (5/5 bhi STRONG hai)
+                        if "STRONG" in str(_sv):
                             _sbg, _scol = "#00FF00", "black"
                             _semoji = "✅"
-                        elif _snum == 5:
+                        elif "WEAK" in str(_sv) or "DATA MISSING" in str(_sv):
                             _sbg, _scol = "#FFC107", "black"
                             _semoji = "⚠️"
                         elif _snum > 0:
@@ -10812,22 +10963,22 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         _sreasons_txt = " | ".join([str(x) for x in _sr[:2]]) if _sr else "Strong check ho raha hai..."
                         html_card = '<div class="trade-card" style="border-left: 4px solid #00FF00;"><div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">LIVE SPOT: ' + str(spot_display) + '</div><h3>Trade Setup ' + str(i) + ' - ' + str(card_title_safe) + '</h3><b>Type:</b> ' + str(sub_badge_safe) + ' | <b>Timeframe:</b> ' + str(tf_safe) + ' | <b>Holding:</b> ' + str(holding_safe) + ' | <b>Conviction:</b> ' + str(conf_safe) + '% | <b>Expiry:</b> ' + str(exp_safe) + '</div><div style="background: ' + _sbg + '; color: ' + _scol + '; padding: 8px 10px; border-radius: 6px; margin-top: 6px; font-size: 15px; font-weight: bold;">' + _semoji + ' STRONG SIGNAL: ' + _sv + ' - ' + _ss + ' [' + _sdir + ']</div><div style="font-size: 12px; margin-top: 4px; color: #DDD;">' + _sreasons_txt + '</div></div>'
                         st.markdown(html_card, unsafe_allow_html=True)
-                        # Neeche alag se bhi bada box taaki mobile pe miss na ho - screenshot wali jagah pe hi dikhega
+                        # V85 BAD-MESSAGE FIX: upar wala html_card hi EK box hai - dobara same message mat dikhao
                         try:
-                            if _snum >= 6:
-                                st.success(f"🛡️ STRONG SIGNAL: {_sv} - {_ss} [{_sdir}] | Trade lene layak hai")
-                            elif _snum == 5:
-                                st.warning(f"⚠️ STRONG SIGNAL: WEAK - WAIT - {_ss} [{_sdir}] | Half qty ya wait karo | { _sreasons_txt }")
-                            elif _snum > 0:
-                                st.error(f"🛑 STRONG SIGNAL: NO TRADE - {_ss} [{_sdir}] | Isliye Conviction kam dikh raha hai | { _sreasons_txt }")
-                            else:
-                                st.info(f"⏳ STRONG SIGNAL: Calculating... [{_sdir}]")
-                            # Reasons poori list - 7 filter me kaunsa fail hua
+                            if "NO TRADE" in str(_sv):
+                                st.caption(f"🛑 {_sv} - {_ss} [{_sdir}] | {_sreasons_txt} | Agar data missing hai to neeche Skipped me dikhega - wo fail nahi hai.")
+                            elif "DATA MISSING" in str(_sv):
+                                st.caption(f"⏳ {_sv} - {_ss} [{_sdir}] | Data kam hai isliye WAIT, NO TRADE nahi. Agli candle pe dobara check karo.")
                             if _sr:
-                                with st.expander("🔍 6/7 ka detail dekho - kaunsa filter pass / fail hua"):
+                                with st.expander(f"🔍 {_ss} ka detail dekho - kaunsa filter pass / fail / skip hua"):
                                     for _rr in _sr:
                                         st.write(f"- {_rr}")
-                                    st.caption("7 Filter: 1 HTF Trend | 2 VWAP+EMA | 3 OI+Price | 4 GEX Flip | 5 Volume 1.5x | 6 Retest | 7 VIX+PCR | 6/7 chahiye STRONG ke liye")
+                                    st.caption("7 Filter: 1 HTF | 2 VWAP+EMA | 3 OI+Price | 4 GEX Flip | 5 Volume 1.2x | 6 Retest | 7 VIX+PCR | V85: Missing = SKIP, 1 fail allowed = STRONG")
+                                    _sk = idea.get("strong_skipped", [])
+                                    if _sk:
+                                        st.write("⏭️ Skipped (data nahi aaya, fail nahi mana):")
+                                        for _s2 in _sk:
+                                            st.write(f"- {_s2}")
                         except Exception:
                             pass
                     except Exception as e:
