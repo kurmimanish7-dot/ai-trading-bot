@@ -1225,7 +1225,7 @@ except Exception:
 # st_autorefresh background me page ko reload karta hai, jab scan chal raha hota hai tabhi reload aata hai -> SessionInfo error
 # Ab koi auto-refresh nahi hoga. Tujhe live chahiye to upar wala REFRESH button daba de.
 # Auto-alert ON hai to bhi ab auto-refresh nahi hoga, sirf manual SCAN / REFRESH se chalega - yehi safe hai.
-st.sidebar.caption("🔄 Auto-refresh ON (V89 - Top-level fragment) - Live ticker har 30 sec me khud update hoga, REFRESH dabane ki zarurat nahi")
+st.sidebar.caption("🔄 Auto-refresh OFF (V91 Permanent - Bad message se bachne ke liye fragment band hai, REFRESH se update karo) - Live ticker har 30 sec me khud update hoga, REFRESH dabane ki zarurat nahi")
 
 # V54 TELEGRAM CALLBACK POLLER - Har 3 sec pe Telegram YES/NO check - Direct trade
 # FIXED: No decorator here (live_fragment defined later) - regular function
@@ -4714,6 +4714,7 @@ def live_fragment(*args, **kwargs):
 #   Text wale cards (System Mode / Market Status / Timeframe / Risk Gate) me arrow HOTA HI NAHI - _v88_info_card me koi arrow nahi hai.
 #   Prev value module-level dict _V88_PREV me hai, session_state me nahi - isliye fragment ke andar likhne se SessionInfo error nahi aayega.
 _V88_PREV = {}
+_V88_BASE = {}  # V90: Session ka pehla number. Tick-to-tick diff bahut chhota hota hai (0.00), isliye arrow grey hi rehta tha. Ab BASE se compare karenge.
 def _v88_arrow(current, prev, invert=False):
     """Returns (arrow_char, color_hex, diff_text). current/prev numeric hone chahiye."""
     try:
@@ -4741,8 +4742,16 @@ def _v88_info_card(label, value_str, subtitle, value_color="#ffffff", subtitle_c
 def _v88_live_card(label, value_str, current, prev_key, subtitle, invert=False):
     """Number wale cards ke liye - arrow + color hamesha sahi direction se aayega. delta me kabhi TEXT mat bhejo."""
     try:
-        _prev = _V88_PREV.get(prev_key)
-        _arrow, _color, _diff_text = _v88_arrow(current, _prev, invert=invert)
+        # V90 FIX: Pehle tick-to-tick diff dekhte the. NIFTY 30 sec me 0.5 point bhi nahi hilta to diff 0.00 => grey dot hi dikhta tha, isliye red/green kabhi aaya hi nahi.
+        # Ab BASE (session ka pehla number) se compare karenge. Session start se upar hai to GREEN, neeche hai to RED, bilkul same hai to hi GREY.
+        # PCR / Max Pain / VIX agar bilkul nahi hile to grey hi rahega - wo sahi hai, wo badla hi nahi hai, usko jabardasti green/red mat samjho.
+        if prev_key not in _V88_BASE and current is not None:
+            try:
+                _V88_BASE[prev_key] = float(current)
+            except Exception:
+                pass
+        _base = _V88_BASE.get(prev_key)
+        _arrow, _color, _diff_text = _v88_arrow(current, _base, invert=invert)
         _sub = f"{_diff_text} | {subtitle}" if _diff_text else subtitle
         # Agle refresh ke liye current ko prev bana ke save karo - module dict me, session_state me nahi
         try:
@@ -4785,7 +4794,7 @@ def _v88_get_vix_live():
 # (2) Fragment ko YAHAN TOP-LEVEL pe define kiya hai - _v89_ticker_fragment. Call nested se ho sakta hai, define top-level hona chahiye.
 # (3) _v89_safe_fragment wrapper: Agar is Cloud pe st.fragment purana / missing ho to bhi AttributeError nahi aayega,
 #     wrapper pakad ke plain function bana dega, app chalega, crash nahi hoga. REFRESH se tab bhi update hoga.
-def _v89_safe_fragment(*d_args, **d_kwargs):
+def _v89_safe_fragment(*d_args, **d_kwargs):  # V91: Ab use nahi hota, sirf backup ke liye rakha hai. Kabhi bhi isko @st.fragment se mat jodo.
     """st.fragment ka safe wrapper - koi bhi error aaye to plain function bana do, app mat girao."""
     def _deco(func):
         _frag = getattr(st, "fragment", None)
@@ -4797,7 +4806,13 @@ def _v89_safe_fragment(*d_args, **d_kwargs):
         return func
     return _deco
 
-@_v89_safe_fragment(run_every=30)  # V89: TOP-LEVEL fragment, isliye AttributeError nahi aayega. LIGHTWEIGHT: Stooq 1.5s + cached PCR/VIX, NO chain/FII/session-write/button/rerun.
+# V91 PERMANENT: Fragment HAMESHA KE LIYE BAND. Koi bhi @st.fragment - chahe top-level ho, lightweight ho - is app me Bad message laayega.
+# Kaaran: Ye app 11,800 line ka hai, main run me 100+ jagah session_state likhta hai, SCAN me ThreadPool + network hai.
+# Fragment har 30 sec me alag run-context me ghus ke wahi SessionInfo chhuta hai, jab main run bhi chal raha hota hai.
+# Dono ek saath SessionInfo chhune se hi Streamlit ka message queue corrupt hota hai -> "Bad message format".
+# Isliye V89/V90 wala top-level fragment bhi Bad message la raha tha, screenshot me wahi hua.
+# Ab auto-refresh fragment se NAHI hoga. Ticker plain function hai, REFRESH / SCAN / scroll pe update hoga. Yehi permanent ilaaj hai.
+# Arrow fix (V88/V90) fragment ke bina bhi chalega - wo sirf HTML card hai, fragment se uska koi lena-dena nahi.
 def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
     # Body wahi V88 wala hai - sirf FAST + CACHED data. Bhari chain/FII SCAN pe aayega, yahan nahi.
     try:
@@ -4838,13 +4853,17 @@ def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
         _is_open = market_open()
     except Exception:
         _is_open = False
-    _disp_label = "Verified Exchange Feed" if _is_open else "Official Session Close"
+    try:
+        _now_str = datetime.now(IST).strftime("%H:%M:%S")
+    except Exception:
+        _now_str = ""
+    _disp_label = f"Updated {_now_str} | Verified Exchange Feed" if _is_open else f"Updated {_now_str} | Official Session Close"
     if (not spot) and _is_open:
         try:
             _fb = get_spot_safe_for_display(selected_underlying)
             if _fb and float(_fb) > 0:
                 spot = float(_fb)
-                _disp_label = "Yahoo Fallback"
+                _disp_label = f"Updated {_now_str} | Yahoo Fallback"
         except Exception:
             pass
     s1, s2, s3, s4 = st.columns(4)
@@ -4854,11 +4873,11 @@ def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
         else:
             _v88_info_card(f"{selected_underlying} Spot", "Feed Retry..." if _is_open else "Market Closed", "Live Feed Blocked - Last Tick aa raha hai" if _is_open else "Feed Offline", value_color="#ef4444" if _is_open else "#ffffff")
     with s2:
-        _v88_live_card("India VIX", fmt(float(vix_val)), float(vix_val), "vix", "OPTIMAL BUYING" if float(vix_val) < 15 else "HIGH VOLATILITY", invert=True)
+        _v88_live_card("India VIX", fmt(float(vix_val)), float(vix_val), "vix", f"Updated {_now_str} | " + ("OPTIMAL BUYING" if float(vix_val) < 15 else "HIGH VOLATILITY"), invert=True)
     with s3:
-        _v88_live_card("Put-Call Ratio (PCR)", fmt(float(pcr), 2), float(pcr), "pcr", "Derivatives Bias")
+        _v88_live_card("Put-Call Ratio (PCR)", fmt(float(pcr), 2), float(pcr), "pcr", f"Updated {_now_str} | Derivatives Bias")
     with s4:
-        _v88_live_card("Max Pain Gravity", f"{max_pain_val:,.0f}", float(max_pain_val), "max_pain", f"GEX: {_net_gex:+,.0f} Cr")
+        _v88_live_card("Max Pain Gravity", f"{max_pain_val:,.0f}", float(max_pain_val), "max_pain", f"Updated {_now_str} | GEX: {_net_gex:+,.0f} Cr")
 
 def live_spot_fragment_safe(symbol="NIFTY"):
     # V56 - Spot-only live ticker, 5 sec me update. Chain / session_state isme mat laana, nahi to phir SessionInfo error aayega.
@@ -10753,9 +10772,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    # V89: Yahan @st.fragment MAT lagana - nested if ke andar fragment define karne se hi AttributeError aaya tha.
-    # Fragment ab TOP-LEVEL pe _v89_ticker_fragment me hai. Yahan sirf usko CALL kar rahe hai, define nahi kar rahe.
-    # Ye call har 30 sec me khud refresh hoga (agar is Streamlit me fragment supported hai), nahi to REFRESH se update hoga.
+    # V91: Yahan @st.fragment MAT lagana - koi bhi fragment is app me Bad message laayega. Ticker plain function hai, REFRESH / SCAN pe update hoga.
     _v89_ticker_fragment(underlying, selected_expiry, active_tf)
     # V87: Gift ticker ab FRAGMENT nahi hai - plain function, main thread me ek baar chalega. Har 15s auto-update BAND (wahi Bad message ki jad thi). Gift update chahiye to REFRESH / SCAN dabao.
     try:
