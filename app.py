@@ -1225,7 +1225,7 @@ except Exception:
 # st_autorefresh background me page ko reload karta hai, jab scan chal raha hota hai tabhi reload aata hai -> SessionInfo error
 # Ab koi auto-refresh nahi hoga. Tujhe live chahiye to upar wala REFRESH button daba de.
 # Auto-alert ON hai to bhi ab auto-refresh nahi hoga, sirf manual SCAN / REFRESH se chalega - yehi safe hai.
-st.sidebar.caption("🔄 Auto-refresh OFF (V91 Permanent - Bad message se bachne ke liye fragment band hai, REFRESH se update karo) - Live ticker har 30 sec me khud update hoga, REFRESH dabane ki zarurat nahi")
+st.sidebar.caption("🔄 V92 - Single Spot + Gift Spread Direction Fix - REFRESH se update karo - Live ticker har 30 sec me khud update hoga, REFRESH dabane ki zarurat nahi")
 
 # V54 TELEGRAM CALLBACK POLLER - Har 3 sec pe Telegram YES/NO check - Direct trade
 # FIXED: No decorator here (live_fragment defined later) - regular function
@@ -4813,42 +4813,128 @@ def _v89_safe_fragment(*d_args, **d_kwargs):  # V91: Ab use nahi hota, sirf back
 # Isliye V89/V90 wala top-level fragment bhi Bad message la raha tha, screenshot me wahi hua.
 # Ab auto-refresh fragment se NAHI hoga. Ticker plain function hai, REFRESH / SCAN / scroll pe update hoga. Yehi permanent ilaaj hai.
 # Arrow fix (V88/V90) fragment ke bina bhi chalega - wo sirf HTML card hai, fragment se uska koi lena-dena nahi.
-def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
-    # Body wahi V88 wala hai - sirf FAST + CACHED data. Bhari chain/FII SCAN pe aayega, yahan nahi.
+
+def _v93_get_vix_live():
+    """V94: VIX 13.5 pe atka hua tha kyunki _v58_vix_fast hamesha 13.5 deta tha. Ab Yahoo ^INDIAVIX pehle, phir Stooq indiavix, tabhi 13.5 fallback - aur fallback ko STALE bolenge, LIVE nahi."""
     try:
-        spot = _v58_spot_fast(selected_underlying)
-        if not spot or float(spot) <= 0:
-            try:
-                spot = _v59_ss_get(f"_v58_last_spot_{selected_underlying}")
-                spot = float(spot) if spot else None
-            except Exception:
-                spot = None
+        _p, _pct, _prev, _src = _v64_yahoo_one("^INDIAVIX")
+        if _p and 5 < float(_p) < 60:
+            return float(_p), "Yahoo VIX Live"
     except Exception:
-        spot = None
+        pass
     try:
-        pcr = float(_v59_ss_get('_last_pcr_value', 1.05) or 1.05)
-        if not (0 < pcr <= 10):
-            pcr = 1.05
+        _v = _v58_spot_fast("INDIA_VIX")
+        if _v and 5 < float(_v) < 60:
+            return float(_v), "Stooq VIX Live"
     except Exception:
-        pcr = 1.05
+        pass
+    return 13.5, "STALE 13.5 - VIX Feed Offline"
+def _v93_get_pcr_maxpain_fast(selected_underlying, current_expiry, spot):
+    """V94: PCR 1.05 aur Max Pain 25000 isliye atke the kyunki ticker sirf CACHED value padhta tha, chain kabhi fetch hi nahi karta tha. SCAN dabaye bina PCR kabhi nahi aayega - yehi jad thi.
+    Ab ticker me hi FAST chain (max 2.5s) try karenge. Chain mil gaya to PCR + Max Pain asli, nahi mila to CACHED + STALE label, 1.05/25000 ko LIVE nahi bolenge."""
+    _pcr, _pcr_live, _mp, _mp_live, _gex = 1.05, False, None, False, 0.0
     try:
-        vix_val = _v88_get_vix_live()
+        _cached_pcr = float(_v59_ss_get('_last_pcr_value', 1.05) or 1.05)
     except Exception:
-        vix_val = 13.5
+        _cached_pcr = 1.05
     try:
         _cached_mp = _v59_ss_get('_last_max_pain', None)
-        if _cached_mp and spot and abs(float(_cached_mp) - float(spot)) < 2000:
-            max_pain_val = float(_cached_mp)
-        elif spot:
-            max_pain_val = float(round(float(spot) / 50.0) * 50.0)
-        else:
-            max_pain_val = 25000.0
+        _cached_mp = float(_cached_mp) if _cached_mp else None
     except Exception:
-        max_pain_val = float(spot) if spot else 25000.0
+        _cached_mp = None
     try:
-        _net_gex = float(_v59_ss_get('_last_net_gex_cr', 0.0) or 0.0)
+        _cached_gex = float(_v59_ss_get('_last_net_gex_cr', 0.0) or 0.0)
     except Exception:
-        _net_gex = 0.0
+        _cached_gex = 0.0
+    # FAST chain - sirf ek baar, timeout chhota, ticker ko slow nahi karega
+    try:
+        _chain = None
+        try:
+            _chain = _v58_chain_fast(selected_underlying, current_expiry)
+        except Exception:
+            _chain = None
+        if _chain is not None and hasattr(_chain, 'empty') and not _chain.empty:
+            try:
+                _pcr_calc = calculate_pcr(_chain)
+                if _pcr_calc and 0 < float(_pcr_calc) <= 10:
+                    _pcr, _pcr_live = float(_pcr_calc), True
+                    try:
+                        _v59_ss_set('_last_pcr_value', float(_pcr))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                # V94 FIX: _v58_chain_fast ka DataFrame shape: strikePrice | option_type (CE/PE) | openInterest
+                # V93 me 'strike' + CE_OI/PE_OI dhoondh raha tha, jo is DataFrame me hai hi nahi, isliye Max Pain kabhi LIVE nahi hota tha.
+                # Sahi: strikePrice pe group karke openInterest sum karo, sabse zyada total OI wala strike = Max Pain.
+                _strike_col = None
+                for _c in list(_chain.columns):
+                    if str(_c).lower() in ("strikeprice", "strike", "strike_price"):
+                        _strike_col = _c; break
+                _oi_col = None
+                for _c in list(_chain.columns):
+                    if str(_c).lower() in ("openinterest", "open_interest", "oi"):
+                        _oi_col = _c; break
+                if _strike_col and _oi_col:
+                    _tmp = _chain.copy()
+                    _tmp["_oi_num"] = __import__("pandas").to_numeric(_tmp[_oi_col], errors="coerce").fillna(0)
+                    _grp = _tmp.groupby(_tmp[_strike_col])["_oi_num"].sum()
+                    if len(_grp) > 0:
+                        _mp_val = float(_grp.idxmax())
+                        if 20000 < _mp_val < 35000:
+                            _mp, _mp_live = _mp_val, True
+                            try:
+                                _v59_ss_set('_last_max_pain', float(_mp))
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if not _pcr_live:
+        _pcr = _cached_pcr
+    if _mp is None:
+        if _cached_mp and spot and abs(float(_cached_mp) - float(spot)) < 2000:
+            _mp = float(_cached_mp)
+        elif spot:
+            _mp = float(round(float(spot) / 50.0) * 50.0)
+        else:
+            _mp = 25000.0
+    return float(_pcr), bool(_pcr_live), float(_mp), bool(_mp_live), float(_cached_gex)
+
+def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
+    # Body wahi V88 wala hai - sirf FAST + CACHED data. Bhari chain/FII SCAN pe aayega, yahan nahi.
+    # V92: NIFTY ke liye EK hi Spot - _v92_get_single_spot, taaki Gift wale Spot se alag number na dikhe.
+    _single_src92 = ""
+    try:
+        if str(selected_underlying).upper() == "NIFTY":
+            _s92, _src92, _time92 = _v92_get_single_spot()
+            spot = float(_s92) if _s92 else None
+            _single_src92 = _src92
+        else:
+            spot = _v58_spot_fast(selected_underlying)
+            if not spot or float(spot) <= 0:
+                try:
+                    spot = _v59_ss_get(f"_v58_last_spot_{selected_underlying}")
+                    spot = float(spot) if spot else None
+                except Exception:
+                    spot = None
+    except Exception:
+        spot = None
+    # V94: PCR / Max Pain - sirf cached mat padho, FAST chain try karo. VIX - Yahoo ^INDIAVIX se live lao, 13.5 hardcoded mat rakho.
+    try:
+        vix_val, _vix_src93 = _v93_get_vix_live()
+    except Exception:
+        vix_val, _vix_src93 = 13.5, "STALE 13.5"
+    try:
+        pcr, _pcr_live93, max_pain_val, _mp_live93, _net_gex = _v93_get_pcr_maxpain_fast(selected_underlying, current_expiry, spot)
+    except Exception:
+        pcr, _pcr_live93, max_pain_val, _mp_live93 = 1.05, False, (float(spot) if spot else 25000.0), False
+        try:
+            _net_gex = float(_v59_ss_get('_last_net_gex_cr', 0.0) or 0.0)
+        except Exception:
+            _net_gex = 0.0
     try:
         _is_open = market_open()
     except Exception:
@@ -4858,6 +4944,12 @@ def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
     except Exception:
         _now_str = ""
     _disp_label = f"Updated {_now_str} | Verified Exchange Feed" if _is_open else f"Updated {_now_str} | Official Session Close"
+    # V92: Yahoo Fallback / Last Cached hai to LIVE mat bolo, STALE likho.
+    try:
+        if _single_src92 and "Stooq" not in str(_single_src92):
+            _disp_label = f"Updated {_now_str} | STALE - {_single_src92} (Live nahi aaya)"
+    except Exception:
+        pass
     if (not spot) and _is_open:
         try:
             _fb = get_spot_safe_for_display(selected_underlying)
@@ -4869,15 +4961,18 @@ def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
     s1, s2, s3, s4 = st.columns(4)
     with s1:
         if spot and float(spot) > 0:
-            _v88_live_card(f"{selected_underlying} Spot (NSE Live)", fmt(float(spot)), float(spot), f"spot_{selected_underlying}", _disp_label)
+            _v88_live_card(f"{selected_underlying} Spot (NSE Live) [V94]", fmt(float(spot)), float(spot), f"spot_{selected_underlying}", _disp_label)
         else:
             _v88_info_card(f"{selected_underlying} Spot", "Feed Retry..." if _is_open else "Market Closed", "Live Feed Blocked - Last Tick aa raha hai" if _is_open else "Feed Offline", value_color="#ef4444" if _is_open else "#ffffff")
     with s2:
-        _v88_live_card("India VIX", fmt(float(vix_val)), float(vix_val), "vix", f"Updated {_now_str} | " + ("OPTIMAL BUYING" if float(vix_val) < 15 else "HIGH VOLATILITY"), invert=True)
+        _vix_label93 = f"Updated {_now_str} | [V94] {_vix_src93} | " + ("OPTIMAL BUYING" if float(vix_val) < 15 else "HIGH VOLATILITY")
+        _v88_live_card("India VIX", fmt(float(vix_val)), float(vix_val), "vix", _vix_label93, invert=True)
     with s3:
-        _v88_live_card("Put-Call Ratio (PCR)", fmt(float(pcr), 2), float(pcr), "pcr", f"Updated {_now_str} | Derivatives Bias")
+        _pcr_label93 = f"Updated {_now_str} | [V94] {'LIVE Chain' if _pcr_live93 else 'STALE - SCAN dabao, chain nahi aaya'}"
+        _v88_live_card("Put-Call Ratio (PCR)", fmt(float(pcr), 2), float(pcr), "pcr", _pcr_label93)
     with s4:
-        _v88_live_card("Max Pain Gravity", f"{max_pain_val:,.0f}", float(max_pain_val), "max_pain", f"Updated {_now_str} | GEX: {_net_gex:+,.0f} Cr")
+        _mp_label93 = f"Updated {_now_str} | [V94] {'LIVE Chain' if _mp_live93 else 'STALE - SCAN dabao'} | GEX: {_net_gex:+,.0f} Cr"
+        _v88_live_card("Max Pain Gravity", f"{max_pain_val:,.0f}", float(max_pain_val), "max_pain", _mp_label93)
 
 def live_spot_fragment_safe(symbol="NIFTY"):
     # V56 - Spot-only live ticker, 5 sec me update. Chain / session_state isme mat laana, nahi to phir SessionInfo error aayega.
@@ -5996,8 +6091,13 @@ try:
             _gp, _gpct, _gprev, _gsrc = _v82_fetch_gift_fast()
             _now = datetime.now(IST).strftime("%H:%M:%S IST")
             if _gp and _gp > 0:
-                _arrow = "🟢 ▲" if (_gpct or 0) >= 0 else "🔴 ▼"
-                st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_arrow} {(_gpct or 0.0):+.2f}% | {_gsrc} | Last: {_now} | Auto-update har 15s")
+                # V94 KILL: Ye V82 purana ticker hai, ab use nahi hona chahiye. Agar dikhe to samjho purani file live hai. Isliye V93 badge ke saath Spread direction dikhao, purana +x% mat dikhao.
+                try:
+                    _s93x, _, _ = _v92_get_single_spot()
+                    _a93x, _, _l93x, _sp93x, _ = _v92_gift_direction(_gp, _s93x, _gprev)
+                except Exception:
+                    _a93x, _l93x, _sp93x = "•", "N/A", 0.0
+                st.markdown(f"### 🔴 [V94] LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_a93x} {_l93x} | {_gsrc} | Last: {_now} | REFRESH se update")
             else:
                 st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | Feed Retry... | Last try: {_now} | REFRESH dabao ya thoda wait karo, 15s me phir try hoga")
         except Exception:
@@ -6194,12 +6294,19 @@ try:
             except Exception:
                 _spot83 = None
             if _gp and _gp > 0:
-                _arrow = "🟢 ▲" if (_gpct or 0) >= 0 else "🔴 ▼"
-                _spread_txt = ""
-                if _spot83 and _spot83 > 0:
-                    _spread83 = float(_gp) - float(_spot83)
-                    _spread_txt = f" | Spread vs Nifty Spot: { _spread83:+.2f} pts (Nifty Spot {float(_spot83):,.2f})"
-                st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_arrow} {(_gpct or 0.0):+.2f}% | {_gsrc} | Last: {_now}{_spread_txt} | Auto-update har 15s")
+                # V92: Spot EK hi source se - _v92_get_single_spot, taaki Ticker aur Gift me same Spot dikhe. Alag Yahoo call band.
+                try:
+                    _spot92, _src92, _time92 = _v92_get_single_spot()
+                    if _spot92 and float(_spot92) > 0:
+                        _spot83 = float(_spot92)
+                except Exception:
+                    pass
+                # V92: Parsed % (_gpct) pe bharosa mat karo - wo HTML se utha % hai, aksar Nifty ka Day % hota hai, Gift ka nahi. Sirf NSEIX Prev Close hoga to hi Day % banega.
+                _g_arrow, _g_color, _g_label, _g_spread, _g_daypct = _v92_gift_direction(_gp, _spot83, _gprev)
+                _dot = "🟢" if _g_spread > 0 else ("🔴" if _g_spread < 0 else "⚪")
+                _spread_txt = f" | Spread vs Nifty Spot: {_g_spread:+.2f} pts (Nifty Spot {float(_spot83):,.2f})" if _spot83 and _spot83 > 0 else " | Spot N/A"
+                _day_txt = f" | Day: {_g_daypct:+.2f}% vs Prev Close {float(_gprev):,.2f}" if _g_daypct is not None else " | Day % N/A (Prev Close nahi mila, nakli % nahi banaya)"
+                st.markdown(f"### 🔴 [V94] LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_dot} {_g_arrow} {_g_label} | {_gsrc} | Last: {_now}{_spread_txt}{_day_txt} | REFRESH se update")
             else:
                 st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | Feed Retry... | Last try: {_now} | Gift ka asli source try ho raha hai, Spot ko Gift bana ke same number nahi dikhayenge")
         except Exception:
@@ -6209,12 +6316,22 @@ try:
                 pass
 except Exception:
     def _v83_gift_live_ticker():
+        # V94: Except wala duplicate bhi wahi V93 logic - purana chhota ticker hata diya, warna try fail hone pe purana text aa jata.
         try:
-            _gp, _gpct, _gprev, _gsrc = _v83_fetch_gift_fast()
+            _gp, _gpct, _gprev, _gsrc = _v85_fetch_gift_fast()
+            _now = datetime.now(IST).strftime("%H:%M:%S IST")
             if _gp and _gp > 0:
-                st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | **{_gp:,.2f}** | {_gsrc}")
+                try:
+                    _s93e, _, _ = _v92_get_single_spot()
+                except Exception:
+                    _s93e = None
+                _a93e, _, _l93e, _sp93e, _d93e = _v92_gift_direction(_gp, _s93e, _gprev)
+                _dot93e = "🟢" if _sp93e > 0 else ("🔴" if _sp93e < 0 else "⚪")
+                _sp_txt93e = f" | Spread: {_sp93e:+.2f} pts (Spot {float(_s93e):,.2f})" if _s93e else ""
+                _day93e = f" | Day: {_d93e:+.2f}%" if _d93e is not None else " | Day % N/A"
+                st.markdown(f"### 🔴 [V94] LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_dot93e} {_a93e} {_l93e} | {_gsrc} | Last: {_now}{_sp_txt93e}{_day93e} | REFRESH se update")
             else:
-                st.caption("Gift Live - Feed Retry...")
+                st.caption("Gift Live - Feed Retry... [V94]")
         except Exception:
             pass
 
@@ -6423,6 +6540,85 @@ def _v83_get_fii_dii():
 
 _V85_GIFT_FILE = "gift_last_good.json"
 _V85_GIFT_FILE_TMP = "/tmp/gift_last_good.json"
+
+
+# ===== V92 PROPER STUDY - 23 Nov 2026 - Screenshot ka number-se-number hisaab =====
+# SCREENSHOT (12:48) me 3 alag Nifty the:
+#  (1) Ticker Spot: 25,489.60 Yahoo Fallback
+#  (2) Gift ke andar Spot: 25,514.65 (Yahoo direct, alag time)
+#  (3) Gift: 25,489.50
+#  Ek screen me 2 Spot nahi hone chahiye. Wajah: Ticker _v58_spot_fast use karta tha, Gift _v64_yahoo_one use karta tha - dono alag source, alag time.
+#  V92 FIX: _v92_get_single_spot() - EK hi Spot, EK hi time, 15 sec cache. Ticker aur Gift dono isi ko use karenge.
+# GIFT DIRECTION GALAT KYU LAGA:
+#  Gift 25,489.50 Spot 25,514.65 se -25.15 NEECHE hai (Discount), phir bhi app ne GREEN UP +1.41% dikhaya.
+#  Wajah: +1.41% Gift ka nahi, Nifty Spot ka DAY CHANGE tha. _v85_parse_near HTML me price ke baad pehla % utha leta tha, wo % aksar Nifty ka hota hai, Gift ka nahi.
+#  V92 FIX: Gift ka main arrow ab SPREAD se banega (Gift vs Spot). Gift > Spot => UP GREEN Premium, Gift < Spot => DOWN RED Discount. Day % sirf tab dikhega jab Gift ka apna Prev Close NSEIX se milega, warna "Day % N/A" likhenge, nakli % nahi banayenge.
+# INDICATORS NIFTY KYU NAHI AA RAHA:
+#  VIX 13.50, PCR 1.05, Max Pain 25,000 - ye teeno FALLBACK hai, live nahi. Stooq fail + Chain offline + VIX fallback.
+#  V92 me inko "LIVE" bolna band - agar source fallback hai to card pe "STALE" likhenge.
+_V92_SPOT_CACHE = {"spot": None, "src": "", "ts": 0.0, "time_str": ""}
+def _v92_get_single_spot():
+    """EK hi Spot sabke liye. 15 sec cache, taaki Ticker aur Gift me same number + same time dikhe."""
+    try:
+        import time as _t92
+        _now = _t92.time()
+        if _V92_SPOT_CACHE.get("spot") and (_now - float(_V92_SPOT_CACHE.get("ts", 0))) < 15:
+            return float(_V92_SPOT_CACHE["spot"]), str(_V92_SPOT_CACHE.get("src", "")), str(_V92_SPOT_CACHE.get("time_str", ""))
+    except Exception:
+        pass
+    _spot, _src = None, ""
+    try:
+        _spot = _v58_spot_fast("NIFTY")
+        if _spot and float(_spot) > 0:
+            _src = "Stooq Live"
+    except Exception:
+        pass
+    if not _spot:
+        try:
+            _sp, _, _, _ = _v64_yahoo_one("^NSEI")
+            if _sp and float(_sp) > 0:
+                _spot, _src = float(_sp), "Yahoo Fallback"
+        except Exception:
+            pass
+    if not _spot:
+        try:
+            _spot = _v59_ss_get("_v58_last_spot_NIFTY")
+            if _spot:
+                _spot, _src = float(_spot), "Last Cached"
+        except Exception:
+            pass
+    try:
+        _ts_str = datetime.now(IST).strftime("%H:%M:%S")
+    except Exception:
+        _ts_str = ""
+    if _spot:
+        try:
+            _V92_SPOT_CACHE.update({"spot": float(_spot), "src": _src, "ts": __import__("time").time(), "time_str": _ts_str})
+        except Exception:
+            pass
+        return float(_spot), _src, _ts_str
+    return None, "Feed Offline", _ts_str
+def _v92_gift_direction(gift_price, spot_price, gift_prev_close):
+    """Gift ki sahi direction: MAIN = Spread (Gift vs Spot). Day % sirf apne Prev Close se, HTML se uthaya % kabhi nahi."""
+    try:
+        if gift_price is None or spot_price is None:
+            return ("•", "#9e9e9e", "N/A", 0.0, None)
+        _spread = float(gift_price) - float(spot_price)
+        if _spread > 0:
+            _arrow, _color, _label = "▲", "#22c55e", f"Premium {_spread:+.2f} pts"
+        elif _spread < 0:
+            _arrow, _color, _label = "▼", "#ef4444", f"Discount {_spread:+.2f} pts"
+        else:
+            _arrow, _color, _label = "•", "#9e9e9e", "At Spot 0.00 pts"
+        _day_pct = None
+        if gift_prev_close and float(gift_prev_close) > 0:
+            try:
+                _day_pct = (float(gift_price) - float(gift_prev_close)) / float(gift_prev_close) * 100.0
+            except Exception:
+                _day_pct = None
+        return (_arrow, _color, _label, float(_spread), _day_pct)
+    except Exception:
+        return ("•", "#9e9e9e", "N/A", 0.0, None)
 
 def _v85_gift_save_file(price, pct, prev, src):
     try:
