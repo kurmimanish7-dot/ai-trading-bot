@@ -1225,7 +1225,7 @@ except Exception:
 # st_autorefresh background me page ko reload karta hai, jab scan chal raha hota hai tabhi reload aata hai -> SessionInfo error
 # Ab koi auto-refresh nahi hoga. Tujhe live chahiye to upar wala REFRESH button daba de.
 # Auto-alert ON hai to bhi ab auto-refresh nahi hoga, sirf manual SCAN / REFRESH se chalega - yehi safe hai.
-st.sidebar.caption("🔄 Auto-refresh ON (V88) - Live ticker har 30 sec me khud update hoga, REFRESH dabane ki zarurat nahi")
+st.sidebar.caption("🔄 Auto-refresh ON (V89 - Top-level fragment) - Live ticker har 30 sec me khud update hoga, REFRESH dabane ki zarurat nahi")
 
 # V54 TELEGRAM CALLBACK POLLER - Har 3 sec pe Telegram YES/NO check - Direct trade
 # FIXED: No decorator here (live_fragment defined later) - regular function
@@ -4774,6 +4774,91 @@ def _v88_get_vix_live():
     except Exception:
         pass
     return 13.5
+
+
+# ===== V89 FIX - 23 Nov 2026 - AttributeError @st.fragment wali line ka ASLI kaaran =====
+# ERROR THA: File app.py line 10671 @st.fragment(run_every=30) pe AttributeError.
+# KAARAN: Fragment ko NESTED block ke andar define kiya tha - 4-space indent me, ek if/else ke andar.
+# Streamlit me @st.fragment SIRF TOP-LEVEL (indent 0) pe define ho sakta hai. Nested if / function ke andar
+# define karne pe Streamlit usko fragment hi nahi maanta aur @st.fragment line pe hi AttributeError deke app gira deta hai.
+# V89 FIX: (1) Nested wala @st.fragment HATA DIYA - wahan ab sirf plain call hai, koi decorator nahi.
+# (2) Fragment ko YAHAN TOP-LEVEL pe define kiya hai - _v89_ticker_fragment. Call nested se ho sakta hai, define top-level hona chahiye.
+# (3) _v89_safe_fragment wrapper: Agar is Cloud pe st.fragment purana / missing ho to bhi AttributeError nahi aayega,
+#     wrapper pakad ke plain function bana dega, app chalega, crash nahi hoga. REFRESH se tab bhi update hoga.
+def _v89_safe_fragment(*d_args, **d_kwargs):
+    """st.fragment ka safe wrapper - koi bhi error aaye to plain function bana do, app mat girao."""
+    def _deco(func):
+        _frag = getattr(st, "fragment", None)
+        if callable(_frag):
+            try:
+                return _frag(*d_args, **d_kwargs)(func)
+            except Exception:
+                return func
+        return func
+    return _deco
+
+@_v89_safe_fragment(run_every=30)  # V89: TOP-LEVEL fragment, isliye AttributeError nahi aayega. LIGHTWEIGHT: Stooq 1.5s + cached PCR/VIX, NO chain/FII/session-write/button/rerun.
+def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
+    # Body wahi V88 wala hai - sirf FAST + CACHED data. Bhari chain/FII SCAN pe aayega, yahan nahi.
+    try:
+        spot = _v58_spot_fast(selected_underlying)
+        if not spot or float(spot) <= 0:
+            try:
+                spot = _v59_ss_get(f"_v58_last_spot_{selected_underlying}")
+                spot = float(spot) if spot else None
+            except Exception:
+                spot = None
+    except Exception:
+        spot = None
+    try:
+        pcr = float(_v59_ss_get('_last_pcr_value', 1.05) or 1.05)
+        if not (0 < pcr <= 10):
+            pcr = 1.05
+    except Exception:
+        pcr = 1.05
+    try:
+        vix_val = _v88_get_vix_live()
+    except Exception:
+        vix_val = 13.5
+    try:
+        _cached_mp = _v59_ss_get('_last_max_pain', None)
+        if _cached_mp and spot and abs(float(_cached_mp) - float(spot)) < 2000:
+            max_pain_val = float(_cached_mp)
+        elif spot:
+            max_pain_val = float(round(float(spot) / 50.0) * 50.0)
+        else:
+            max_pain_val = 25000.0
+    except Exception:
+        max_pain_val = float(spot) if spot else 25000.0
+    try:
+        _net_gex = float(_v59_ss_get('_last_net_gex_cr', 0.0) or 0.0)
+    except Exception:
+        _net_gex = 0.0
+    try:
+        _is_open = market_open()
+    except Exception:
+        _is_open = False
+    _disp_label = "Verified Exchange Feed" if _is_open else "Official Session Close"
+    if (not spot) and _is_open:
+        try:
+            _fb = get_spot_safe_for_display(selected_underlying)
+            if _fb and float(_fb) > 0:
+                spot = float(_fb)
+                _disp_label = "Yahoo Fallback"
+        except Exception:
+            pass
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        if spot and float(spot) > 0:
+            _v88_live_card(f"{selected_underlying} Spot (NSE Live)", fmt(float(spot)), float(spot), f"spot_{selected_underlying}", _disp_label)
+        else:
+            _v88_info_card(f"{selected_underlying} Spot", "Feed Retry..." if _is_open else "Market Closed", "Live Feed Blocked - Last Tick aa raha hai" if _is_open else "Feed Offline", value_color="#ef4444" if _is_open else "#ffffff")
+    with s2:
+        _v88_live_card("India VIX", fmt(float(vix_val)), float(vix_val), "vix", "OPTIMAL BUYING" if float(vix_val) < 15 else "HIGH VOLATILITY", invert=True)
+    with s3:
+        _v88_live_card("Put-Call Ratio (PCR)", fmt(float(pcr), 2), float(pcr), "pcr", "Derivatives Bias")
+    with s4:
+        _v88_live_card("Max Pain Gravity", f"{max_pain_val:,.0f}", float(max_pain_val), "max_pain", f"GEX: {_net_gex:+,.0f} Cr")
 
 def live_spot_fragment_safe(symbol="NIFTY"):
     # V56 - Spot-only live ticker, 5 sec me update. Chain / session_state isme mat laana, nahi to phir SessionInfo error aayega.
@@ -10668,76 +10753,10 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @st.fragment(run_every=30)  # V88 ASLI FRAGMENT - sirf ye ticker auto-refresh hoga. LIGHTWEIGHT: Stooq 1.5s + cached PCR/VIX, NO chain / NO FII network / NO session write / NO button / NO rerun. Isliye Bad message / SessionInfo nahi aayega.
-    def render_index_live_ticker(selected_underlying, current_expiry, tf):
-        # V88: Ticker me sirf FAST + CACHED data. Bhari chain/FII SCAN pe aayega, yahan nahi - warna fragment + main run ki race phir se hogi.
-        try:
-            spot = _v58_spot_fast(selected_underlying)
-            if not spot or float(spot) <= 0:
-                try:
-                    spot = _v59_ss_get(f"_v58_last_spot_{selected_underlying}")
-                    spot = float(spot) if spot else None
-                except Exception:
-                    spot = None
-        except Exception:
-            spot = None
-        try:
-            pcr = float(_v59_ss_get('_last_pcr_value', 1.05) or 1.05)
-            if not (0 < pcr <= 10):
-                pcr = 1.05
-        except Exception:
-            pcr = 1.05
-        try:
-            vix_val = _v88_get_vix_live()
-        except Exception:
-            vix_val = 13.5
-        # Max Pain + GEX: sirf CACHED padho, yahan compute mat karo (chain bhari hai)
-        try:
-            _cached_mp = _v59_ss_get('_last_max_pain', None)
-            if _cached_mp and spot and abs(float(_cached_mp) - float(spot)) < 2000:
-                max_pain_val = float(_cached_mp)
-            elif spot:
-                max_pain_val = float(round(float(spot) / 50.0) * 50.0)
-            else:
-                max_pain_val = 25000.0
-        except Exception:
-            max_pain_val = float(spot) if spot else 25000.0
-        try:
-            _net_gex = float(_v59_ss_get('_last_net_gex_cr', 0.0) or 0.0)
-        except Exception:
-            _net_gex = 0.0
-        try:
-            _is_open = market_open()
-        except Exception:
-            _is_open = False
-        _disp_label = "Verified Exchange Feed" if _is_open else "Official Session Close"
-        # Agar spot hi nahi aaya to Yahoo fallback ek baar try karo, nahi to Last Tick dikhao - Market Closed mat likho jab market khula hai
-        if (not spot) and _is_open:
-            try:
-                _fb = get_spot_safe_for_display(selected_underlying)
-                if _fb and float(_fb) > 0:
-                    spot = float(_fb)
-                    _disp_label = "Yahoo Fallback"
-            except Exception:
-                pass
-        s1, s2, s3, s4 = st.columns(4)
-        with s1:
-            if spot and float(spot) > 0:
-                # V88: delta me "Yahoo Fallback" TEXT mat bhejo - wahi up-arrow bug tha. current + prev_key bhejo.
-                _v88_live_card(f"{selected_underlying} Spot (NSE Live)", fmt(float(spot)), float(spot), f"spot_{selected_underlying}", _disp_label)
-            else:
-                _v88_info_card(f"{selected_underlying} Spot", "Feed Retry..." if _is_open else "Market Closed", "Live Feed Blocked - Last Tick aa raha hai" if _is_open else "Feed Offline", value_color="#ef4444" if _is_open else "#ffffff")
-        with s2:
-            # V88: VIX invert=True - VIX up => RED, down => GREEN. Pehle delta="OPTIMAL BUYING" text tha, isliye hamesha up-green dikhta tha.
-            _v88_live_card("India VIX", fmt(float(vix_val)), float(vix_val), "vix", "OPTIMAL BUYING" if float(vix_val) < 15 else "HIGH VOLATILITY", invert=True)
-        with s3:
-            # V88: PCR bhi live_card - gira to ▼ RED, badha to ▲ GREEN. Pehle delta="Derivatives Bias" text tha.
-            _v88_live_card("Put-Call Ratio (PCR)", fmt(float(pcr), 2), float(pcr), "pcr", "Derivatives Bias")
-        with s4:
-            # V88: Max Pain - GEX text ab subtitle me hai, delta me number ka diff aayega, isliye arrow sahi dikhega.
-            _v88_live_card("Max Pain Gravity", f"{max_pain_val:,.0f}", float(max_pain_val), "max_pain", f"GEX: {_net_gex:+,.0f} Cr")
-
-    render_index_live_ticker(underlying, selected_expiry, active_tf)
+    # V89: Yahan @st.fragment MAT lagana - nested if ke andar fragment define karne se hi AttributeError aaya tha.
+    # Fragment ab TOP-LEVEL pe _v89_ticker_fragment me hai. Yahan sirf usko CALL kar rahe hai, define nahi kar rahe.
+    # Ye call har 30 sec me khud refresh hoga (agar is Streamlit me fragment supported hai), nahi to REFRESH se update hoga.
+    _v89_ticker_fragment(underlying, selected_expiry, active_tf)
     # V87: Gift ticker ab FRAGMENT nahi hai - plain function, main thread me ek baar chalega. Har 15s auto-update BAND (wahi Bad message ki jad thi). Gift update chahiye to REFRESH / SCAN dabao.
     try:
         _v83_gift_live_ticker()
