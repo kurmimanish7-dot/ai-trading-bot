@@ -288,9 +288,10 @@ def _v81_render_flash():
         return False
 
 def _v81_safe_rerun():
-    """Polished rerun: abhi mat bhaago, flag set karo. End me ek baar hi rerun hoga."""
+    """V95: NO-OP. Pehle ye flag set karta tha, end me st.rerun() hota tha, wahi cold-start Bad message laata tha. Ab kuch nahi karega. Streamlit button pe khud rerun karta hai."""
     try:
-        _v59_ss_set(_V81_RERUN_KEY, True)
+        _v59_ss_set(_V81_RERUN_KEY, False)
+        return
     except Exception:
         pass
     # Yahan _v81_safe_rerun() JANBOOJH ke nahi hai - beech me rerun hi Bad message ki jad hai.
@@ -1029,11 +1030,9 @@ try:
 except Exception:
     pass
 
-# V81 POLISH: Pichle run ka flash message TOP pe fixed jagah dikhao - rerun ke baad bhi gayab nahi hoga
-try:
-    _v81_render_flash()
-except Exception:
-    pass
+# V95: Boot pe flash MAT dikhao. set_page_config ke turant baad st.success/error bhejna hi cold-start Bad message laata hai, chahe try/except me ho.
+# Flash ab main UI ke baad dikhega, jab session pakka ban gaya hoga. Isliye yahan call hi nahi karenge.
+# _v81_render_flash() ko yahan se hata diya hai.
 
 # ================= V53 PERSISTENT SETTINGS - Fix reset after page close =================
 import os
@@ -4815,7 +4814,7 @@ def _v89_safe_fragment(*d_args, **d_kwargs):  # V91: Ab use nahi hota, sirf back
 # Arrow fix (V88/V90) fragment ke bina bhi chalega - wo sirf HTML card hai, fragment se uska koi lena-dena nahi.
 
 def _v93_get_vix_live():
-    """V94: VIX 13.5 pe atka hua tha kyunki _v58_vix_fast hamesha 13.5 deta tha. Ab Yahoo ^INDIAVIX pehle, phir Stooq indiavix, tabhi 13.5 fallback - aur fallback ko STALE bolenge, LIVE nahi."""
+    """V95: VIX 13.5 pe atka hua tha kyunki _v58_vix_fast hamesha 13.5 deta tha. Ab Yahoo ^INDIAVIX pehle, phir Stooq indiavix, tabhi 13.5 fallback - aur fallback ko STALE bolenge, LIVE nahi."""
     try:
         _p, _pct, _prev, _src = _v64_yahoo_one("^INDIAVIX")
         if _p and 5 < float(_p) < 60:
@@ -4830,7 +4829,7 @@ def _v93_get_vix_live():
         pass
     return 13.5, "STALE 13.5 - VIX Feed Offline"
 def _v93_get_pcr_maxpain_fast(selected_underlying, current_expiry, spot):
-    """V94: PCR 1.05 aur Max Pain 25000 isliye atke the kyunki ticker sirf CACHED value padhta tha, chain kabhi fetch hi nahi karta tha. SCAN dabaye bina PCR kabhi nahi aayega - yehi jad thi.
+    """V95: PCR 1.05 aur Max Pain 25000 isliye atke the kyunki ticker sirf CACHED value padhta tha, chain kabhi fetch hi nahi karta tha. SCAN dabaye bina PCR kabhi nahi aayega - yehi jad thi.
     Ab ticker me hi FAST chain (max 2.5s) try karenge. Chain mil gaya to PCR + Max Pain asli, nahi mila to CACHED + STALE label, 1.05/25000 ko LIVE nahi bolenge."""
     _pcr, _pcr_live, _mp, _mp_live, _gex = 1.05, False, None, False, 0.0
     try:
@@ -4922,7 +4921,7 @@ def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
                     spot = None
     except Exception:
         spot = None
-    # V94: PCR / Max Pain - sirf cached mat padho, FAST chain try karo. VIX - Yahoo ^INDIAVIX se live lao, 13.5 hardcoded mat rakho.
+    # V95: PCR / Max Pain - sirf cached mat padho, FAST chain try karo. VIX - Yahoo ^INDIAVIX se live lao, 13.5 hardcoded mat rakho.
     try:
         vix_val, _vix_src93 = _v93_get_vix_live()
     except Exception:
@@ -4961,17 +4960,17 @@ def _v89_ticker_fragment(selected_underlying, current_expiry, tf):
     s1, s2, s3, s4 = st.columns(4)
     with s1:
         if spot and float(spot) > 0:
-            _v88_live_card(f"{selected_underlying} Spot (NSE Live) [V94]", fmt(float(spot)), float(spot), f"spot_{selected_underlying}", _disp_label)
+            _v88_live_card(f"{selected_underlying} Spot (NSE Live) [V95]", fmt(float(spot)), float(spot), f"spot_{selected_underlying}", _disp_label)
         else:
             _v88_info_card(f"{selected_underlying} Spot", "Feed Retry..." if _is_open else "Market Closed", "Live Feed Blocked - Last Tick aa raha hai" if _is_open else "Feed Offline", value_color="#ef4444" if _is_open else "#ffffff")
     with s2:
-        _vix_label93 = f"Updated {_now_str} | [V94] {_vix_src93} | " + ("OPTIMAL BUYING" if float(vix_val) < 15 else "HIGH VOLATILITY")
+        _vix_label93 = f"Updated {_now_str} | [V95] {_vix_src93} | " + ("OPTIMAL BUYING" if float(vix_val) < 15 else "HIGH VOLATILITY")
         _v88_live_card("India VIX", fmt(float(vix_val)), float(vix_val), "vix", _vix_label93, invert=True)
     with s3:
-        _pcr_label93 = f"Updated {_now_str} | [V94] {'LIVE Chain' if _pcr_live93 else 'STALE - SCAN dabao, chain nahi aaya'}"
+        _pcr_label93 = f"Updated {_now_str} | [V95] {'LIVE Chain' if _pcr_live93 else 'STALE - SCAN dabao, chain nahi aaya'}"
         _v88_live_card("Put-Call Ratio (PCR)", fmt(float(pcr), 2), float(pcr), "pcr", _pcr_label93)
     with s4:
-        _mp_label93 = f"Updated {_now_str} | [V94] {'LIVE Chain' if _mp_live93 else 'STALE - SCAN dabao'} | GEX: {_net_gex:+,.0f} Cr"
+        _mp_label93 = f"Updated {_now_str} | [V95] {'LIVE Chain' if _mp_live93 else 'STALE - SCAN dabao'} | GEX: {_net_gex:+,.0f} Cr"
         _v88_live_card("Max Pain Gravity", f"{max_pain_val:,.0f}", float(max_pain_val), "max_pain", _mp_label93)
 
 def live_spot_fragment_safe(symbol="NIFTY"):
@@ -6097,7 +6096,7 @@ try:
                     _a93x, _, _l93x, _sp93x, _ = _v92_gift_direction(_gp, _s93x, _gprev)
                 except Exception:
                     _a93x, _l93x, _sp93x = "•", "N/A", 0.0
-                st.markdown(f"### 🔴 [V94] LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_a93x} {_l93x} | {_gsrc} | Last: {_now} | REFRESH se update")
+                st.markdown(f"### 🔴 [V95] LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_a93x} {_l93x} | {_gsrc} | Last: {_now} | REFRESH se update")
             else:
                 st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | Feed Retry... | Last try: {_now} | REFRESH dabao ya thoda wait karo, 15s me phir try hoga")
         except Exception:
@@ -6306,7 +6305,7 @@ try:
                 _dot = "🟢" if _g_spread > 0 else ("🔴" if _g_spread < 0 else "⚪")
                 _spread_txt = f" | Spread vs Nifty Spot: {_g_spread:+.2f} pts (Nifty Spot {float(_spot83):,.2f})" if _spot83 and _spot83 > 0 else " | Spot N/A"
                 _day_txt = f" | Day: {_g_daypct:+.2f}% vs Prev Close {float(_gprev):,.2f}" if _g_daypct is not None else " | Day % N/A (Prev Close nahi mila, nakli % nahi banaya)"
-                st.markdown(f"### 🔴 [V94] LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_dot} {_g_arrow} {_g_label} | {_gsrc} | Last: {_now}{_spread_txt}{_day_txt} | REFRESH se update")
+                st.markdown(f"### 🔴 [V95] LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_dot} {_g_arrow} {_g_label} | {_gsrc} | Last: {_now}{_spread_txt}{_day_txt} | REFRESH se update")
             else:
                 st.markdown(f"### 🔴 LIVE Gift Nifty Streaming | Feed Retry... | Last try: {_now} | Gift ka asli source try ho raha hai, Spot ko Gift bana ke same number nahi dikhayenge")
         except Exception:
@@ -6329,9 +6328,9 @@ except Exception:
                 _dot93e = "🟢" if _sp93e > 0 else ("🔴" if _sp93e < 0 else "⚪")
                 _sp_txt93e = f" | Spread: {_sp93e:+.2f} pts (Spot {float(_s93e):,.2f})" if _s93e else ""
                 _day93e = f" | Day: {_d93e:+.2f}%" if _d93e is not None else " | Day % N/A"
-                st.markdown(f"### 🔴 [V94] LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_dot93e} {_a93e} {_l93e} | {_gsrc} | Last: {_now}{_sp_txt93e}{_day93e} | REFRESH se update")
+                st.markdown(f"### 🔴 [V95] LIVE Gift Nifty Streaming | **{_gp:,.2f}** {_dot93e} {_a93e} {_l93e} | {_gsrc} | Last: {_now}{_sp_txt93e}{_day93e} | REFRESH se update")
             else:
-                st.caption("Gift Live - Feed Retry... [V94]")
+                st.caption("Gift Live - Feed Retry... [V95]")
         except Exception:
             pass
 
@@ -12044,24 +12043,15 @@ try:
 except Exception:
     pass
 
-# ===== V81 POLISH END - Deferred rerun: saare handler ne sirf flag set kiya, ab end me EK BAAR rerun =====
-# Beech me st.rerun() karne se hi Bad message aata tha, isliye ab yahan ek hi jagah rerun hoga.
-# V87 FINAL RERUN: Pehle wala code st.rerun() ko except Exception: pass me lapet ta tha.
-# Streamlit ka RerunException bhi Exception hai - usko swallow karne se rerun kabhi hota hi nahi tha.
-# Ab sirf SessionInfo error pakda jayega, Rerun ko dobara raise karenge.
+# ===== V95 PERMANENT: FINAL RERUN HAMESHA KE LIYE BAND =====
+# JAD (1:40 wali screenshot - page BLANK + Bad message): File ke end me st.rerun() tha.
+# _V59_FALLBACK module-level dict hai, Streamlit Cloud pe sab session usko share karte hai. Ek session ka rerun flag dusre session me leak ho jata hai.
+# Naya tab / reboot ke baad session bana hi nahi hota, tabhi end wala st.rerun() SessionInfo maang leta hai -> "Tried to use SessionInfo before it was initialized" + blank page.
+# Ye slow loading / slow network / Streamlit version ka issue NAHI hai. Ye end-wala rerun + purana tab ka issue hai.
+# V95 FIX: End me kabhi st.rerun() mat karo. Button dabane pe Streamlit khud rerun karta hai, alag se rerun ki zaroorat hi nahi hai.
+# _v81_safe_rerun() bhi ab no-op hai, flag kabhi set nahi hoga.
 try:
-    _v87_need_rerun = _v59_ss_get(_V81_RERUN_KEY, False)
+    _v59_ss_set(_V81_RERUN_KEY, False)
 except Exception:
-    _v87_need_rerun = False
-if _v87_need_rerun and _v87_is_main_thread():
-    try:
-        _v59_ss_set(_V81_RERUN_KEY, False)
-    except Exception:
-        pass
-    try:
-        st.rerun()
-    except Exception as _e87_final:
-        if "SessionInfo" in str(_e87_final):
-            pass
-        else:
-            raise
+    pass
+# st.rerun() yahan kabhi mat likhna.
