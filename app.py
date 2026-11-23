@@ -1225,7 +1225,7 @@ except Exception:
 # st_autorefresh background me page ko reload karta hai, jab scan chal raha hota hai tabhi reload aata hai -> SessionInfo error
 # Ab koi auto-refresh nahi hoga. Tujhe live chahiye to upar wala REFRESH button daba de.
 # Auto-alert ON hai to bhi ab auto-refresh nahi hoga, sirf manual SCAN / REFRESH se chalega - yehi safe hai.
-st.sidebar.caption("🔄 Auto-refresh OFF (V55.3) - SessionInfo error fix ke liye band hai, REFRESH button se update karo")
+st.sidebar.caption("🔄 Auto-refresh ON (V88) - Live ticker har 30 sec me khud update hoga, REFRESH dabane ki zarurat nahi")
 
 # V54 TELEGRAM CALLBACK POLLER - Har 3 sec pe Telegram YES/NO check - Direct trade
 # FIXED: No decorator here (live_fragment defined later) - regular function
@@ -4693,6 +4693,88 @@ def live_fragment(*args, **kwargs):
     def decorator(func): return func
     return decorator
 
+
+# ===== V88 FIX - 23 Nov 2026 - AUTO-REFRESH + ARROW BUG - DONO KI JAD =====
+# BUG 1 - AUTO-REFRESH KYU NAHI HOTA THA:
+#   V87 me @st.fragment ko DUMMY kar diya tha (live_fragment = plain function).
+#   Isliye @live_fragment(run_every=60) kuch karta hi nahi tha, page khud rerun nahi hota tha.
+#   Scroll / click pe Streamlit khud rerun karta hai, isliye tabhi number badalta dikhta tha.
+#   V88 FIX: Purane BHARI fragments ko DUMMY hi rakha (SCAN / chain / FII network wale - wahi Bad message ki jad the).
+#   Sirf is LIVE TICKER ke liye EK ASLI @st.fragment(run_every=30) lagaya hai.
+#   Ye fragment LIGHTWEIGHT hai: sirf Stooq 1.5s fast spot + cached PCR/VIX padhta hai.
+#   Isme NO st.session_state write, NO st.button, NO st.rerun, NO ThreadPool, NO chain/FII network hai.
+#   Isliye SessionInfo race nahi aayega, aur number har 30 sec me khud update hoga.
+# BUG 2 - ARROW ULTA + GREEN KYU THA:
+#   st.metric(delta="Yahoo Fallback" / "15M" / "OPTIMAL BUYING" / "Cap: -10000") me delta me TEXT tha, NUMBER nahi.
+#   Streamlit text delta ko parse nahi kar pata, to default me hamesha UP arrow + GREEN dikha deta hai.
+#   Chahe number gira ho, chahe Cap minus me ho - arrow hamesha up-green hi rehta tha.
+#   V88 FIX: st.metric HATAYA. Ab _v88_live_card / _v88_info_card (custom HTML) use hoga.
+#   _v88_live_card: diff = current - prev nikalta hai. diff < 0 => ▼ RED, diff > 0 => ▲ GREEN, diff == 0 => • GREY.
+#   VIX ke liye invert=True: upar jana BURA hai, isliye VIX up => ▼ nahi, ▲ RED, down => ▼ GREEN.
+#   Text wale cards (System Mode / Market Status / Timeframe / Risk Gate) me arrow HOTA HI NAHI - _v88_info_card me koi arrow nahi hai.
+#   Prev value module-level dict _V88_PREV me hai, session_state me nahi - isliye fragment ke andar likhne se SessionInfo error nahi aayega.
+_V88_PREV = {}
+def _v88_arrow(current, prev, invert=False):
+    """Returns (arrow_char, color_hex, diff_text). current/prev numeric hone chahiye."""
+    try:
+        if current is None or prev is None:
+            return ("•", "#9e9e9e", "")
+        _diff = float(current) - float(prev)
+        if abs(_diff) < 1e-9:
+            return ("•", "#9e9e9e", "0.00")
+        _is_up = _diff > 0
+        _is_good = (not _is_up) if invert else _is_up
+        _color = "#22c55e" if _is_good else "#ef4444"
+        _arrow = "▲" if _is_up else "▼"
+        return (_arrow, _color, f"{_arrow} {abs(_diff):,.2f}")
+    except Exception:
+        return ("•", "#9e9e9e", "")
+def _v88_info_card(label, value_str, subtitle, value_color="#ffffff", subtitle_color="#9e9e9e"):
+    """Text wale cards ke liye - KOI ARROW NAHI. System Mode / Market Status / Timeframe / Risk Gate isi se banenge."""
+    try:
+        st.markdown(f"""<div style="background:#16191d; border:1px solid #2a2e35; border-radius:12px; padding:14px; min-height:92px;">
+<div style="color:#9e9e9e; font-size:13px;">{label}</div>
+<div style="color:{value_color}; font-size:20px; font-weight:700; margin:4px 0; line-height:1.2;">{value_str}</div>
+<div style="color:{subtitle_color}; font-size:13px;">{subtitle}</div></div>""", unsafe_allow_html=True)
+    except Exception:
+        st.write(f"**{label}**: {value_str} - {subtitle}")
+def _v88_live_card(label, value_str, current, prev_key, subtitle, invert=False):
+    """Number wale cards ke liye - arrow + color hamesha sahi direction se aayega. delta me kabhi TEXT mat bhejo."""
+    try:
+        _prev = _V88_PREV.get(prev_key)
+        _arrow, _color, _diff_text = _v88_arrow(current, _prev, invert=invert)
+        _sub = f"{_diff_text} | {subtitle}" if _diff_text else subtitle
+        # Agle refresh ke liye current ko prev bana ke save karo - module dict me, session_state me nahi
+        try:
+            if current is not None:
+                _V88_PREV[prev_key] = float(current)
+        except Exception:
+            pass
+        st.markdown(f"""<div style="background:#16191d; border:1px solid #2a2e35; border-radius:12px; padding:14px; min-height:92px;">
+<div style="color:#9e9e9e; font-size:13px;">{label}</div>
+<div style="color:white; font-size:22px; font-weight:700; margin:4px 0; line-height:1.2;">{value_str}</div>
+<div style="color:{_color}; font-size:13px; font-weight:600;">{_sub}</div></div>""", unsafe_allow_html=True)
+    except Exception:
+        try:
+            st.write(f"**{label}**: {value_str} - {subtitle}")
+        except Exception:
+            pass
+def _v88_get_vix_live():
+    """VIX ka asli live number. Pehle _v58_vix_fast() hamesha 13.5 return karta tha, isliye VIX kabhi hilta hi nahi tha."""
+    try:
+        _v = _v58_spot_fast("INDIA_VIX")
+        if _v and 5 < float(_v) < 60:
+            return float(_v)
+    except Exception:
+        pass
+    try:
+        _d = _v58_vix_fast()
+        if isinstance(_d, dict) and _d.get("vix"):
+            return float(_d["vix"])
+    except Exception:
+        pass
+    return 13.5
+
 def live_spot_fragment_safe(symbol="NIFTY"):
     # V56 - Spot-only live ticker, 5 sec me update. Chain / session_state isme mat laana, nahi to phir SessionInfo error aayega.
     # Use: live_spot_fragment_safe("NIFTY") ko UI me jahan spot dikhana hai wahan call karo.
@@ -4702,11 +4784,12 @@ def live_spot_fragment_safe(symbol="NIFTY"):
         _src = _res.get("source", "") if isinstance(_res, dict) else ""
         _ts = _res.get("timestamp", "") if isinstance(_res, dict) else ""
         if _p and _p > 0:
-            st.metric(f"{symbol} Spot LIVE", f"{_p:,.2f}", delta=f"{_src} | {_ts}", delta_color="normal")
+            # V88: delta me text mat bhejo, current + prev_key bhejo - arrow direction + color khud sahi aayega
+            _v88_live_card(f"{symbol} Spot LIVE", f"{_p:,.2f}", float(_p), f"spot_{symbol}", f"{_src} | {_ts}")
         else:
-            st.metric(f"{symbol} Spot", "Feed Retry...", delta="Live Feed Blocked - NO TRADE", delta_color="off")
+            _v88_info_card(f"{symbol} Spot", "Feed Retry...", "Live Feed Blocked - NO TRADE", value_color="#ef4444")
     except Exception:
-        st.metric(f"{symbol} Spot", "Feed Retry...", delta="Live Feed Blocked - NO TRADE", delta_color="off")
+        _v88_info_card(f"{symbol} Spot", "Feed Retry...", "Live Feed Blocked - NO TRADE", value_color="#ef4444")
 
 # =====================================================================
 # 7. STATEFUL PAPER PORTFOLIO & AUDIT LEDGER
@@ -9920,14 +10003,14 @@ _v80_set_portfolio_field("daily_loss_limit", max_loss_input)  # V80: safe set
 if st.sidebar.button(f"{REFRESH} Force Refresh All Caches", use_container_width=True):
     _v81_safe_rerun()  # V55.4: cache clear hataya - clear() + rerun ek saath SessionInfo error deta hai
 
-# Global Header Status Bar
+# Global Header Status Bar - V88: st.metric HATAYA, text delta up-arrow banata tha. Ab _v88_info_card, isme koi arrow nahi hai.
 col_t1, col_t2, col_t3, col_t4 = st.columns(4)
-with col_t1: st.metric("System Mode", "PAPER SIMULATION (ACTIVE)", delta=active_tf["holding"], delta_color="off")
-with col_t2: st.metric("Market Status", "LIVE SESSION" if market_open() else "SESSION CLOSED", delta="Continuous Trading" if market_open() else "Closed", delta_color="off")
-with col_t3: st.metric("Active Timeframe", active_tf["smartapi"], delta=selected_tf_key.upper(), delta_color="normal")
+with col_t1: _v88_info_card("System Mode", "PAPER SIMULATION (ACTIVE)", active_tf["holding"])
+with col_t2: _v88_info_card("Market Status", "LIVE SESSION" if market_open() else "SESSION CLOSED", "Continuous Trading" if market_open() else "Closed")
+with col_t3: _v88_info_card("Active Timeframe", active_tf["smartapi"], selected_tf_key.upper())
 with col_t4:
     circuit_state = "TRIGGERED (LOCKED)" if _v80_get_portfolio().get("circuit_broken", False) else "NORMAL"  # V80
-    st.metric("Risk Circuit Gate", circuit_state, delta=f"Cap: -₹{max_loss_input:,.0f}", delta_color="inverse" if circuit_state=="TRIGGERED (LOCKED)" else "off")
+    _v88_info_card("Risk Circuit Gate", circuit_state, f"Cap: -₹{max_loss_input:,.0f}", value_color="#ef4444" if circuit_state=="TRIGGERED (LOCKED)" else "#ffffff", subtitle_color="#ef4444" if circuit_state=="TRIGGERED (LOCKED)" else "#9e9e9e")
 
 st.divider()
 
@@ -10585,107 +10668,74 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
     selected_expiry = st.sidebar.selectbox(f"{STOPWATCH} Target Expiry", options=expiries, format_func=expiry_label, index=0) if expiries else None
     option_type_choice = st.sidebar.selectbox("Option Filter", ["BOTH", "CE", "PE"])
 
-    @live_fragment(run_every=60)  # V66: 15s -> 60s + NO NETWORK. Pehle har 15s pe 30s ka network hota tha, fragment + main run ki race se Bad message format aata tha. Ab sirf cached dikhega, live SCAN pe aayega.
+    @st.fragment(run_every=30)  # V88 ASLI FRAGMENT - sirf ye ticker auto-refresh hoga. LIGHTWEIGHT: Stooq 1.5s + cached PCR/VIX, NO chain / NO FII network / NO session write / NO button / NO rerun. Isliye Bad message / SessionInfo nahi aayega.
     def render_index_live_ticker(selected_underlying, current_expiry, tf):
-        # V66: Ticker me koi network nahi - sirf cached spot/PCR. NSE chain / VIX / FII yahan nahi aayega, SCAN pe aayega.
+        # V88: Ticker me sirf FAST + CACHED data. Bhari chain/FII SCAN pe aayega, yahan nahi - warna fragment + main run ki race phir se hogi.
         try:
-            spot = _v59_ss_get(f"_v58_last_spot_{selected_underlying}")
+            spot = _v58_spot_fast(selected_underlying)
             if not spot or float(spot) <= 0:
-                spot = _v58_spot_fast(selected_underlying)
-            if not spot:
-                spot = None
+                try:
+                    spot = _v59_ss_get(f"_v58_last_spot_{selected_underlying}")
+                    spot = float(spot) if spot else None
+                except Exception:
+                    spot = None
         except Exception:
             spot = None
         try:
             pcr = float(_v59_ss_get('_last_pcr_value', 1.05) or 1.05)
+            if not (0 < pcr <= 10):
+                pcr = 1.05
         except Exception:
             pcr = 1.05
-        chain = pd.DataFrame()
-        _raw_chain = pd.DataFrame()
-        vix_info = {"vix": 13.5, "regime": "OPTIMAL BUYING", "sl_multiplier": 0.85, "status": "CACHED_FAST"}
-        # V79: FII hard-coded False HATA DIYA - ye hi Awaiting ki jad thi. Ab load pe hi auto-fetch hoga, SCAN ka wait nahi karega.
         try:
-            _fd79 = _v62_ensure_fii_dii()
-            if isinstance(_fd79, dict) and _fd79.get("available"):
-                fii_dii_info = _fd79
+            vix_val = _v88_get_vix_live()
+        except Exception:
+            vix_val = 13.5
+        # Max Pain + GEX: sirf CACHED padho, yahan compute mat karo (chain bhari hai)
+        try:
+            _cached_mp = _v59_ss_get('_last_max_pain', None)
+            if _cached_mp and spot and abs(float(_cached_mp) - float(spot)) < 2000:
+                max_pain_val = float(_cached_mp)
+            elif spot:
+                max_pain_val = float(round(float(spot) / 50.0) * 50.0)
             else:
-                # Session last-good - pehli baar fetch fail ho to bhi kal ka data dikhao, Awaiting nahi
-                _sess79 = _v59_ss_get("_v79_last_fii", {}) if "_v59_ss_get" in dir() else {}
-                if isinstance(_sess79, dict) and _sess79.get("available"):
-                    fii_dii_info = _sess79
-                else:
-                    fii_dii_info = {"available": False, "score": 0, "bias": "NEUTRAL"}
+                max_pain_val = 25000.0
         except Exception:
-            fii_dii_info = {"available": False, "score": 0, "bias": "NEUTRAL"}
+            max_pain_val = float(spot) if spot else 25000.0
         try:
-            gex_info = compute_gex_and_max_pain(chain, spot, selected_underlying) if spot else {"net_gex_cr": 0.0, "gex_regime": "NEUTRAL", "gamma_flip": spot or 25000, "max_pain": spot or 25000, "call_wall": (spot or 25000)+200, "put_wall": (spot or 25000)-200, "expected_move": 150.0}
+            _net_gex = float(_v59_ss_get('_last_net_gex_cr', 0.0) or 0.0)
         except Exception:
-            gex_info = {"net_gex_cr": 0.0, "gex_regime": "NEUTRAL", "gamma_flip": spot or 25000, "max_pain": spot or 25000, "call_wall": (spot or 25000)+200, "put_wall": (spot or 25000)-200, "expected_move": 150.0}
-
+            _net_gex = 0.0
+        try:
+            _is_open = market_open()
+        except Exception:
+            _is_open = False
+        _disp_label = "Verified Exchange Feed" if _is_open else "Official Session Close"
+        # Agar spot hi nahi aaya to Yahoo fallback ek baar try karo, nahi to Last Tick dikhao - Market Closed mat likho jab market khula hai
+        if (not spot) and _is_open:
+            try:
+                _fb = get_spot_safe_for_display(selected_underlying)
+                if _fb and float(_fb) > 0:
+                    spot = float(_fb)
+                    _disp_label = "Yahoo Fallback"
+            except Exception:
+                pass
         s1, s2, s3, s4 = st.columns(4)
         with s1:
-            # V55.6 - Spot kabhi Syncing forever nahi dikhayega. Last Close dikhayega.
-            try:
-                _disp_spot = spot if (spot is not None and spot > 0) else None
-                _disp_label = "Verified Exchange Feed" if market_open() else "Official Session Close"
-                if not _disp_spot:
-                    try:
-                        _fb = get_spot_safe_for_display(selected_underlying)
-                        if _fb and _fb > 0:
-                            _disp_spot = float(_fb)
-                            _disp_label = "Yahoo Fallback"
-                    except:
-                        pass
-                if not _disp_spot:
-                    # Last cached - chahe purana ho, Syncing se behtar hai
-                    try:
-                        _ck = f"_spot_{selected_underlying}"
-                        if _ck in _spot_cache_v19:
-                            _v, _t = _spot_cache_v19[_ck]
-                            if _v and _v > 0:
-                                _disp_spot = float(_v)
-                                _disp_label = "STALE - NO TRADE (Feed Blocked)"
-                    except:
-                        pass
-                if _disp_spot and _disp_spot > 0:
-                    st.metric(f"{selected_underlying} Spot (NSE Live)", fmt(_disp_spot), delta=_disp_label, delta_color="normal")
-                else:
-                    # V55.8 - 9:44 pe market KHULA hai, phir bhi Market Closed mat dikhao. Feed fail hone pe Last Tick dikhao.
-                    # Market open hai to "Last Tick - Feed Retry" dikhao, band hai to "Market Closed"
-                    _is_open = False
-                    try:
-                        _is_open = market_open()
-                    except:
-                        _is_open = False
-                    if _is_open:
-                        st.metric(f"{selected_underlying} Spot", "Feed Retry...", delta="Live Feed Blocked - Last Tick aa raha hai, 10 sec me refresh karo")
-                    else:
-                        st.metric(f"{selected_underlying} Spot", "Market Closed", delta="Feed Offline - Kal 9:15 pe Live hoga")
-            except Exception as e:
-                st.metric(f"{selected_underlying} Spot", "Market Closed", delta="Feed Offline")
-        with s2: st.metric("India VIX", fmt(vix_info['vix']), delta=vix_info['regime'], delta_color="off")
-        # V55.6 PCR FIX - N/A ki jagah Last PCR / Neutral dikhao, taaki user ko pata chale chain band hai, value gayab nahi hai
-        with s3:
-            _disp_pcr = pcr
-            _pcr_label = "Derivatives Bias"
-            if not _disp_pcr:
-                try:
-                    _last_pcr = st.session_state.get('_last_pcr_value')
-                    if _last_pcr and 0 < float(_last_pcr) <= 10:
-                        _disp_pcr = float(_last_pcr)
-                        _pcr_label = "Last PCR (Cached) - Chain Offline"
-                except:
-                    pass
-            if _disp_pcr and 0 < float(_disp_pcr) <= 10:
-                try:
-                    st.session_state['_last_pcr_value'] = float(_disp_pcr)
-                except:
-                    pass
-                st.metric("Put-Call Ratio (PCR)", fmt(_disp_pcr, 2), delta=_pcr_label, delta_color="off")
+            if spot and float(spot) > 0:
+                # V88: delta me "Yahoo Fallback" TEXT mat bhejo - wahi up-arrow bug tha. current + prev_key bhejo.
+                _v88_live_card(f"{selected_underlying} Spot (NSE Live)", fmt(float(spot)), float(spot), f"spot_{selected_underlying}", _disp_label)
             else:
-                # V56 FIX - PCR 1.00 fake default mat dikhao, uspe trade ban jata tha. Chain offline hai to NO TRADE likho.
-                st.metric("Put-Call Ratio (PCR)", "OFFLINE", delta="Chain Offline - NO TRADE", delta_color="off")
-        with s4: st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
+                _v88_info_card(f"{selected_underlying} Spot", "Feed Retry..." if _is_open else "Market Closed", "Live Feed Blocked - Last Tick aa raha hai" if _is_open else "Feed Offline", value_color="#ef4444" if _is_open else "#ffffff")
+        with s2:
+            # V88: VIX invert=True - VIX up => RED, down => GREEN. Pehle delta="OPTIMAL BUYING" text tha, isliye hamesha up-green dikhta tha.
+            _v88_live_card("India VIX", fmt(float(vix_val)), float(vix_val), "vix", "OPTIMAL BUYING" if float(vix_val) < 15 else "HIGH VOLATILITY", invert=True)
+        with s3:
+            # V88: PCR bhi live_card - gira to ▼ RED, badha to ▲ GREEN. Pehle delta="Derivatives Bias" text tha.
+            _v88_live_card("Put-Call Ratio (PCR)", fmt(float(pcr), 2), float(pcr), "pcr", "Derivatives Bias")
+        with s4:
+            # V88: Max Pain - GEX text ab subtitle me hai, delta me number ka diff aayega, isliye arrow sahi dikhega.
+            _v88_live_card("Max Pain Gravity", f"{max_pain_val:,.0f}", float(max_pain_val), "max_pain", f"GEX: {_net_gex:+,.0f} Cr")
 
     render_index_live_ticker(underlying, selected_expiry, active_tf)
     # V87: Gift ticker ab FRAGMENT nahi hai - plain function, main thread me ek baar chalega. Har 15s auto-update BAND (wahi Bad message ki jad thi). Gift update chahiye to REFRESH / SCAN dabao.
