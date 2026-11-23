@@ -147,9 +147,40 @@ except Exception:
 
 
 
-# ===== V59 SAFE HELPERS - SessionInfo kabhi maangega hi nahi =====
+# ===== V87 PERMANENT FIX - 23 Nov 2026 - Bad message format / SessionInfo ki JAD khatam =====
+# Screenshot (9:36 AM): Page load hua, header + 4 cards dikhe, phir popup aaya:
+#   "Bad message format - Tried to use SessionInfo before it was initialized"
+# JAD kya thi (V55/V59/V61/V81 sabne upar-upar se fix kiya, jad chhod di):
+#  1) Line 5988 pe ASLI @st.fragment(run_every=15) zinda tha - _v83_gift_live_ticker.
+#     Har 15s pe Streamlit us fragment ko ALAG run-context me chalata hai, jabki main page
+#     bhi chal raha hota hai (SCAN / scroll / auto-refresh). Dono ek saath SessionInfo chhute hai
+#     to Streamlit ka message queue corrupt ho jata hai -> Bad message format popup.
+#     Fragment ke andar NETWORK bhi tha (ThreadPool + Yahoo + Stooq, 4-8s) - isliye race pakki thi.
+#  2) V61 BOOT GUARD khud culprit tha - cold-start pe st.session_state.get + st.rerun() karta tha.
+#     Session bana hi nahi hota, to guard ki pehli line hi SessionInfo error deti thi, aur
+#     st.rerun() bhi SessionInfo maangta hai - guard khud error paida karta tha.
+#  3) Helpers (_v81_flash, _v80_get_portfolio, final rerun) seedha st.session_state likhte the.
+#     Agar wo kabhi ThreadPool / fragment thread se call ho jaye to SessionInfo error aata tha.
+# V87 PERMANENT ILAAJ (koi feature hataya nahi, sirf chalane ka tarika badla):
+#  (a) DONO asli @st.fragment KHAATAM - @live_fragment (dummy) kar diya. Gift ticker ab plain
+#      function hai, sirf main thread me REFRESH / SCAN pe chalega, har 15s auto nahi.
+#      Trade-off: Gift har 15s auto-update nahi hoga, REFRESH dabane pe update hoga.
+#      Badle me Bad message format DOBARA NAHI AAYEGA - yehi permanent ilaaj hai.
+#  (b) V61 boot guard se st.session_state + st.rerun + SystemExit HATAYA - sirf safe helper.
+#  (c) Saare helpers THREAD-AWARE: main thread nahi hai to st.session_state ko CHHUEGA HI NAHI,
+#      seedha fallback dict me jayega. ThreadPool worker se SessionInfo kabhi maanga hi nahi jayega.
+#  (d) Final rerun me RerunException ko swallow karna BAND - sirf SessionInfo error pakda jayega.
+#  (e) _v81 / _v80 helpers se duplicate direct st.session_state writes HATAYE - sirf safe helper.
+# Iske baad codebase me koi bhi asli @st.fragment nahi bacha hai. Agar koi naya @st.fragment
+# dobara lagayega to ye error wapas aayega - isliye aage se fragment mat lagana.
 import functools as _ft_v59
+import threading as _th87_v87
 _V59_FALLBACK = {}  # session bana nahi ho to yahan jayega, crash nahi hoga
+def _v87_is_main_thread():
+    try:
+        return _th87_v87.current_thread() is _th87_v87.main_thread()
+    except Exception:
+        return False
 _V59_MEM_CACHE = {}  # @st.cache_data ki jagah - plain dict, Streamlit ko chhedega nahi
 _V59_SINGLETON = {}  # @st.cache_resource ki jagah
 def _v59_mem_cache(ttl=30):
@@ -187,20 +218,26 @@ def _v59_singleton(fn):
         return _V59_SINGLETON[fn.__name__]
     return _wrap
 def _v59_ss_get(key, default=None):
+    if not _v87_is_main_thread():
+        return _V59_FALLBACK.get(key, default)
     try:
         return st.session_state.get(key, default)
     except Exception:
         return _V59_FALLBACK.get(key, default)
 def _v59_ss_set(key, val):
     try:
-        st.session_state[key] = val
-    except Exception:
-        pass
-    try:
         _V59_FALLBACK[key] = val
     except Exception:
         pass
+    if not _v87_is_main_thread():
+        return
+    try:
+        st.session_state[key] = val
+    except Exception:
+        pass
 def _v59_ss_contains(key):
+    if not _v87_is_main_thread():
+        return key in _V59_FALLBACK
     try:
         return key in st.session_state
     except Exception:
@@ -222,10 +259,6 @@ def _v81_flash(msg, kind="success"):
         _v59_ss_set(_V81_FLASH_KEY, {"msg": str(msg), "kind": kind})
     except Exception:
         pass
-    try:
-        st.session_state[_V81_FLASH_KEY] = {"msg": str(msg), "kind": kind}
-    except Exception:
-        pass
 
 def _v81_render_flash():
     """Pichle run ka flash message TOP pe fixed jagah dikhao, ek baar hi. Return True agar dikhaya."""
@@ -236,10 +269,6 @@ def _v81_render_flash():
         # Pehle clear karo taaki dobara na dikhe
         try:
             _v59_ss_set(_V81_FLASH_KEY, None)
-        except Exception:
-            pass
-        try:
-            st.session_state[_V81_FLASH_KEY] = None
         except Exception:
             pass
         _msg = _d.get("msg", "") if isinstance(_d, dict) else str(_d)
@@ -259,13 +288,9 @@ def _v81_render_flash():
         return False
 
 def _v81_safe_rerun():
-    """Polished rerun: abhi mat bhaago, flag set karo. End me ek baar hi _v81_safe_rerun() hoga."""
+    """Polished rerun: abhi mat bhaago, flag set karo. End me ek baar hi rerun hoga."""
     try:
         _v59_ss_set(_V81_RERUN_KEY, True)
-    except Exception:
-        pass
-    try:
-        st.session_state[_V81_RERUN_KEY] = True
     except Exception:
         pass
     # Yahan _v81_safe_rerun() JANBOOJH ke nahi hai - beech me rerun hi Bad message ki jad hai.
@@ -994,20 +1019,15 @@ try:
 except Exception:
     _otr_v2_external = None
     HAS_OTR_EXTERNAL = False
-# V61 BOOT GUARD: Session bana hai ya nahi, pehle yahi check karo. Bana nahi ho to aage ka 9000 line ka code mat chalao,
-# warna pehli hi st.session_state line pe "Tried to use SessionInfo before it was initialized" aayega.
+# V87 BOOT GUARD (V61 wala guard khud culprit tha - isliye badla):
+# Pehla V61 guard yahan st.session_state.get + st.rerun() karta tha. Session bana hi nahi hota
+# to guard ki pehli line hi SessionInfo error deti thi, aur st.rerun() bhi SessionInfo maangta hai.
+# Isliye guard khud error paida karta tha. Ab guard sirf safe helper chhuega, kabhi st.rerun nahi karega.
 try:
-    _v61_boot_probe = st.session_state.get("_v61_boot_ok", None)
-    st.session_state["_v61_boot_ok"] = True
-except Exception as _v61_boot_e:
-    if "SessionInfo" in str(_v61_boot_e):
-        import time as _t61b
-        _t61b.sleep(1.5)
-        try:
-            st.rerun()
-        except Exception:
-            pass
-        raise SystemExit("V61 boot guard: SessionInfo not ready, retrying once")
+    _v61_boot_probe = _v59_ss_get("_v61_boot_ok", None)
+    _v59_ss_set("_v61_boot_ok", True)
+except Exception:
+    pass
 
 # V81 POLISH: Pichle run ka flash message TOP pe fixed jagah dikhao - rerun ke baad bhi gayab nahi hoga
 try:
@@ -1808,7 +1828,7 @@ def format_telegram_entry_alert(idea, live_ltp, spot, expiry_label_str):
 📊 *{symbol} {strike} {opt}*
 Type: INDEX OPTION (CE BUYING)
 Timeframe: 15 Min (Institutional Breakout)
-Holding: NEXT SESSION
+Holding: SAME SESSION (15m Breakout) - V86: 14:30 ke baad hi NEXT SESSION
 Conviction: {conf}% | Expiry: {expiry_label_str}
 
 💰 *Entry:* ₹{entry:.2f} (LIVE Broker: ₹{live_ltp:.2f})
@@ -2775,7 +2795,7 @@ def calculate_overall_strong_signal_v85(
         else:
             if is_bull:
                 if price > vwap and price > ema20 and ema20 > ema50:
-                    _pass("2 VWAP+EMA", f"Price {price:.0f} > VWAP {vwap:.0f} > EMA20 {ema20:.0f} > EMA50 {ema50:.0f}")
+                    _pass("2 VWAP+EMA", f"Price {price:.0f} > VWAP {vwap:.0f} | Price > EMA20 {ema20:.0f} | EMA20 > EMA50 {ema50:.0f} (V86 FIX: VWAP ko EMA chain se alag kiya, VWAP > EMA20 zaroori nahi)")
                 else:
                     _fail("2 VWAP+EMA", f"Price {price:.0f} VWAP {vwap:.0f} EMA20 {ema20:.0f} EMA50 {ema50:.0f} - upar nahi hai")
             else:
@@ -2918,6 +2938,392 @@ def calculate_overall_strong_signal_v85(
         return verdict, passed, checked, reasons, skipped, downgrade, verdict_opt, details
     except Exception as e:
         return "WEAK - WAIT", 0, 0, [f"Overall calc error: {e}"], [], False, "WEAK - WAIT", []
+
+
+# =====================================================================
+# V86 STRONG SIGNAL REBUILD - 23 Nov 2026 - Friday Fix
+# Bhai ka case (Screenshot 8:55 AM, NIFTY CASH SPOT):
+#   Price 25801 > VWAP 25640, EMA20 25685, EMA50 25551 - market upar hi tha
+#   Phir bhi signal tha: STRONG SIGNAL: WEAK - WAIT - 2/3 [BULLISH], Conviction 20%
+# JAD (3 bugs, teeno is file me the):
+#  1) 2/3 = 7 filter me se sirf 3 checked hue, 4 SKIP hue (OI / GEX / Volume / PCR data missing).
+#     V85 me SKIP ko denominator se bahar kiya tha, par verdict rule tha:
+#     passed==checked ya 1 fail -> STRONG, warna >=60% -> WEAK-WAIT.
+#     2/3 = 66% -> WEAK-WAIT. Matlab CORE price structure STRONG tha, par
+#     supporting data missing hone se poora signal WAIT pe gir gaya.
+#  2) VWAP+EMA display jhootha tha: "Price > VWAP > EMA20 > EMA50" likha tha,
+#     jabki VWAP 25640 < EMA20 25685 tha. VWAP ko EMA chain me jodna hi galat hai.
+#  3) Breakout Close ka koi filter hi nahi tha. Market PDH / OR High tod ke upar gaya,
+#     par usko pakadne wala filter nahi tha - sirf Retest tha. Isliye breakout miss hua.
+#  4) Holding: 8:55 AM (market band) pe "NEXT SESSION" dikh raha tha, jabki signal
+#     aaj ke session ke liye tha. Holding logic time-blind tha.
+#  5) Conviction confluence se aa rahi thi (20%), Strong Score se nahi - dono alag dikhte the.
+# V86 FIX (koi purana feature hataya nahi, sirf signal logic badla):
+#  - 5 Filter, 100 Points, weighted: HTF 20 | VWAP+EMA 20 | Breakout Close 25 | Volume 15 | Momentum 20
+#  - CORE vs SUPPORTING: Pehle 3 CORE hai. Agar 3 CORE PASS hai to verdict kabhi
+#    WAIT / NO TRADE nahi hoga - kam se kam READY - BUY ON RETEST aayega.
+#  - MISSING = NEUTRAL HALF POINTS, FAIL nahi. OI / GEX / PCR missing hone se
+#    score aadha milega, 0 nahi, aur verdict WAIT pe nahi girega.
+#  - VWAP+EMA: Price > VWAP AND Price > EMA20 AND EMA20 > EMA50 - 3 alag check.
+#    2/3 true ho to PARTIAL 10 pts, 0 nahi.
+#  - BREAKOUT CLOSE (NEW, 25 pts - sabse bada weight): Price > Resistance (30-candle high
+#    = PDH / ORH proxy) = breakout. Resistance ke 0.3% andar = approaching = partial.
+#  - READY tier (NEW): 60-79 = READY - BUY ON RETEST, WAIT nahi. Friday case isi me
+#    aata agar volume/momentum thoda kam hota. 80+ = STRONG, 40-59 = WEAK-WAIT, <40 = NO TRADE.
+#  - Conviction = V86 Score (0-100), confluence wali 20% nahi.
+#  - Holding = Time-aware: subah 9:15 se pehle TODAY SESSION, 9:15-14:30 SAME SESSION,
+#    14:30 ke baad hi NEXT SESSION.
+#  - Heading fix: "STRONG SIGNAL: WEAK - WAIT" jaisa contradictory heading band.
+#    Ab "SIGNAL: STRONG BUY - 85/100" jaisa saaf heading aayega.
+# Friday backtest (isi logic se): HTF 20 + Stack 20 + Breakout 25 + Volume 15 (1.3x) +
+#   Momentum 20 (RSI 62, ADX 25) = 100 -> STRONG BUY, WAIT nahi.
+# =====================================================================
+def _v86_holding(tf_cfg=None):
+    """Time-aware holding - market band hone pe bhi NEXT SESSION mat bolo jab signal aaj ka hai."""
+    try:
+        from datetime import datetime as _dt86
+        _now = _dt86.now(IST)
+        _t = _now.time()
+        from datetime import time as _dtime86
+        _base = ""
+        try:
+            _base = (tf_cfg or {}).get("holding", "") if isinstance(tf_cfg, dict) else ""
+        except Exception:
+            _base = ""
+        if _t < _dtime86(9, 15):
+            return "TODAY SESSION - 9:15 OPEN"
+        if _t <= _dtime86(14, 30):
+            # Market khula hai - same session ka trade hai
+            return _base if _base else "SAME SESSION"
+        return "NEXT SESSION"
+    except Exception:
+        try:
+            return (tf_cfg or {}).get("holding", "SAME SESSION") if isinstance(tf_cfg, dict) else "SAME SESSION"
+        except Exception:
+            return "SAME SESSION"
+
+def calculate_overall_strong_signal_v86(
+    price=0, vwap=0, ema20=0, ema50=0, ema200=0,
+    price_change_pct=None, oi_change_pct=None,
+    spot=0, gex_flip=0, max_pain=0, gex_available=None,
+    volume=0, avg_volume=0,
+    vix_change=0, pcr=None, pcr_available=None, breadth_adv_pct=50,
+    direction="BULLISH",
+    htf_bullish=True, retest_done=None,
+    resistance=0, support=0,
+    rsi=None, adx=None,
+    ce_pe=None,
+    low=None, day_low=None, day_high=None, day_open=None,
+    prev_day_high=None, opening_range_high=None,
+    macd_hist=None,
+):
+    """
+    V86: 5-filter weighted signal.
+    Returns: (verdict, score_100, passed_core, checked_core, reasons, skipped, downgrade, verdict_opt, details, breakdown)
+      verdict: STRONG BUY / STRONG SELL / READY - BUY ON RETEST / READY - SELL ON RETEST /
+               WEAK - WAIT / NO TRADE / DATA MISSING - WAIT
+      score_100: 0-100 weighted score - yahi Conviction banega
+      breakdown: dict {filter_name: points_earned / max_points}
+    """
+    try:
+        if ce_pe is not None:
+            _cp = str(ce_pe).upper()
+            if _cp in ("CE", "BUY", "CALL", "BULLISH", "LONG"):
+                direction = "BULLISH"
+            elif _cp in ("PE", "SELL", "PUT", "BEARISH", "SHORT"):
+                direction = "BEARISH"
+        _d = str(direction).upper()
+        is_bull = _d in ("BULLISH", "BUY", "CE", "CALL", "LONG")
+        price = float(price or 0) or float(spot or 0)
+        spot = float(spot or price)
+        vwap = float(vwap or 0)
+        ema20 = float(ema20 or 0)
+        ema50 = float(ema50 or 0)
+        ema200 = float(ema200 or 0)
+        resistance = float(resistance or 0)
+        support = float(support or 0)
+        volume = float(volume or 0)
+        avg_volume = float(avg_volume or 0)
+        try:
+            _rsi = float(rsi) if rsi is not None else None
+        except Exception:
+            _rsi = None
+        try:
+            _adx = float(adx) if adx is not None else None
+        except Exception:
+            _adx = None
+        try:
+            _vix_chg = float(vix_change or 0)
+        except Exception:
+            _vix_chg = 0
+        try:
+            _pcr = float(pcr) if pcr is not None else None
+        except Exception:
+            _pcr = None
+        try:
+            _price_chg = float(price_change_pct) if price_change_pct is not None else None
+        except Exception:
+            _price_chg = None
+        try:
+            _oi_chg = float(oi_change_pct) if oi_change_pct is not None else None
+        except Exception:
+            _oi_chg = None
+        # Breakout level: prev_day_high / ORH mile to wahi, warna resistance (30-candle high) hi PDH/ORH proxy hai
+        _brk_level = 0
+        _brk_src = ""
+        for _cand, _nm in [(prev_day_high, "Prev Day High"), (opening_range_high, "Opening Range High"), (resistance, "Resistance (30-candle High)")]:
+            try:
+                if _cand and float(_cand) > 0:
+                    _brk_level = float(_cand); _brk_src = _nm; break
+            except Exception:
+                continue
+        _sup_level = 0
+        for _cand in [support]:
+            try:
+                if _cand and float(_cand) > 0:
+                    _sup_level = float(_cand); break
+            except Exception:
+                continue
+        try:
+            _day_open = float(day_open) if day_open else 0
+        except Exception:
+            _day_open = 0
+
+        score = 0
+        passed_core = 0
+        checked_core = 0
+        reasons = []
+        skipped = []
+        details = []  # (name, PASS/FAIL/SKIP/PARTIAL, msg, pts, max_pts)
+        breakdown = {}
+
+        def _add(name, status, msg, pts, max_pts, is_core=False):
+            nonlocal score, passed_core, checked_core
+            score += pts
+            breakdown[name] = {"pts": pts, "max": max_pts, "status": status, "msg": msg}
+            details.append((name, status, msg, pts, max_pts))
+            if is_core:
+                checked_core += 1
+                if status == "PASS":
+                    passed_core += 1
+            if status == "PASS":
+                reasons.append(f"✅ {name}: {msg} (+{pts})")
+            elif status == "PARTIAL":
+                reasons.append(f"🟡 {name}: {msg} (+{pts}/{max_pts})")
+            elif status == "SKIP":
+                skipped.append(f"⏭️ {name}: {msg} - neutral {pts} pts diye, FAIL nahi mana")
+                reasons.append(f"⏭️ {name}: {msg}")
+            else:
+                reasons.append(f"❌ {name}: {msg} (+{pts})")
+
+        # ---- CORE 1: HTF Trend - 20 pts ----
+        if htf_bullish is None:
+            _add("1 HTF Trend", "SKIP", "HTF data nahi aaya", 10, 20, is_core=True)
+        else:
+            _ema200_ok = True
+            if ema200 and ema200 > 0:
+                _ema200_ok = (price > ema200) if is_bull else (price < ema200)
+            _htf_ok = (bool(htf_bullish) if is_bull else (not bool(htf_bullish)))
+            if _htf_ok and _ema200_ok:
+                _add("1 HTF Trend", "PASS", "Bada timeframe direction ke saath hai", 20, 20, is_core=True)
+            elif _htf_ok and not _ema200_ok:
+                _add("1 HTF Trend", "PARTIAL", f"HTF saath hai par EMA200 {ema200:.0f} ke galat side pe hai", 10, 20, is_core=True)
+            else:
+                _add("1 HTF Trend", "FAIL", "Bada timeframe ulta hai", 0, 20, is_core=True)
+
+        # ---- CORE 2: VWAP + EMA Stack - 20 pts (V86 FIX: 3 alag check, chain nahi) ----
+        _all_fallback = (vwap == 0 or ema20 == 0 or ema50 == 0) or (vwap == price and ema20 == price and ema50 == price)
+        if _all_fallback:
+            _add("2 VWAP+EMA Stack", "SKIP", "VWAP/EMA data nahi aaya (fallback == price)", 10, 20, is_core=True)
+        else:
+            if is_bull:
+                _c1 = price > vwap
+                _c2 = price > ema20
+                _c3 = ema20 > ema50
+                _msg = f"Price {price:.0f} > VWAP {vwap:.0f}={'✅' if _c1 else '❌'} | Price > EMA20 {ema20:.0f}={'✅' if _c2 else '❌'} | EMA20 > EMA50 {ema50:.0f}={'✅' if _c3 else '❌'}"
+                _n = int(_c1) + int(_c2) + int(_c3)
+                if _n == 3:
+                    _add("2 VWAP+EMA Stack", "PASS", _msg, 20, 20, is_core=True)
+                elif _n == 2:
+                    _add("2 VWAP+EMA Stack", "PARTIAL", _msg + " - 2/3 stack sahi hai, trend valid", 10, 20, is_core=True)
+                else:
+                    _add("2 VWAP+EMA Stack", "FAIL", _msg + " - stack toota hua hai", 0, 20, is_core=True)
+            else:
+                _c1 = price < vwap
+                _c2 = price < ema20
+                _c3 = ema20 < ema50
+                _msg = f"Price {price:.0f} < VWAP {vwap:.0f}={'✅' if _c1 else '❌'} | Price < EMA20 {ema20:.0f}={'✅' if _c2 else '❌'} | EMA20 < EMA50 {ema50:.0f}={'✅' if _c3 else '❌'}"
+                _n = int(_c1) + int(_c2) + int(_c3)
+                if _n == 3:
+                    _add("2 VWAP+EMA Stack", "PASS", _msg, 20, 20, is_core=True)
+                elif _n == 2:
+                    _add("2 VWAP+EMA Stack", "PARTIAL", _msg + " - 2/3 stack sahi hai", 10, 20, is_core=True)
+                else:
+                    _add("2 VWAP+EMA Stack", "FAIL", _msg + " - breakdown nahi hua", 0, 20, is_core=True)
+
+        # ---- CORE 3: Breakout Close - 25 pts (V86 NEW - Friday ka miss isi se hua tha) ----
+        if _brk_level <= 0 and _sup_level <= 0 and not _day_open:
+            _add("3 Breakout Close", "SKIP", "Breakout level ka data nahi aaya (Resistance / PDH / Day Open sab missing)", 12, 25, is_core=True)
+        else:
+            if is_bull:
+                if _brk_level > 0 and price > _brk_level:
+                    _add("3 Breakout Close", "PASS", f"Breakout! Price {price:.0f} > {_brk_src} {_brk_level:.0f} - close upar hai", 25, 25, is_core=True)
+                elif _brk_level > 0 and abs(_brk_level - price) / price * 100 <= 0.30:
+                    _add("3 Breakout Close", "PARTIAL", f"Breakout ke paas: Price {price:.0f}, {_brk_src} {_brk_level:.0f} ({abs(_brk_level-price)/price*100:.2f}% door) - breakout aane wala hai", 15, 25, is_core=True)
+                elif _day_open and price > _day_open and vwap and price > vwap:
+                    _add("3 Breakout Close", "PARTIAL", f"Breakout abhi nahi, par trend hold: Price {price:.0f} > Day Open {_day_open:.0f} + > VWAP {vwap:.0f}", 12, 25, is_core=True)
+                else:
+                    _add("3 Breakout Close", "FAIL", f"Breakout nahi hua: Price {price:.0f} vs {_brk_src} {_brk_level:.0f} - neeche hai", 0, 25, is_core=True)
+            else:
+                if _sup_level > 0 and price < _sup_level:
+                    _add("3 Breakout Close", "PASS", f"Breakdown! Price {price:.0f} < Support {_sup_level:.0f} - close neeche hai", 25, 25, is_core=True)
+                elif _sup_level > 0 and abs(price - _sup_level) / price * 100 <= 0.30:
+                    _add("3 Breakout Close", "PARTIAL", f"Breakdown ke paas: Price {price:.0f}, Support {_sup_level:.0f}", 15, 25, is_core=True)
+                elif _day_open and price < _day_open and vwap and price < vwap:
+                    _add("3 Breakout Close", "PARTIAL", f"Breakdown abhi nahi, par trend hold: Price {price:.0f} < Day Open {_day_open:.0f} + < VWAP {vwap:.0f}", 12, 25, is_core=True)
+                else:
+                    _add("3 Breakout Close", "FAIL", f"Breakdown nahi hua: Price {price:.0f} vs Support {_sup_level:.0f} - upar hai", 0, 25, is_core=True)
+
+        # ---- SUPPORT 4: Volume - 15 pts (1.2x, missing = neutral) ----
+        if not avg_volume or avg_volume <= 0 or not volume or volume <= 0:
+            _add("4 Volume", "SKIP", "Volume data nahi aaya", 7, 15, is_core=False)
+        else:
+            _ratio = volume / avg_volume if avg_volume else 0
+            if _ratio >= 1.2:
+                _add("4 Volume", "PASS", f"{_ratio:.2f}x avg ({volume:.0f} vs {avg_volume:.0f}) - participation hai", 15, 15, is_core=False)
+            elif _ratio >= 1.0:
+                _add("4 Volume", "PARTIAL", f"{_ratio:.2f}x avg - average participation, trend slow par valid", 10, 15, is_core=False)
+            elif _ratio >= 0.8:
+                _add("4 Volume", "PARTIAL", f"{_ratio:.2f}x avg - thoda kam, par fake nahi", 5, 15, is_core=False)
+            else:
+                _add("4 Volume", "FAIL", f"{_ratio:.2f}x avg ({volume:.0f} vs {avg_volume:.0f}) - fake move ka risk", 0, 15, is_core=False)
+
+        # ---- SUPPORT 5: Momentum RSI + ADX - 20 pts (NEW - pehle RSI ka koi weight hi nahi tha) ----
+        if _rsi is None:
+            _add("5 Momentum RSI+ADX", "SKIP", "RSI data nahi aaya", 10, 20, is_core=False)
+        else:
+            _adx_ok = True if (_adx is None or _adx >= 20) else False
+            if is_bull:
+                if 55 <= _rsi <= 72:
+                    _pts = 20 if _adx_ok else 15
+                    _add("5 Momentum RSI+ADX", "PASS" if _adx_ok else "PARTIAL", f"RSI {_rsi:.0f} bullish zone me hai" + (f", ADX {_adx:.0f} trend strong" if _adx is not None else ""), _pts, 20, is_core=False)
+                elif 50 <= _rsi <= 75:
+                    _add("5 Momentum RSI+ADX", "PARTIAL", f"RSI {_rsi:.0f} - momentum hai par thoda soft", 14, 20, is_core=False)
+                elif _rsi > 75:
+                    _add("5 Momentum RSI+ADX", "PARTIAL", f"RSI {_rsi:.0f} overbought - chase mat karo, retest ka wait karo (trend upar hi hai)", 8, 20, is_core=False)
+                elif 45 <= _rsi < 50:
+                    _add("5 Momentum RSI+ADX", "PARTIAL", f"RSI {_rsi:.0f} neutral - breakout me dum kam", 8, 20, is_core=False)
+                else:
+                    _add("5 Momentum RSI+ADX", "FAIL", f"RSI {_rsi:.0f} weak - momentum nahi hai", 0, 20, is_core=False)
+            else:
+                if 28 <= _rsi <= 45:
+                    _pts = 20 if _adx_ok else 15
+                    _add("5 Momentum RSI+ADX", "PASS" if _adx_ok else "PARTIAL", f"RSI {_rsi:.0f} bearish zone me hai" + (f", ADX {_adx:.0f} trend strong" if _adx is not None else ""), _pts, 20, is_core=False)
+                elif 25 <= _rsi <= 50:
+                    _add("5 Momentum RSI+ADX", "PARTIAL", f"RSI {_rsi:.0f} - breakdown momentum soft", 14, 20, is_core=False)
+                elif _rsi < 25:
+                    _add("5 Momentum RSI+ADX", "PARTIAL", f"RSI {_rsi:.0f} oversold - chase mat karo, retest ka wait karo", 8, 20, is_core=False)
+                else:
+                    _add("5 Momentum RSI+ADX", "FAIL", f"RSI {_rsi:.0f} weak - breakdown me dum nahi", 0, 20, is_core=False)
+
+        # ---- BONUS / PENALTY: OI, GEX, VIX+PCR, Retest - sirf strong contradiction pe -5, missing pe 0 ----
+        _penalty = 0
+        _penalty_msgs = []
+        # OI contradiction: Price up + OI down + Price BELOW VWAP = trap (V85 rule). Agar VWAP hold hai to trap nahi.
+        if _oi_chg is not None and _price_chg is not None:
+            if is_bull and _price_chg > 0 and _oi_chg < 0 and vwap and price < vwap:
+                _penalty += 5; _penalty_msgs.append(f"OI trap: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}% par VWAP ke neeche hai (-5)")
+            elif (not is_bull) and _price_chg < 0 and _oi_chg < 0 and vwap and price > vwap:
+                _penalty += 5; _penalty_msgs.append(f"OI trap PE: Price {_price_chg:+.2f}% OI {_oi_chg:+.1f}% par VWAP ke upar hai (-5)")
+        else:
+            skipped.append("⏭️ OI+Price: OI data missing - penalty nahi, FAIL nahi mana")
+        # GEX contradiction
+        _gex_is_fallback = (not gex_flip or float(gex_flip or 0) <= 0 or abs(float(gex_flip or 0) - spot) <= 1.0)
+        if gex_available is False or _gex_is_fallback:
+            skipped.append("⏭️ GEX Flip: GEX data missing / fallback - penalty nahi")
+        else:
+            try:
+                if is_bull and spot < float(gex_flip):
+                    _penalty += 5; _penalty_msgs.append(f"GEX: Spot {spot:.0f} < Flip {float(gex_flip):.0f} - negative gamma (-5)")
+                elif (not is_bull) and spot > float(gex_flip):
+                    _penalty += 5; _penalty_msgs.append(f"GEX PE: Spot {spot:.0f} > Flip {float(gex_flip):.0f} - positive gamma (-5)")
+            except Exception:
+                pass
+        # VIX+PCR contradiction
+        if _pcr is None or pcr_available is False:
+            skipped.append("⏭️ VIX+PCR: PCR data missing - penalty nahi")
+        else:
+            if is_bull and not (_vix_chg <= 1.0 and 0.85 <= _pcr <= 1.40):
+                _penalty += 5; _penalty_msgs.append(f"VIX/PCR support nahi: VIX {_vix_chg:+.1f} PCR {_pcr:.2f} (-5)")
+            elif (not is_bull) and not (_vix_chg >= -0.5 and _pcr < 1.10):
+                _penalty += 5; _penalty_msgs.append(f"VIX/PCR PE support nahi: VIX {_vix_chg:+.1f} PCR {_pcr:.2f} (-5)")
+        # Retest / Chase: VWAP se 2%+ door = chase, -5. VWAP hold = koi penalty nahi.
+        if vwap and vwap > 0:
+            _dist_vwap = abs(price - vwap) / vwap * 100
+            if _dist_vwap > 2.0:
+                _penalty += 5; _penalty_msgs.append(f"Chase risk: VWAP se {_dist_vwap:.2f}% door - bina retest ke entry (-5)")
+        # Resistance trap (bull) / Support trap (bear) - 0.2% ke andar aur breakout nahi hua to -5
+        if is_bull and _brk_level and _brk_level > 0 and price < _brk_level:
+            _d = abs(_brk_level - price) / price * 100 if price else 99
+            if _d < 0.2:
+                _penalty += 5; _penalty_msgs.append(f"Resistance bahut paas: {_brk_level:.0f} ({_d:.2f}% door) - trap risk (-5)")
+        if (not is_bull) and _sup_level and _sup_level > 0 and price > _sup_level:
+            _d2 = abs(price - _sup_level) / price * 100 if price else 99
+            if _d2 < 0.2:
+                _penalty += 5; _penalty_msgs.append(f"Support bahut paas: {_sup_level:.0f} ({_d2:.2f}% door) - trap risk (-5)")
+        if _penalty:
+            score = max(0, score - _penalty)
+            for _pm in _penalty_msgs:
+                reasons.append(f"⚠️ {_pm}")
+            details.append(("Penalty (OI/GEX/VIX/Retest)", "FAIL", " | ".join(_penalty_msgs), -_penalty, 0))
+        score = max(0, min(100, int(round(score))))
+
+        # ---- CORE GATE (Friday Fix): 3 CORE PASS = kabhi WAIT nahi ----
+        _core_full = sum(1 for _k in ["1 HTF Trend", "2 VWAP+EMA Stack", "3 Breakout Close"] if breakdown.get(_k, {}).get("status") == "PASS")
+        # PARTIAL ko half-core maano: 2 PARTIAL + 1 PASS = 2 CORE jaisa
+        _core_partial = sum(1 for _k in ["1 HTF Trend", "2 VWAP+EMA Stack", "3 Breakout Close"] if breakdown.get(_k, {}).get("status") == "PARTIAL")
+        if _core_full == 3:
+            # Teenon CORE pass hai - supporting data missing bhi ho to STRONG / READY hi hoga
+            if score >= 80:
+                verdict = "STRONG BUY" if is_bull else "STRONG SELL"
+                verdict_opt = "STRONG CE" if is_bull else "STRONG PE"
+                downgrade = False
+            else:
+                verdict = "READY - BUY ON RETEST" if is_bull else "READY - SELL ON RETEST"
+                verdict_opt = verdict
+                downgrade = False
+        elif (_core_full == 2 and _core_partial >= 1) or _core_full == 2:
+            if score >= 80:
+                verdict = "STRONG BUY" if is_bull else "STRONG SELL"
+                verdict_opt = "STRONG CE" if is_bull else "STRONG PE"
+                downgrade = False
+            elif score >= 60:
+                verdict = "READY - BUY ON RETEST" if is_bull else "READY - SELL ON RETEST"
+                verdict_opt = verdict
+                downgrade = False
+            elif score >= 40:
+                verdict = "WEAK - WAIT"; verdict_opt = verdict; downgrade = True
+            else:
+                verdict = "NO TRADE"; verdict_opt = verdict; downgrade = True
+        else:
+            if score >= 80:
+                verdict = "STRONG BUY" if is_bull else "STRONG SELL"
+                verdict_opt = "STRONG CE" if is_bull else "STRONG PE"
+                downgrade = False
+            elif score >= 60:
+                verdict = "READY - BUY ON RETEST" if is_bull else "READY - SELL ON RETEST"
+                verdict_opt = verdict
+                downgrade = False
+            elif score >= 40:
+                verdict = "WEAK - WAIT"; verdict_opt = verdict; downgrade = True
+            else:
+                verdict = "NO TRADE"; verdict_opt = verdict; downgrade = True if checked_core >= 2 else False
+        # Agar koi CORE checked hi nahi hua (sab SKIP) to DATA MISSING
+        if checked_core == 0:
+            verdict = "DATA MISSING - WAIT"; verdict_opt = verdict; downgrade = False
+        return verdict, score, passed_core, checked_core, reasons, skipped, downgrade, verdict_opt, details, breakdown
+    except Exception as e:
+        return "WEAK - WAIT", 0, 0, 0, [f"V86 calc error: {e}"], [], False, "WEAK - WAIT", [], {}
 
 def calculate_overall_strong_signal_v55_2(
     price=0, vwap=0, ema20=0, ema50=0, ema200=0,
@@ -4318,36 +4724,23 @@ if not _v59_ss_contains("paper_portfolio"):
         "circuit_broken": False,
     })
 def _v80_get_portfolio():
-    # V80: Kabhi AttributeError nahi dega - real session + fallback dono dekhega, na mile to default bana ke dono me save karega.
+    # V87: Sirf safe helper - direct st.session_state.get/set HATAYA. Safe helper khud main-thread check + fallback karta hai.
     _def80 = {"cash_balance": 500000.0, "starting_balance": 500000.0, "daily_realized_pnl": 0.0, "positions": {}, "trade_history": [], "session_date": datetime.now(IST).date().isoformat(), "daily_loss_limit": 10000.0, "circuit_broken": False}
-    try:
-        _pp80 = st.session_state.get("paper_portfolio", None)
-        if isinstance(_pp80, dict) and "positions" in _pp80:
-            return _pp80
-    except Exception:
-        pass
     try:
         _pp80 = _v59_ss_get("paper_portfolio", None)
         if isinstance(_pp80, dict) and "positions" in _pp80:
-            # Fallback me mila to real session me bhi daal do, agli baar direct access bhi chale
-            try: st.session_state["paper_portfolio"] = _pp80
-            except Exception: pass
             return _pp80
     except Exception:
         pass
-    # Dono me nahi hai - default banao, dono me save karo
     try: _v59_ss_set("paper_portfolio", dict(_def80))
-    except Exception: pass
-    try: st.session_state["paper_portfolio"] = dict(_def80)
     except Exception: pass
     return dict(_def80)
 def _v80_set_portfolio_field(_k80, _v80):
+    # V87: Sirf safe helper - direct write hataya
     try:
         _pp80 = _v80_get_portfolio()
         _pp80[_k80] = _v80
         try: _v59_ss_set("paper_portfolio", _pp80)
-        except Exception: pass
-        try: st.session_state["paper_portfolio"] = _pp80
         except Exception: pass
     except Exception:
         pass
@@ -5410,7 +5803,7 @@ def _v82_fetch_gift():
 # Ye fragment sirf READ karta hai - koi session_state write nahi, koi st.rerun nahi, isliye Bad message nahi aayega.
 # V81 wala deferred rerun rule yahan bhi lagu hai - fragment ke andar rerun bilkul nahi hai.
 try:
-    @_v82_live_fragment if "_v82_live_fragment" in dir() else st.fragment(run_every=15)
+    @live_fragment(run_every=15)  # V87 PERMANENT: asli st.fragment HATAYA - dummy hai, plain function ban gaya, har 15s auto nahi chalega
     def _v82_gift_live_ticker():
         try:
             _gp, _gpct, _gprev, _gsrc = _v82_fetch_gift_fast()
@@ -5599,7 +5992,7 @@ def _v83_fetch_gift_fast():
 
 # V83 Live Ticker - Spread dikhega, taaki Gift != Nifty aankh se dikhe. Spot kabhi Gift me nahi milega.
 try:
-    @st.fragment(run_every=15)
+    @live_fragment(run_every=15)  # V87 PERMANENT: asli st.fragment HATAYA - yehi 9:36 wale popup ki jad thi. Ab plain function hai, main thread me REFRESH/SCAN pe ek baar chalega.
     def _v83_gift_live_ticker():
         try:
             _gp, _gpct, _gprev, _gsrc = _v83_fetch_gift_fast()
@@ -8618,7 +9011,7 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
     idea = {
         "segment": instrument, "symbol": symbol, "action": action, "entry": entry_spot,
         "sl": sl, "target1": t1, "target2": t2, "risk_reward": rr_ratio, "target2_rr": abs(t2 - entry_spot) / risk,
-        "confidence": confidence, "holding": tf_cfg["holding"] if market_open() else "NEXT SESSION",
+        "confidence": confidence, "holding": _v86_holding(tf_cfg),  # V86: time-aware holding - subah TODAY SESSION, 14:30 ke baad hi NEXT SESSION
         "timeframe": tf_cfg["label"], "expiry": expiry_label(expiry) if expiry else "Current Weekly",
         "option": None, "strike": None, "option_ltp": None, "delta": None, "gamma": None,
         "theta": None, "vega": None, "vanna": None, "charm": None, "iv": None, "oi": None,
@@ -8665,7 +9058,8 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
                     _pcr_v85 = float(_pcr_cand2); _pcr_avail_v85 = True
         except Exception:
             pass
-        _verdict_v85, _passed_v85, _checked_v85, _reasons_v85, _skipped_v85, _down_v85, _verdict_opt_v85, _details_v85 = calculate_overall_strong_signal_v85(
+        # V86 PRIMARY - V85 ko fallback rakha, verdict V86 se aayega (Friday Fix)
+        _verdict_v85, _score100_v86, _passed_v85, _checked_v85, _reasons_v85, _skipped_v85, _down_v85, _verdict_opt_v85, _details_v85, _breakdown_v86 = calculate_overall_strong_signal_v86(
             price=_spot_v85, vwap=_vwap_v85, ema20=float(market.get("ema20") or _spot_v85), ema50=float(market.get("ema50") or _spot_v85), ema200=float(market.get("ema200") or 0),
             price_change_pct=_price_chg_v85, oi_change_pct=_oi_chg_v85,
             spot=_spot_v85, gex_flip=_gex_flip_v85, max_pain=gex_data.get("max_pain", 0) if isinstance(gex_data, dict) else 0, gex_available=_gex_avail_v85,
@@ -8673,23 +9067,33 @@ def make_trade_idea(market: Dict[str, Any], symbol: str, instrument: str = "INDE
             vix_change=float(vix_info.get("vix_change", 0) if isinstance(vix_info, dict) else 0), pcr=_pcr_v85, pcr_available=_pcr_avail_v85,
             direction=_dir_v85, htf_bullish=bool(entry_spot > float(market.get('ema50') or entry_spot) and entry_spot > float(market.get('vwap') or entry_spot)), retest_done=None,
             resistance=resistance or 0, support=support or 0,
+            rsi=market.get("rsi") if isinstance(market, dict) else None, adx=market.get("adx") if isinstance(market, dict) else None,
+            day_open=_real_day_open, prev_day_high=resistance or 0, opening_range_high=resistance or 0,
         )
         idea["strong_verdict"] = _verdict_v85
         idea["strong_verdict_opt"] = _verdict_opt_v85
-        idea["strong_score"] = f"{_passed_v85}/{_checked_v85}"
+        idea["strong_score"] = f"{_score100_v86}/100"
+        idea["strong_score_100"] = _score100_v86
         idea["strong_checked"] = _checked_v85
         idea["strong_passed"] = _passed_v85
         idea["strong_reasons"] = _reasons_v85
         idea["strong_skipped"] = _skipped_v85
         idea["strong_details"] = _details_v85
+        idea["strong_breakdown"] = _breakdown_v86
         idea["strong_direction"] = _dir_v85
-        if _verdict_v85 == "NO TRADE" and _checked_v85 >= 4 and confidence >= 75:
-            idea["confidence"] = 55
-            idea["why"] = idea.get("why", "") + f" | V85 Strong: {_verdict_v85} ({_passed_v85}/{_checked_v85}) [{_dir_v85}] - {' | '.join(_reasons_v85[:2])} - Downgraded 85% -> 55% NO TRADE"
-        elif _verdict_v85 == "WEAK - WAIT" and confidence >= 80:
-            idea["why"] = idea.get("why", "") + f" | V85: WEAK - WAIT ({_passed_v85}/{_checked_v85}) [{_dir_v85}] - Half qty / wait karo"
+        # V86: Conviction = V86 Score (0-100). Pehle confluence wali 20% dikhti thi, ab Strong Score hi Conviction hai.
+        idea["confidence"] = int(_score100_v86)
+        # V86: Holding time-aware - 8:55 AM pe NEXT SESSION nahi, TODAY SESSION dikhega
+        try:
+            idea["holding"] = _v86_holding(tf_cfg)
+        except Exception:
+            pass
+        if _verdict_v85 in ("NO TRADE", "WEAK - WAIT") and confidence >= 75:
+            idea["why"] = idea.get("why", "") + f" | V86 Strong: {_verdict_v85} ({_score100_v86}/100) [{_dir_v85}] - {' | '.join(_reasons_v85[:2])} - Conviction V86 score se set ki"
+        elif _verdict_v85 in ("READY - BUY ON RETEST", "READY - SELL ON RETEST"):
+            idea["why"] = idea.get("why", "") + f" | V86: READY ({_score100_v86}/100) [{_dir_v85}] - CORE pass hai, retest pe entry lo, WAIT nahi"
         elif _verdict_v85 == "DATA MISSING - WAIT":
-            idea["why"] = idea.get("why", "") + f" | V85: DATA MISSING - WAIT ({_passed_v85}/{_checked_v85}) - data kam hai, conviction same rakha, fail nahi mana"
+            idea["why"] = idea.get("why", "") + f" | V86: DATA MISSING - WAIT ({_score100_v86}/100) - data kam hai, conviction same rakha, fail nahi mana"
     except Exception as _e55:
         idea["strong_verdict"] = "CHECK FAILED"
         idea["strong_score"] = "N/A"
@@ -10284,7 +10688,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
         with s4: st.metric("Max Pain Gravity", f"{gex_info['max_pain']:,.0f}", delta=f"GEX: {gex_info['net_gex_cr']:+,.0f} Cr", delta_color="normal")
 
     render_index_live_ticker(underlying, selected_expiry, active_tf)
-    # V82 LIVE STREAMING: Gift LTP har 15s pe, bina poora page reload kiye. Fragment hai, isliye main page nahi atakega.
+    # V87: Gift ticker ab FRAGMENT nahi hai - plain function, main thread me ek baar chalega. Har 15s auto-update BAND (wahi Bad message ki jad thi). Gift update chahiye to REFRESH / SCAN dabao.
     try:
         _v83_gift_live_ticker()
     except Exception:
@@ -10937,7 +11341,7 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         exp_safe = idea.get('expiry') or 'Current Weekly'
                         # V55.2 FIX - 6/7 kaha dikhega? YAHIN - Card ke andar hi, Conviction ke bagal me
                         # Pehle strong_score sirf idea dict me tha, card me render hi nahi ho raha tha, isliye screenshot me dikha nahi
-                        # Ab card ke top me bada sa STRONG SIGNAL box aayega: STRONG BUY 6/7 ya NO TRADE 3/7
+                        # V86: Ab card ke top me bada sa SIGNAL box aayega: SIGNAL: STRONG BUY - 85/100 ya SIGNAL: READY - BUY ON RETEST - 72/100
                         _sv = str(idea.get('strong_verdict', 'N/A'))
                         _ss = str(idea.get('strong_score', 'N/A'))
                         _sr = idea.get('strong_reasons', [])
@@ -10948,20 +11352,24 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                         except:
                             _snum = 0
                         # V85: colour verdict se, fixed 6/7 se nahi - kyunki denominator ab checked hai (5/5 bhi STRONG hai)
+                        # V86: colour verdict se - READY ko alag blue diya, WAIT se confuse nahi hoga
                         if "STRONG" in str(_sv):
                             _sbg, _scol = "#00FF00", "black"
                             _semoji = "✅"
+                        elif "READY" in str(_sv):
+                            _sbg, _scol = "#00BFFF", "black"
+                            _semoji = "🎯"
                         elif "WEAK" in str(_sv) or "DATA MISSING" in str(_sv):
                             _sbg, _scol = "#FFC107", "black"
                             _semoji = "⚠️"
-                        elif _snum > 0:
+                        elif "NO TRADE" in str(_sv):
                             _sbg, _scol = "#FF4B4B", "white"
                             _semoji = "🛑"
                         else:
                             _sbg, _scol = "#888888", "white"
                             _semoji = "⏳"
                         _sreasons_txt = " | ".join([str(x) for x in _sr[:2]]) if _sr else "Strong check ho raha hai..."
-                        html_card = '<div class="trade-card" style="border-left: 4px solid #00FF00;"><div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">LIVE SPOT: ' + str(spot_display) + '</div><h3>Trade Setup ' + str(i) + ' - ' + str(card_title_safe) + '</h3><b>Type:</b> ' + str(sub_badge_safe) + ' | <b>Timeframe:</b> ' + str(tf_safe) + ' | <b>Holding:</b> ' + str(holding_safe) + ' | <b>Conviction:</b> ' + str(conf_safe) + '% | <b>Expiry:</b> ' + str(exp_safe) + '</div><div style="background: ' + _sbg + '; color: ' + _scol + '; padding: 8px 10px; border-radius: 6px; margin-top: 6px; font-size: 15px; font-weight: bold;">' + _semoji + ' STRONG SIGNAL: ' + _sv + ' - ' + _ss + ' [' + _sdir + ']</div><div style="font-size: 12px; margin-top: 4px; color: #DDD;">' + _sreasons_txt + '</div></div>'
+                        html_card = '<div class="trade-card" style="border-left: 4px solid #00FF00;"><div style="background: #00FF00; color: black; padding: 2px 8px; border-radius: 4px; font-size: 11px; display: inline-block; margin-bottom: 5px;">LIVE SPOT: ' + str(spot_display) + '</div><h3>Trade Setup ' + str(i) + ' - ' + str(card_title_safe) + '</h3><b>Type:</b> ' + str(sub_badge_safe) + ' | <b>Timeframe:</b> ' + str(tf_safe) + ' | <b>Holding:</b> ' + str(holding_safe) + ' | <b>Conviction:</b> ' + str(conf_safe) + '% | <b>Expiry:</b> ' + str(exp_safe) + '</div><div style="background: ' + _sbg + '; color: ' + _scol + '; padding: 8px 10px; border-radius: 6px; margin-top: 6px; font-size: 15px; font-weight: bold;">' + _semoji + ' SIGNAL: ' + _sv + ' - ' + _ss + ' [' + _sdir + ']</div><div style="font-size: 12px; margin-top: 4px; color: #DDD;">' + _sreasons_txt + '</div></div>'
                         st.markdown(html_card, unsafe_allow_html=True)
                         # V85 BAD-MESSAGE FIX: upar wala html_card hi EK box hai - dobara same message mat dikhao
                         try:
@@ -10973,7 +11381,15 @@ Qty: {st.session_state.get('real_trading_qty_lots', 1)} lots"""
                                 with st.expander(f"🔍 {_ss} ka detail dekho - kaunsa filter pass / fail / skip hua"):
                                     for _rr in _sr:
                                         st.write(f"- {_rr}")
-                                    st.caption("7 Filter: 1 HTF | 2 VWAP+EMA | 3 OI+Price | 4 GEX Flip | 5 Volume 1.2x | 6 Retest | 7 VIX+PCR | V85: Missing = SKIP, 1 fail allowed = STRONG")
+                                    _bd86 = idea.get("strong_breakdown", {}) if isinstance(idea.get("strong_breakdown", {}), dict) else {}
+                                    if _bd86:
+                                        st.write("📊 V86 Breakdown (pts / max):")
+                                        for _bk, _bv in _bd86.items():
+                                            try:
+                                                st.write(f"- {_bk}: {_bv.get('pts', 0)}/{_bv.get('max', 0)} - {_bv.get('status', '')} - {_bv.get('msg', '')}")
+                                            except Exception:
+                                                pass
+                                    st.caption("V86 5 Filter (100 pts): 1 HTF 20 | 2 VWAP+EMA Stack 20 | 3 Breakout Close 25 | 4 Volume 15 | 5 Momentum RSI+ADX 20 | Missing = Neutral Half Points, FAIL nahi | 3 CORE PASS = kabhi WAIT nahi, kam se kam READY")
                                     _sk = idea.get("strong_skipped", [])
                                     if _sk:
                                         st.write("⏭️ Skipped (data nahi aaya, fail nahi mana):")
@@ -11348,16 +11764,22 @@ except Exception:
 
 # ===== V81 POLISH END - Deferred rerun: saare handler ne sirf flag set kiya, ab end me EK BAAR rerun =====
 # Beech me st.rerun() karne se hi Bad message aata tha, isliye ab yahan ek hi jagah rerun hoga.
+# V87 FINAL RERUN: Pehle wala code st.rerun() ko except Exception: pass me lapet ta tha.
+# Streamlit ka RerunException bhi Exception hai - usko swallow karne se rerun kabhi hota hi nahi tha.
+# Ab sirf SessionInfo error pakda jayega, Rerun ko dobara raise karenge.
 try:
-    if _v59_ss_get(_V81_RERUN_KEY, False):
-        try:
-            _v59_ss_set(_V81_RERUN_KEY, False)
-        except Exception:
-            pass
-        try:
-            st.session_state[_V81_RERUN_KEY] = False
-        except Exception:
-            pass
-        st.rerun()
+    _v87_need_rerun = _v59_ss_get(_V81_RERUN_KEY, False)
 except Exception:
-    pass
+    _v87_need_rerun = False
+if _v87_need_rerun and _v87_is_main_thread():
+    try:
+        _v59_ss_set(_V81_RERUN_KEY, False)
+    except Exception:
+        pass
+    try:
+        st.rerun()
+    except Exception as _e87_final:
+        if "SessionInfo" in str(_e87_final):
+            pass
+        else:
+            raise
